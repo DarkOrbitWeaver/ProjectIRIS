@@ -1,4 +1,5 @@
 using System.Text;
+using System.Threading;
 
 namespace CompanionOS.Core.Diagnostics;
 
@@ -20,6 +21,7 @@ public static class IrisEvent
 
     private static readonly object WriteGate = new();
     private static readonly Queue<EventRecord> Events = new();
+    private static readonly AsyncLocal<string?> CorrelationId = new();
     private static RollingJsonLinesWriter? _writer;
 
     /// <summary>Raised for every event, so the diagnostics panel can live-tail it.</summary>
@@ -47,11 +49,29 @@ public static class IrisEvent
         get { lock (WriteGate) { return _writer?.ActivePath ?? string.Empty; } }
     }
 
+    /// <summary>The correlation ID flowing through the current async operation, if any.</summary>
+    public static string? CurrentCorrelationId => CorrelationId.Value;
+
+    /// <summary>
+    /// Associates subsequent events in this async flow with one interaction. Nested scopes
+    /// restore their parent when disposed, and the value flows across awaits and Task.Run.
+    /// </summary>
+    public static IDisposable BeginCorrelationScope(string? correlationId = null)
+    {
+        string? previous = CorrelationId.Value;
+        string current = string.IsNullOrWhiteSpace(correlationId)
+            ? previous ?? Guid.NewGuid().ToString("N")[..8]
+            : correlationId.Trim();
+        CorrelationId.Value = current;
+        return new CorrelationScope(previous, current);
+    }
+
     /// <summary>Logs one fact. <paramref name="data"/> keys/values are written raw; keep them short and snake_case.</summary>
     public static void Log(string area, string @event, LogLevel level = LogLevel.Info,
         string? message = null, double? durationMs = null, IReadOnlyDictionary<string, string?>? data = null)
     {
-        EventRecord record = EventRecord.Capture(area, @event, level, message, durationMs, data);
+        EventRecord record = EventRecord.Capture(area, @event, level, message, durationMs, data,
+            CorrelationId.Value);
         Write(record);
     }
 
@@ -125,6 +145,21 @@ public static class IrisEvent
 
     private static void Write(EventRecord record)
     {
+        if (record.CorrelationId is null && CorrelationId.Value is { } activeCorrelationId)
+        {
+            record = new EventRecord
+            {
+                Timestamp = record.Timestamp,
+                Level = record.Level,
+                Area = record.Area,
+                Event = record.Event,
+                Message = record.Message,
+                DurationMs = record.DurationMs,
+                CorrelationId = activeCorrelationId,
+                Data = record.Data
+            };
+        }
+
         lock (WriteGate)
         {
             Events.Enqueue(record);
@@ -133,19 +168,17 @@ public static class IrisEvent
                 Events.Dequeue();
             }
 
-            if (_writer is null)
+            if (_writer is not null)
             {
-                return;
-            }
-
-            try
-            {
-                _writer.Append(record.Timestamp, record.ToJsonLine());
-            }
-            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException)
-            {
-                // Disk busy/full or a malformed oversized event: in-memory history remains.
-                System.Diagnostics.Debug.WriteLine($"Event log write failed: {exception.Message}");
+                try
+                {
+                    _writer.Append(record.Timestamp, record.ToJsonLine());
+                }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException)
+                {
+                    // Disk busy/full or a malformed oversized event: in-memory history remains.
+                    System.Diagnostics.Debug.WriteLine($"Event log write failed: {exception.Message}");
+                }
             }
         }
 
@@ -163,6 +196,20 @@ public static class IrisEvent
 
     private static double StopWatchStop(long started) =>
         System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+
+    private sealed class CorrelationScope(string? previous, string current) : IDisposable
+    {
+        private int _disposed;
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) == 0 &&
+                string.Equals(CorrelationId.Value, current, StringComparison.Ordinal))
+            {
+                CorrelationId.Value = previous;
+            }
+        }
+    }
 }
 
 /// <summary>One fact about what she did. Immutable; serialises to exactly one JSON line.</summary>
@@ -174,10 +221,11 @@ public sealed class EventRecord
     public string Event { get; init; } = string.Empty;
     public string? Message { get; init; }
     public double? DurationMs { get; init; }
+    public string? CorrelationId { get; init; }
     public IReadOnlyDictionary<string, string?>? Data { get; init; }
 
     public static EventRecord Capture(string area, string @event, LogLevel level, string? message,
-        double? durationMs, IReadOnlyDictionary<string, string?>? data) => new()
+        double? durationMs, IReadOnlyDictionary<string, string?>? data, string? correlationId = null) => new()
     {
         Level = level,
         Area = string.IsNullOrWhiteSpace(area) ? "App" : area,
@@ -185,6 +233,7 @@ public sealed class EventRecord
         Event = (@event ?? "unknown").Trim().Replace(' ', '_'),
         Message = string.IsNullOrWhiteSpace(message) ? null : message,
         DurationMs = durationMs is > 0 ? Math.Round(durationMs.Value, 1) : null,
+        CorrelationId = string.IsNullOrWhiteSpace(correlationId) ? null : correlationId,
         Data = data is { Count: > 0 } ? data : null
     };
 
@@ -204,6 +253,11 @@ public sealed class EventRecord
         json.Append(",\"level\":\"").Append(Level.ToString().ToLowerInvariant()).Append('"');
         json.Append(",\"area\":\"").Append(Escape(Area)).Append('"');
         json.Append(",\"event\":\"").Append(Escape(Event)).Append('"');
+        if (CorrelationId is not null)
+        {
+            json.Append(",\"correlation_id\":\"").Append(Escape(CorrelationId)).Append('"');
+        }
+
         if (Message is not null)
         {
             json.Append(",\"msg\":\"").Append(Escape(Message)).Append('"');

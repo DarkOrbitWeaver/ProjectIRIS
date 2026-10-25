@@ -824,6 +824,10 @@ public sealed class VoicePipeline : IAsyncDisposable
     /// <summary>Transcribes one finished utterance and decides whether it was for her.</summary>
     private async Task ProcessSegmentAsync(float[] segment)
     {
+        // This same ID flows through the callback into AssistantBrain, so the logs can
+        // connect recognition, wake matching, tool work, and the spoken reply without
+        // ever persisting the transcript or microphone samples.
+        using IDisposable correlationScope = IrisEvent.BeginCorrelationScope();
         await _recognitionGate.WaitAsync().ConfigureAwait(false);
         try
         {

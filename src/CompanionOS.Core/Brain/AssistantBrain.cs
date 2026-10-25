@@ -141,6 +141,8 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
         _voice.OpenConversationWindow();
 
         await _turnGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        string turnId = IrisEvent.CurrentCorrelationId ?? Guid.NewGuid().ToString("N")[..8];
+        using IDisposable correlationScope = IrisEvent.BeginCorrelationScope(turnId);
         try
         {
             long started = System.Diagnostics.Stopwatch.GetTimestamp();
@@ -148,7 +150,7 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
             _currentTurnSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             CancellationToken turnToken = _currentTurnSource.Token;
 
-            string answer = await RunTurnAsync(userText.Trim(), origin, attachedImageDataUri, turnToken)
+            string answer = await RunTurnAsync(turnId, userText.Trim(), origin, attachedImageDataUri, turnToken)
                 .ConfigureAwait(false);
 
             IrisEvent.Log("Brain", "turn.done", LogLevel.Debug,
@@ -179,7 +181,7 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
             _events.Publish(new ConversationEvent
             {
                 Phase = ConversationPhase.TurnFailed,
-                TurnId = Guid.NewGuid().ToString("N")[..8],
+                TurnId = turnId,
                 Text = exception.Message
             });
             _ = _voice.SpeakReflexAsync("error");
@@ -285,10 +287,9 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
     }
 
     /// <summary>The actual turn, in the order documented at the top of the file.</summary>
-    private async Task<string> RunTurnAsync(string userText, string origin, string? attachedImage,
+    private async Task<string> RunTurnAsync(string turnId, string userText, string origin, string? attachedImage,
         CancellationToken cancellationToken)
     {
-        string turnId = Guid.NewGuid().ToString("N")[..8];
         _journal.RecordUserMessage(turnId, userText);
 
         _events.Publish(new ConversationEvent

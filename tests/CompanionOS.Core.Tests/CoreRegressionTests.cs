@@ -198,6 +198,63 @@ public sealed class CoreRegressionTests
     }
 
     [Fact]
+    public async Task BehaviorEventsKeepCorrelationAcrossAsyncWorkAndRestoreNestedScopes()
+    {
+        string correlationId = Guid.NewGuid().ToString("N")[..8];
+        List<EventRecord> captured = new();
+        void Capture(EventRecord record)
+        {
+            if (record.Event.StartsWith("correlation_test", StringComparison.Ordinal))
+            {
+                captured.Add(record);
+            }
+        }
+
+        IrisEvent.EventLogged += Capture;
+        try
+        {
+            using (IrisEvent.BeginCorrelationScope(correlationId))
+            {
+                IrisEvent.Log("Test", "correlation_test.before_await");
+                await Task.Yield();
+                IrisEvent.Log("Test", "correlation_test.after_await");
+                await Task.Run(async () =>
+                {
+                    await Task.Yield();
+                    IrisEvent.Log("Test", "correlation_test.background_flow");
+                });
+                IrisEvent.Log(EventRecord.Capture("Test", "correlation_test.direct_record",
+                    LogLevel.Info, null, null, null));
+
+                using (IrisEvent.BeginCorrelationScope("nested-scope"))
+                {
+                    IrisEvent.Log("Test", "correlation_test.nested");
+                }
+
+                IrisEvent.Log("Test", "correlation_test.restored");
+            }
+
+            IrisEvent.Log("Test", "correlation_test.outside");
+        }
+        finally
+        {
+            IrisEvent.EventLogged -= Capture;
+        }
+
+        Assert.Collection(captured,
+            before => Assert.Equal(correlationId, before.CorrelationId),
+            after => Assert.Equal(correlationId, after.CorrelationId),
+            background => Assert.Equal(correlationId, background.CorrelationId),
+            direct => Assert.Equal(correlationId, direct.CorrelationId),
+            nested => Assert.Equal("nested-scope", nested.CorrelationId),
+            restored => Assert.Equal(correlationId, restored.CorrelationId),
+            outside => Assert.Null(outside.CorrelationId));
+
+        using JsonDocument json = JsonDocument.Parse(captured[0].ToJsonLine());
+        Assert.Equal(correlationId, json.RootElement.GetProperty("correlation_id").GetString());
+    }
+
+    [Fact]
     public void RollingDiagnosticsExpireFilesOutsideTheSevenDayWindow()
     {
         string directory = Path.Combine(Path.GetTempPath(), $"iris-log-test-{Guid.NewGuid():N}");

@@ -261,7 +261,7 @@ public sealed class DiagnosticsView : UserControl
             record.Timestamp.ToString("HH:mm:ss.fff"),
             record.Area,
             record.Event,
-            BuildDetail(record.Message, record.Data),
+            BuildDetail(record.Message, record.Data, record.CorrelationId),
             record.DurationMs is { } ms ? $"{ms:0.#} ms" : string.Empty,
             ColorForLevel(record.Level));
 
@@ -291,15 +291,19 @@ public sealed class DiagnosticsView : UserControl
             }
         }
 
-        private static string BuildDetail(string? message, IReadOnlyDictionary<string, string?>? data)
+        private static string BuildDetail(string? message, IReadOnlyDictionary<string, string?>? data,
+            string? correlationId = null)
         {
+            string correlation = string.IsNullOrWhiteSpace(correlationId) ? string.Empty : $"id={correlationId}";
             if (data is null || data.Count == 0)
             {
-                return message ?? string.Empty;
+                return string.Join("  ·  ", new[] { message, correlation }
+                    .Where(value => !string.IsNullOrWhiteSpace(value)));
             }
 
             string pairs = string.Join("  ", data.Select(pair => $"{pair.Key}={Shorten(pair.Value ?? "—")}"));
-            return message is null ? pairs : $"{message}  ·  {pairs}";
+            string detail = message is null ? pairs : $"{message}  ·  {pairs}";
+            return correlation.Length == 0 ? detail : $"{detail}  ·  {correlation}";
         }
 
         private static string Shorten(string value) => value.Length <= 60 ? value : value[..60] + "…";

@@ -101,7 +101,7 @@ Logs live under `<data>\logs\` (the data root defaults to `%LOCALAPPDATA%\Compan
 | File | What it records |
 |---|---|
 | `companion.log` | Readable app, voice, module, memory, and recovery messages; rotates at 8 MB and keeps one previous segment. |
-| `iris-YYYYMMDD.jsonl` | Structured behavior events and durations, suitable for filtering or replay-oriented debugging; bounded daily segments are retained for seven days. |
+| `iris-YYYYMMDD.jsonl` | Structured behavior events with durations and a correlation ID that links speech recognition, a turn, permissions, tools, and speech output; bounded daily segments are retained for seven days. |
 | `system-YYYYMMDD.jsonl` | Process lifecycle, UI heartbeat and stalls, plus a lightweight CPU/RAM/process snapshot at startup and every 30 seconds; bounded daily segments are retained for seven days. |
 
 Use **Diagnostics → Behavior**, **App diary**, and **OS watch** to inspect the live tails, or
