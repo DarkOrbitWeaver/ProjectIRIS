@@ -57,6 +57,17 @@ from her control tags, lip sync from the TTS amplitude envelope already publishe
 procedural breathing and blinking on the CPU. Deliberately not inside the main process, so a
 body crash never touches her mind.
 
+## M8 — Extensible module platform · long-range
+
+Build a stable, documented scripting API and module authoring kit so new capabilities are easy
+to create, install, inspect, and use. Modules should declare tools, permissions, lifecycle and
+resource needs, and may contribute declarative UI surfaces or independently controlled
+overlays. First-party modules should dogfood the same public contracts where practical. External
+scripts must run behind an explicit install/review step with bounded execution, cancellation,
+versioning, diagnostics, and revocable permissions; dropping an arbitrary file into a folder
+must never silently execute it. This is an intentional future platform investment, not a blocker
+for the current companion foundation.
+
 ## Also next, in order of value
 
 1. **Guided onboarding tour** — the five resumable steps from the blueprint. Today the chat
