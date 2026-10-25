@@ -220,9 +220,22 @@ public sealed class MusicRailPanel : Border
             string.IsNullOrWhiteSpace(NowPlaying.Title) ||
             string.Equals(NowPlaying.Title, "Nothing playing", StringComparison.Ordinal);
         _title.Text = resting ? "Music library" : NowPlaying.Title;
-        _secondary.Text = resting
-            ? (NowPlaying.TrackCount == 0 ? "Ask Iris to add a music folder" : $"{NowPlaying.TrackCount} tracks ready")
-            : NowPlaying.Status;
+        if (!resting)
+        {
+            _secondary.Text = NowPlaying.Status;
+        }
+        else
+        {
+            bool showScanStatus = NowPlaying.IsScanning ||
+                NowPlaying.LibraryStatus.StartsWith("Partial", StringComparison.OrdinalIgnoreCase) ||
+                NowPlaying.LibraryStatus.Contains("unavailable", StringComparison.OrdinalIgnoreCase) ||
+                NowPlaying.LibraryStatus.Contains("skipped", StringComparison.OrdinalIgnoreCase) ||
+                NowPlaying.LibraryStatus.Contains("cancelled", StringComparison.OrdinalIgnoreCase) ||
+                NowPlaying.LibraryStatus.Contains("failed", StringComparison.OrdinalIgnoreCase);
+            _secondary.Text = showScanStatus
+                ? NowPlaying.LibraryStatus
+                : NowPlaying.TrackCount == 0 ? "Ask Iris to add a music folder" : $"{NowPlaying.TrackCount} tracks ready";
+        }
 
         // Board truth: the play glyph in text-white while stopped or paused; when she is
         // actually playing, the same button offers pause.

@@ -2,6 +2,7 @@ using CompanionOS.Core.Common;
 using CompanionOS.Core.Diagnostics;
 using CompanionOS.Core.Events;
 using CompanionOS.Core.Modules;
+using CompanionOS.Modules;
 using System.Text.Json;
 using NAudio.Wave;
 
@@ -15,6 +16,8 @@ public sealed class NowPlayingModel : ObservableObject
     private double _progress;
     private string _positionText = "0:00";
     private int _trackCount;
+    private bool _isScanning;
+    private string _libraryStatus = "Library scan has not run yet";
 
     public string Title
     {
@@ -46,6 +49,18 @@ public sealed class NowPlayingModel : ObservableObject
         get => _trackCount;
         set => SetProperty(ref _trackCount, value);
     }
+
+    public bool IsScanning
+    {
+        get => _isScanning;
+        set => SetProperty(ref _isScanning, value);
+    }
+
+    public string LibraryStatus
+    {
+        get => _libraryStatus;
+        set => SetProperty(ref _libraryStatus, value);
+    }
 }
 
 /// <summary>
@@ -59,13 +74,15 @@ public sealed class NowPlayingModel : ObservableObject
 /// </summary>
 public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider, IDisposable
 {
+    private const int MaximumCachedTracks = MusicLibraryScanner.DefaultMaximumTracks * 2;
+    private const int MaximumBrowseFolders = 40;
+    private const int MaximumBrowseFilesToInspect = 500;
     // Formats Windows can normally decode through NAudio without a third-party codec.
     // Unsupported files are skipped rather than poisoning an otherwise good scan.
-    private static readonly string[] SupportedExtensions =
-        { ".mp3", ".wav", ".aiff", ".aif", ".flac", ".m4a", ".aac", ".wma" };
-
     private readonly NowPlayingModel _nowPlaying = new();
-    private readonly List<string> _library = new();
+    private List<string> _library = new();
+    private readonly SemaphoreSlim _libraryScanGate = new(1, 1);
+    private readonly CancellationTokenSource _moduleLifetime = new();
     private readonly object _playerLock = new();
 
     private ModuleContext? _context;
@@ -75,6 +92,7 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
     private int _currentIndex = -1;
     private bool _isDisposed;
     private DateTimeOffset _lastLibraryRefresh = DateTimeOffset.MinValue;
+    private MusicLibraryScanResult? _lastScan;
 
     // A library can be a USB drive or a many-thousand-file archive. Rewalking it for
     // every play/list command is not "real time"; it is an invisible disk spike. An
@@ -220,109 +238,83 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
         // The drop-in folder is one of her library roots; create it so there is
         // always somewhere obvious to hand her files.
         Directory.CreateDirectory(Path.Combine(context.WorkspaceDirectory, "Music"));
-        RefreshLibrary(force: true);
+        _ = InitializeLibraryIndexAsync(cancellationToken);
 
         _progressTimer = new Timer(_ => UpdateProgress(), null, 500, 500);
 
         // The player must survive a restart of the interface: no state is kept in the
         // audio device, so simply re-scanning the folder is enough.
-        _nowPlaying.TrackCount = _library.Count;
         return Task.CompletedTask;
     }
 
-    public Task<ToolResult> ExecuteAsync(ToolInvocation invocation, CancellationToken cancellationToken)
+    public async Task<ToolResult> ExecuteAsync(ToolInvocation invocation, CancellationToken cancellationToken)
     {
         switch (invocation.Tool.Name)
         {
             case "play_music":
-                return Task.FromResult(Play(invocation.GetString("query")));
-
+                await RefreshLibraryAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+                return Play(invocation.GetString("query"));
             case "pause_music":
                 lock (_playerLock)
                 {
-                    if (_outputDevice is null)
-                    {
-                        return Task.FromResult(ToolResult.Fail("Nothing is playing."));
-                    }
-
+                    if (_outputDevice is null) return ToolResult.Fail("Nothing is playing.");
                     _outputDevice.Pause();
                     _nowPlaying.Status = "Paused";
-                    return Task.FromResult(ToolResult.Ok("Music paused.", "Paused."));
+                    return ToolResult.Ok("Music paused.", "Paused.");
                 }
-
             case "resume_music":
                 lock (_playerLock)
                 {
-                    if (_outputDevice is null)
-                    {
-                        return Task.FromResult(Play(string.Empty));
-                    }
-
+                    if (_outputDevice is null) return Play(string.Empty);
                     _outputDevice.Play();
                     _nowPlaying.Status = "Playing";
-                    return Task.FromResult(ToolResult.Ok("Music resumed.", "Back on."));
+                    return ToolResult.Ok("Music resumed.", "Back on.");
                 }
-
             case "next_track":
-                return Task.FromResult(PlayNext());
-
+                return PlayNext();
             case "shuffle_music":
-                return Task.FromResult(ShuffleMusic());
-
+                await RefreshLibraryAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+                return ShuffleMusic();
             case "stop_music":
                 StopPlayback();
-                return Task.FromResult(ToolResult.Ok("Music stopped.", "Stopped."));
-
+                return ToolResult.Ok("Music stopped.", "Stopped.");
             case "set_music_volume":
             {
                 int level = Math.Clamp(invocation.GetInt32("level", 60), 0, 100);
                 lock (_playerLock)
                 {
-                    if (_audioReader is not null)
-                    {
-                        _audioReader.Volume = level / 100f;
-                    }
+                    if (_audioReader is not null) _audioReader.Volume = level / 100f;
                 }
-
-                return Task.FromResult(ToolResult.Ok($"Music volume set to {level} percent."));
+                return ToolResult.Ok($"Music volume set to {level} percent.");
             }
-
             case "list_music":
             {
-                RefreshLibrary();
+                MusicLibraryScanResult scan = await RefreshLibraryAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
                 if (_library.Count == 0)
-                {
-                    return Task.FromResult(ToolResult.Ok(
-                        "No audio files yet. Name your music folders in settings, or drop files " +
-                        "into the workspace Music folder."));
-                }
-
+                    return ToolResult.Ok(scan.WasLimited
+                        ? $"The bounded scan has not found tracks yet; it reached the {scan.LimitReason}. Browse a smaller folder to continue."
+                        : "No audio files yet. Name your music folders in settings, or drop files into the workspace Music folder.");
                 string listing = string.Join("; ", _library.Take(20).Select(Path.GetFileNameWithoutExtension));
-                return Task.FromResult(ToolResult.Ok($"{_library.Count} tracks: {listing}",
-                    displayText: listing));
+                return ToolResult.Ok($"{_library.Count} indexed track(s){(scan.WasLimited ? $" (partial: {scan.LimitReason})" : string.Empty)}: {listing}",
+                    displayText: listing);
             }
-
             case "add_music_folder":
-                return Task.FromResult(AddMusicFolder(invocation.GetString("path")));
-
+                return await AddMusicFolderAsync(invocation.GetString("path"), cancellationToken).ConfigureAwait(false);
             case "browse_music_folder":
-                return Task.FromResult(BrowseMusicFolder(invocation.GetString("path")));
-
+                return await Task.Run(() => BrowseMusicFolder(invocation.GetString("path")), cancellationToken)
+                    .ConfigureAwait(false);
             case "remove_music_folder":
-                return Task.FromResult(RemoveMusicFolder(invocation.GetString("path")));
-
+                return await RemoveMusicFolderAsync(invocation.GetString("path"), cancellationToken).ConfigureAwait(false);
             case "refresh_music_library":
-                RefreshLibrary(force: true);
-                return Task.FromResult(ToolResult.Ok(
-                    $"Music library refreshed. I found {_library.Count} playable track(s) in {LibraryDirectories().Count} folder(s).",
-                    spokenText: _library.Count == 0 ? "I couldn't find playable music there yet." : "Music library refreshed."));
-
+            {
+                MusicLibraryScanResult scan = await RefreshLibraryAsync(force: true, cancellationToken).ConfigureAwait(false);
+                return ToolResult.Ok(DescribeScan(scan),
+                    spokenText: _library.Count == 0 ? "I couldn't find playable music there yet." : ScanSpokenSummary(scan));
+            }
             case "show_music_overlay":
-                return Task.FromResult(SetMusicOverlayVisible(true));
-
+                return SetMusicOverlayVisible(true);
             case "hide_music_overlay":
-                return Task.FromResult(SetMusicOverlayVisible(false));
-
+                return SetMusicOverlayVisible(false);
             case "duck_music":
             {
                 bool shouldDuck = invocation.GetBoolean("ducked", true);
@@ -330,35 +322,30 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
                 {
                     if (_audioReader is not null)
                     {
-                        double target = shouldDuck
-                            ? Math.Max(0.05, _context?.Settings.Voice.MusicDuckLevel ?? 0.25)
-                            : 1.0;
+                        double target = shouldDuck ? Math.Max(0.05, _context?.Settings.Voice.MusicDuckLevel ?? 0.25) : 1.0;
                         _audioReader.Volume = (float)target;
                     }
                 }
-
-                return Task.FromResult(ToolResult.Ok(shouldDuck ? "Music lowered." : "Music restored."));
+                return ToolResult.Ok(shouldDuck ? "Music lowered." : "Music restored.");
             }
-
             case "previous_track":
-                return Task.FromResult(PlayPrevious());
-
+                return PlayPrevious();
             case "list_playlists":
-                return Task.FromResult(ListPlaylists());
-
+                return ListPlaylists();
             case "create_playlist":
-                return Task.FromResult(CreatePlaylist(invocation.GetString("name"),
-                    invocation.GetString("query")));
-
+            {
+                string query = invocation.GetString("query");
+                if (!string.IsNullOrWhiteSpace(query))
+                    await RefreshLibraryAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+                return CreatePlaylist(invocation.GetString("name"), query);
+            }
             case "add_to_playlist":
-                return Task.FromResult(AddToPlaylist(invocation.GetString("name"),
-                    invocation.GetString("query")));
-
+                await RefreshLibraryAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+                return AddToPlaylist(invocation.GetString("name"), invocation.GetString("query"));
             case "play_playlist":
-                return Task.FromResult(PlayPlaylist(invocation.GetString("name")));
-
+                return PlayPlaylist(invocation.GetString("name"));
             default:
-                return Task.FromResult(ToolResult.Fail($"Unknown music tool '{invocation.Tool.Name}'."));
+                return ToolResult.Fail($"Unknown music tool '{invocation.Tool.Name}'.");
         }
     }
 
@@ -375,10 +362,27 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
 
     public Task ShutdownAsync()
     {
+        _moduleLifetime.Cancel();
         StopPlayback();
         _progressTimer?.Dispose();
         _progressTimer = null;
         return Task.CompletedTask;
+    }
+
+    private async Task InitializeLibraryIndexAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await RefreshLibraryAsync(force: true, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            // Runtime shutdown owns this cancellation; the module will initialize again next launch.
+        }
+        catch (Exception exception)
+        {
+            CompanionLog.Warning("Music", "Initial music index did not finish; the player remains available.", exception);
+        }
     }
 
     public void Dispose()
@@ -389,6 +393,7 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
         }
 
         _isDisposed = true;
+        _moduleLifetime.Cancel();
         StopPlayback();
         _progressTimer?.Dispose();
     }
@@ -408,7 +413,7 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
                     directory[1..].TrimStart('/', '\\'));
             }
 
-            if (!string.IsNullOrWhiteSpace(expanded) && Directory.Exists(expanded) &&
+            if (!string.IsNullOrWhiteSpace(expanded) &&
                 !directories.Contains(expanded, StringComparer.OrdinalIgnoreCase))
             {
                 directories.Add(expanded);
@@ -427,7 +432,7 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
     /// <summary>Adds a real, existing folder to the persistent library. This only
     /// grants read access to that one directory; it never copies, moves or deletes the
     /// owner's files.</summary>
-    private ToolResult AddMusicFolder(string requestedPath)
+    private async Task<ToolResult> AddMusicFolderAsync(string requestedPath, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(requestedPath))
         {
@@ -440,7 +445,7 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
             return ToolResult.Fail("Tell me the folder path to add, for example D:\\Music.");
         }
 
-        if (!Directory.Exists(path))
+        if (!await Task.Run(() => Directory.Exists(path), cancellationToken).ConfigureAwait(false))
         {
             return ToolResult.Fail($"I can't find '{path}'. Check that the drive is connected, then give me the folder path again.");
         }
@@ -453,13 +458,18 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
             _context?.PersistSettings();
         }
 
-        RefreshLibrary(force: true);
-        int foundHere = _library.Count(candidate => candidate.StartsWith(path, StringComparison.OrdinalIgnoreCase));
+        MusicLibraryScanResult scan = await RefreshLibraryAsync(force: true, cancellationToken,
+            preferredRoot: path).ConfigureAwait(false);
+        int foundHere = _library.Count(candidate => IsWithinDirectory(path, candidate));
         return ToolResult.Ok(
-            $"Added '{path}' and found {foundHere} playable track(s) there. The library now has {_library.Count} track(s).",
-            spokenText: foundHere == 0
-                ? "I added the folder, but I couldn't find playable tracks there yet."
-                : $"Found {foundHere} tracks. Would you like me to play something?");
+            $"Added '{path}'. The scan found {foundHere} playable track(s) there; the library now has {_library.Count}. {ScanLimitSuffix(scan)}",
+            spokenText: scan.WasLimited
+                ? foundHere == 0
+                    ? "I added the folder, but my scan limit was reached before I could check it fully. Want me to browse a smaller folder?"
+                    : $"I found at least {foundHere} tracks before the scan limit. Would you like me to play one?"
+                : foundHere == 0
+                    ? "I added the folder, but I couldn't find playable tracks there yet."
+                    : $"Found {foundHere} tracks. Would you like me to play something?");
     }
 
     /// <summary>
@@ -478,19 +488,38 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
 
         try
         {
-            List<string> children = Directory.EnumerateDirectories(path, "*", SearchOption.TopDirectoryOnly)
-                .Select(Path.GetFileName)
-                .Where(name => !string.IsNullOrWhiteSpace(name))
-                .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
-                .Take(40)
-                .ToList()!;
-            int directTracks = Directory.EnumerateFiles(path, "*.*", SearchOption.TopDirectoryOnly)
-                .Count(file => SupportedExtensions.Contains(Path.GetExtension(file), StringComparer.OrdinalIgnoreCase));
+            List<string> children = new();
+            foreach (string childPath in Directory.EnumerateDirectories(path, "*", SearchOption.TopDirectoryOnly)
+                         .Take(MaximumBrowseFolders + 1))
+            {
+                try
+                {
+                    if ((File.GetAttributes(childPath) & FileAttributes.ReparsePoint) == 0)
+                        children.Add(Path.GetFileName(childPath));
+                }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+                {
+                    // This child disappeared or became inaccessible while being listed.
+                }
+            }
+            children = children.OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
+                .Take(MaximumBrowseFolders).ToList();
+
+            int directTracks = 0;
+            int entriesChecked = 0;
+            foreach (string file in Directory.EnumerateFiles(path, "*", SearchOption.TopDirectoryOnly)
+                         .Take(MaximumBrowseFilesToInspect + 1))
+            {
+                entriesChecked++;
+                if (MusicLibraryScanner.IsSupportedAudioFile(file)) directTracks++;
+            }
+            bool trackCountIsPartial = entriesChecked > MaximumBrowseFilesToInspect;
 
             _browseDirectory = path;
             string folderList = children.Count == 0 ? "no child folders" : string.Join(", ", children);
-            string suffix = children.Count == 40 ? " (showing the first 40)" : string.Empty;
-            string response = $"Opened '{path}'. I see {folderList}{suffix}; {directTracks} playable audio file(s) directly here. " +
+            string suffix = children.Count == MaximumBrowseFolders ? $" (showing up to {MaximumBrowseFolders})" : string.Empty;
+            string trackCount = trackCountIsPartial ? $"at least {directTracks}" : directTracks.ToString();
+            string response = $"Opened '{path}'. I see {folderList}{suffix}; {trackCount} playable audio file(s) directly here. " +
                 "Tell me which folder to open next, say up, or confirm that I should add this folder.";
             return ToolResult.Ok(response, spokenText: children.Count == 0
                 ? "I opened it. There are no folders inside. Would you like me to add this folder?"
@@ -550,7 +579,7 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
         }
     }
 
-    private ToolResult RemoveMusicFolder(string requestedPath)
+    private async Task<ToolResult> RemoveMusicFolderAsync(string requestedPath, CancellationToken cancellationToken)
     {
         string path = ExpandDirectory(requestedPath);
         List<string> directories = _context?.Settings.Music.SearchDirectories ?? new List<string>();
@@ -562,7 +591,7 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
         }
 
         _context?.PersistSettings();
-        RefreshLibrary(force: true);
+        await RefreshLibraryAsync(force: true, cancellationToken, new[] { path }).ConfigureAwait(false);
         return ToolResult.Ok($"Stopped scanning '{path}'. No files were deleted.",
             spokenText: "I removed that folder from my library. I did not delete anything.");
     }
@@ -605,6 +634,21 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
         }
     }
 
+    private static bool IsWithinDirectory(string root, string candidate)
+    {
+        try
+        {
+            string relative = Path.GetRelativePath(root, candidate);
+            return !Path.IsPathRooted(relative) && relative != ".." &&
+                   !relative.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal) &&
+                   !relative.StartsWith(".." + Path.AltDirectorySeparatorChar, StringComparison.Ordinal);
+        }
+        catch (Exception exception) when (exception is ArgumentException or IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
     /// <summary>Playlists persist as plain JSON next to her workspace: readable, copyable,
     /// never a database her owner cannot open.</summary>
     private string PlaylistsDirectory =>
@@ -612,11 +656,13 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
 
     private ToolResult Play(string query)
     {
-        RefreshLibrary();
         if (_library.Count == 0)
         {
             return ToolResult.Fail(
-                "I found no audio files. Name the folders that hold your music in settings " +
+                (_lastScan?.WasLimited == true
+                    ? $"My bounded scan stopped at the {_lastScan.LimitReason} before it found tracks. Browse a smaller folder. "
+                    : "I found no audio files. ") +
+                "Name the folders that hold your music in settings " +
                 "(MusicSearchDirectories), or drop files into my workspace Music folder.");
         }
 
@@ -627,7 +673,9 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
         if (chosenIndex < 0)
         {
             return ToolResult.Fail(
-                $"I couldn't find a track matching '{query}'. I left the current playback unchanged.");
+                $"I couldn't find a track matching '{query}'. " +
+                (_lastScan?.WasLimited == true ? "The index is partial; browse a smaller folder to search more. " : string.Empty) +
+                "I left the current playback unchanged.");
         }
 
         if (!StartTrack(chosenIndex))
@@ -728,10 +776,11 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
 
     private ToolResult ShuffleMusic()
     {
-        RefreshLibrary();
         if (_library.Count == 0)
         {
-            return ToolResult.Fail("I have no music to shuffle yet. Add a folder with your tracks first.");
+            return ToolResult.Fail(_lastScan?.WasLimited == true
+                ? $"My bounded scan stopped at the {_lastScan.LimitReason} before it found tracks. Browse a smaller folder."
+                : "I have no music to shuffle yet. Add a folder with your tracks first.");
         }
 
         ClearQueue();
@@ -751,8 +800,13 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
 
             _queueIndex = index;
             string title = Path.GetFileNameWithoutExtension(_queue[index]);
-            return ToolResult.Ok($"Shuffling the library. Playing {title} first.",
-                $"Shuffling your music. {title} is first.", title);
+        bool partialLibrary = _lastScan?.WasLimited == true;
+        return ToolResult.Ok(partialLibrary
+                ? $"Shuffling the indexed tracks. Playing {title} first; the library scan is partial."
+                : $"Shuffling the library. Playing {title} first.",
+            partialLibrary
+                ? $"Shuffling the tracks I found so far. {title} is first."
+                : $"Shuffling your music. {title} is first.", title);
         }
 
         ClearQueue();
@@ -775,15 +829,19 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
         List<string> tracks = new();
         if (!string.IsNullOrWhiteSpace(query))
         {
-            RefreshLibrary();
             tracks = ResolveQuery(query).ToList();
         }
 
         SavePlaylist(safeName, tracks);
+        bool partialLibrary = !string.IsNullOrWhiteSpace(query) && _lastScan?.WasLimited == true;
         return ToolResult.Ok(tracks.Count == 0
-                ? $"Playlist '{name}' is created and empty."
-                : $"Playlist '{name}' created with {tracks.Count} track(s).",
-            spokenText: $"Playlist '{name}' is ready.");
+                ? partialLibrary
+                    ? $"Playlist '{name}' is empty so far; the library index is partial."
+                    : $"Playlist '{name}' is created and empty."
+                : $"Playlist '{name}' created with {tracks.Count} track(s){(partialLibrary ? " from the partial library index" : string.Empty)}.",
+            spokenText: partialLibrary
+                ? $"Playlist '{name}' is ready with the tracks found so far."
+                : $"Playlist '{name}' is ready.");
     }
 
     private ToolResult AddToPlaylist(string name, string query)
@@ -799,7 +857,6 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
             return ToolResult.Fail($"There is no playlist called '{name}' yet. Ask me to create it first.");
         }
 
-        RefreshLibrary();
         List<string> added = ResolveQuery(query).ToList();
         if (added.Count == 0)
         {
@@ -812,8 +869,11 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
         SavePlaylist(safeName, tracks);
 
         return ToolResult.Ok(
-            $"Added {tracks.Count - existing} new track(s) to '{name}' (now {tracks.Count} total).",
-            spokenText: $"Added to '{name}'.");
+            $"Added {tracks.Count - existing} new track(s) to '{name}' (now {tracks.Count} total)" +
+            (_lastScan?.WasLimited == true ? " from the partial library index." : "."),
+            spokenText: _lastScan?.WasLimited == true
+                ? $"I added the matching tracks I found so far to '{name}'."
+                : $"Added to '{name}'.");
     }
 
     private ToolResult PlayPlaylist(string name)
@@ -1008,40 +1068,134 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
             ? Array.Empty<string>()
             : text.Split(new[] { ' ', '-', '_', '.', ',' }, StringSplitOptions.RemoveEmptyEntries);
 
-    private void RefreshLibrary(bool force = false)
+    private async Task<MusicLibraryScanResult> RefreshLibraryAsync(
+        bool force = false, CancellationToken cancellationToken = default,
+        IReadOnlyCollection<string>? excludedRoots = null, string? preferredRoot = null)
     {
-        if (!force && DateTimeOffset.UtcNow - _lastLibraryRefresh < MinimumAutomaticLibraryRefresh)
-        {
-            return;
-        }
+        using CancellationTokenSource linkedCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken, _moduleLifetime.Token);
+        cancellationToken = linkedCancellation.Token;
 
-        List<string> found = new();
-        HashSet<string> knownPaths = new(StringComparer.OrdinalIgnoreCase);
-        foreach (string root in LibraryDirectories())
+        await _libraryScanGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
         {
-            try
+            if (!force && DateTimeOffset.UtcNow - _lastLibraryRefresh < MinimumAutomaticLibraryRefresh)
             {
-                foreach (string filePath in Directory.EnumerateFiles(root, "*.*", SearchOption.AllDirectories))
-                {
-                    string extension = Path.GetExtension(filePath).ToLowerInvariant();
-                    if (SupportedExtensions.Contains(extension) &&
-                        knownPaths.Add(filePath))
-                    {
-                        found.Add(filePath);
-                    }
-                }
+                return _lastScan ?? new MusicLibraryScanResult(_library.ToArray(), 0, 0, 0, 0, false, null, TimeSpan.Zero);
             }
-            catch (Exception exception)
-            {
-                CompanionLog.Trace("Music", $"Skipping a music folder during refresh: {exception.Message}");
-            }
-        }
 
-        found.Sort(StringComparer.OrdinalIgnoreCase);
-        _library.Clear();
-        _library.AddRange(found);
-        _nowPlaying.TrackCount = _library.Count;
-        _lastLibraryRefresh = DateTimeOffset.UtcNow;
+            _nowPlaying.IsScanning = true;
+            _nowPlaying.LibraryStatus = "Scanning selected music folders…";
+            Action<MusicLibraryScanProgress> reportProgress = progress =>
+            {
+                _nowPlaying.LibraryStatus = $"Scanning: {progress.TracksFound:N0} tracks in {progress.DirectoriesVisited:N0} folders";
+            };
+            List<string> roots = LibraryDirectories();
+            if (!string.IsNullOrWhiteSpace(preferredRoot))
+            {
+                roots.RemoveAll(root => string.Equals(ExpandDirectory(root), preferredRoot,
+                    StringComparison.OrdinalIgnoreCase));
+                roots.Insert(0, preferredRoot);
+            }
+            MusicLibraryScanResult scan = await Task.Run(() => MusicLibraryScanner.Scan(
+                roots, cancellationToken, progress: reportProgress), cancellationToken).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+
+            // If the scan hit a bound, preserve the usable previous index and merge the
+            // discoveries. A huge new folder must not make familiar tracks disappear.
+            // Removing a root excludes its paths only after a scan succeeds; cancellation
+            // therefore leaves the previous index untouched.
+            _lastScan = scan;
+            if (scan.WasLimited)
+            {
+                IEnumerable<string> retained = _library.Where(track => excludedRoots is null ||
+                    !excludedRoots.Any(root => IsWithinDirectory(root, track)));
+                _library = retained.Concat(scan.Tracks)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .Take(MaximumCachedTracks)
+                    .ToList();
+            }
+            else
+            {
+                _library = scan.Tracks.ToList();
+            }
+            _nowPlaying.TrackCount = _library.Count;
+            _lastLibraryRefresh = DateTimeOffset.UtcNow;
+            _nowPlaying.LibraryStatus = ScanStatus(scan, _library.Count);
+            LogLibraryScan(scan, roots.Count, cancelled: false);
+            return scan;
+        }
+        catch (OperationCanceledException)
+        {
+            _nowPlaying.LibraryStatus = "Scan cancelled; previous library kept";
+            LogLibraryScan(null, LibraryDirectories().Count, cancelled: true);
+            throw;
+        }
+        catch (Exception exception)
+        {
+            _nowPlaying.LibraryStatus = "Scan failed; previous library kept";
+            CompanionLog.Warning("Music", "Library scan failed; keeping the previous index.", exception);
+            IrisEvent.Log("Music", "library.scan.failed", LogLevel.Warning,
+                message: $"{exception.GetType().Name}: {exception.Message}");
+            throw;
+        }
+        finally
+        {
+            _nowPlaying.IsScanning = false;
+            _libraryScanGate.Release();
+        }
+    }
+
+    private static string ScanStatus(MusicLibraryScanResult scan, int indexedTrackCount)
+    {
+        if (scan.WasLimited)
+            return $"Partial list: {indexedTrackCount:N0} indexed tracks; reached the {scan.LimitReason}";
+        if (scan.UnavailableItems > 0)
+            return $"Ready: {scan.Tracks.Count:N0} tracks; {scan.UnavailableItems:N0} files or folders unavailable";
+        if (scan.LinksSkipped > 0)
+            return $"Ready: {scan.Tracks.Count:N0} tracks; skipped {scan.LinksSkipped:N0} linked items";
+        return $"Ready: {scan.Tracks.Count:N0} tracks";
+    }
+
+    private static string ScanLimitSuffix(MusicLibraryScanResult scan) => scan.WasLimited
+        ? $"The scan stopped at its {scan.LimitReason}; browse a smaller folder to see more."
+        : scan.UnavailableItems > 0
+            ? $"{scan.UnavailableItems:N0} files or folders could not be read."
+            : scan.LinksSkipped > 0 ? $"{scan.LinksSkipped:N0} links were skipped for safety." : string.Empty;
+
+    private static string DescribeScan(MusicLibraryScanResult scan) =>
+        $"Music library scan found {scan.Tracks.Count:N0} playable track(s) in " +
+        $"{scan.DirectoriesVisited:N0} folder(s) ({scan.Duration.TotalSeconds:0.0}s). " +
+        (scan.WasLimited ? $"Partial results: reached the {scan.LimitReason}. " : string.Empty) +
+        (scan.UnavailableItems > 0 ? $"{scan.UnavailableItems:N0} files or folders were unavailable. " : string.Empty) +
+        (scan.LinksSkipped > 0 ? $"Skipped {scan.LinksSkipped:N0} linked items for safety." : "Scan complete.");
+
+    private static string ScanSpokenSummary(MusicLibraryScanResult scan) => scan.WasLimited
+        ? $"I found {scan.Tracks.Count:N0} tracks before the scan limit. A smaller folder will help me find more."
+        : scan.UnavailableItems > 0
+            ? $"I found {scan.Tracks.Count:N0} tracks. Some files or folders were unavailable."
+            : scan.LinksSkipped > 0
+                ? $"I found {scan.Tracks.Count:N0} tracks and skipped linked folders for safety."
+                : $"I found {scan.Tracks.Count:N0} tracks.";
+
+    private static void LogLibraryScan(MusicLibraryScanResult? scan, int roots, bool cancelled)
+    {
+        bool limited = scan?.WasLimited == true;
+        IrisEvent.Log("Music", cancelled ? "library.scan.cancelled" : "library.scan.completed",
+            cancelled || limited || (scan?.UnavailableItems ?? 0) > 0 || (scan?.LinksSkipped ?? 0) > 0
+                ? LogLevel.Warning : LogLevel.Info,
+            message: cancelled ? "Scan cancelled; the previous index remains active." : scan?.LimitReason,
+            durationMs: scan?.Duration.TotalMilliseconds,
+            data: new Dictionary<string, string?>
+            {
+                ["roots"] = roots.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                ["directories"] = (scan?.DirectoriesVisited ?? 0).ToString(System.Globalization.CultureInfo.InvariantCulture),
+                ["entries"] = (scan?.EntriesVisited ?? 0).ToString(System.Globalization.CultureInfo.InvariantCulture),
+                ["tracks"] = (scan?.Tracks.Count ?? 0).ToString(System.Globalization.CultureInfo.InvariantCulture),
+                ["unavailable_items"] = (scan?.UnavailableItems ?? 0).ToString(System.Globalization.CultureInfo.InvariantCulture),
+                ["links_skipped"] = (scan?.LinksSkipped ?? 0).ToString(System.Globalization.CultureInfo.InvariantCulture),
+                ["limited"] = limited.ToString()
+            });
     }
 
     private void UpdateProgress()

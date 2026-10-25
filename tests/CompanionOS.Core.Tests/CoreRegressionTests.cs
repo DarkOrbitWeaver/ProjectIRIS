@@ -6,6 +6,7 @@ using CompanionOS.Core.Memory;
 using CompanionOS.Core.Modules;
 using CompanionOS.Core.Mind;
 using CompanionOS.Core.Voice;
+using CompanionOS.Modules;
 using System.Net;
 using System.Net.Sockets;
 using System.Diagnostics;
@@ -16,6 +17,119 @@ namespace CompanionOS.Core.Tests;
 
 public sealed class CoreRegressionTests
 {
+    [Fact]
+    public void MusicScanFindsSupportedTracksWithoutFollowingAnUnboundedTree()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"iris-music-scan-{Guid.NewGuid():N}");
+        string nested = Path.Combine(root, "Albums", "One");
+        Directory.CreateDirectory(nested);
+        try
+        {
+            File.WriteAllBytes(Path.Combine(root, "single.MP3"), Array.Empty<byte>());
+            File.WriteAllBytes(Path.Combine(nested, "deep.flac"), Array.Empty<byte>());
+            File.WriteAllBytes(Path.Combine(nested, "notes.txt"), Array.Empty<byte>());
+
+            MusicLibraryScanResult scan = MusicLibraryScanner.Scan(new[] { root, root },
+                timeBudget: TimeSpan.FromSeconds(2));
+
+            Assert.Equal(2, scan.Tracks.Count);
+            Assert.Equal(3, scan.DirectoriesVisited);
+            Assert.Contains(scan.Tracks, path => path.EndsWith("single.MP3", StringComparison.OrdinalIgnoreCase));
+            Assert.Contains(scan.Tracks, path => path.EndsWith("deep.flac", StringComparison.OrdinalIgnoreCase));
+            Assert.False(scan.WasLimited);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void MusicScanReportsTrackAndFolderLimitsInsteadOfClaimingACompleteLibrary()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"iris-music-limit-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            File.WriteAllBytes(Path.Combine(root, "a.mp3"), Array.Empty<byte>());
+            File.WriteAllBytes(Path.Combine(root, "b.wav"), Array.Empty<byte>());
+            Directory.CreateDirectory(Path.Combine(root, "one"));
+            Directory.CreateDirectory(Path.Combine(root, "two"));
+
+            MusicLibraryScanResult trackLimited = MusicLibraryScanner.Scan(new[] { root },
+                maximumTracks: 1, timeBudget: TimeSpan.FromSeconds(2));
+            MusicLibraryScanResult folderLimited = MusicLibraryScanner.Scan(new[] { root },
+                maximumDirectories: 1, timeBudget: TimeSpan.FromSeconds(2));
+
+            Assert.Single(trackLimited.Tracks);
+            Assert.True(trackLimited.WasLimited);
+            Assert.Contains("track limit", trackLimited.LimitReason);
+            Assert.Equal(1, folderLimited.DirectoriesVisited);
+            Assert.True(folderLimited.WasLimited);
+            Assert.Contains("folder limit", folderLimited.LimitReason);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void MusicScanHonorsCancellationWithoutReturningAFalseSuccess()
+    {
+        using CancellationTokenSource cancellation = new();
+        cancellation.Cancel();
+
+        Assert.Throws<OperationCanceledException>(() => MusicLibraryScanner.Scan(
+            new[] { Path.GetTempPath() }, cancellation.Token));
+    }
+
+    [Fact]
+    public void MusicScanReportsDisconnectedRootsAsUnavailable()
+    {
+        string missing = Path.Combine(Path.GetTempPath(), $"iris-missing-music-{Guid.NewGuid():N}");
+
+        MusicLibraryScanResult scan = MusicLibraryScanner.Scan(new[] { missing },
+            timeBudget: TimeSpan.FromSeconds(1));
+
+        Assert.Empty(scan.Tracks);
+        Assert.Equal(1, scan.UnavailableItems);
+        Assert.False(scan.WasLimited);
+    }
+
+    [Fact]
+    public void MusicScanBoundsEntriesRootsAndElapsedBudget()
+    {
+        string first = Path.Combine(Path.GetTempPath(), $"iris-music-bounds-a-{Guid.NewGuid():N}");
+        string second = Path.Combine(Path.GetTempPath(), $"iris-music-bounds-b-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(first);
+        Directory.CreateDirectory(second);
+        try
+        {
+            File.WriteAllBytes(Path.Combine(first, "a.mp3"), Array.Empty<byte>());
+            File.WriteAllBytes(Path.Combine(first, "b.mp3"), Array.Empty<byte>());
+
+            MusicLibraryScanResult entries = MusicLibraryScanner.Scan(new[] { first }, maximumEntries: 1,
+                timeBudget: TimeSpan.FromSeconds(1));
+            MusicLibraryScanResult roots = MusicLibraryScanner.Scan(new[] { first, second }, maximumRoots: 1,
+                timeBudget: TimeSpan.FromSeconds(1));
+            MusicLibraryScanResult time = MusicLibraryScanner.Scan(new[] { first },
+                timeBudget: TimeSpan.FromTicks(1));
+
+            Assert.True(entries.WasLimited);
+            Assert.Contains("entry limit", entries.LimitReason);
+            Assert.True(roots.WasLimited);
+            Assert.Contains("root limit", roots.LimitReason);
+            Assert.True(time.WasLimited);
+            Assert.Contains("time budget", time.LimitReason);
+        }
+        finally
+        {
+            Directory.Delete(first, recursive: true);
+            Directory.Delete(second, recursive: true);
+        }
+    }
+
     [Fact]
     public void RollingDiagnosticsStayBoundedAndKeepTheMostRecentPreviousSegment()
     {

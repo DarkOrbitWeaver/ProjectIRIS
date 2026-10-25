@@ -20,6 +20,13 @@ block, decay, consolidation, live graph view with inspector, export.
 (library search across the user's real folders, playlists), system control (timers, notes,
 app launch, machine status, file search). Nothing is ever loaded from disk at runtime.
 
+Music indexing now runs off the UI thread with cancellation and explicit limits (64 roots,
+2,000 folders, 50,000 entries, 10,000 discovered tracks, depth 24, and a 4-second cooperative
+time budget). It skips junctions/symlinks, keeps the previous playable index when a scan is
+cancelled or partial, reports partial/unavailable/link-skipped results in the player rail and diagnostics,
+and bounds folder browsing. This is a safety and responsiveness baseline; very large libraries
+still need a resumable incremental index and real-device playback validation.
+
 ## M4 — Real-time voice · done
 
 Offline Whisper or HTTP transcription, adaptive voice activity detection, wake matcher with

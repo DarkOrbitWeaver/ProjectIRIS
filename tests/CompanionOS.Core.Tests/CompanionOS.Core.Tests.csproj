@@ -13,5 +13,6 @@
 
   <ItemGroup>
     <ProjectReference Include="../../src/CompanionOS.Core/CompanionOS.Core.csproj" />
+    <ProjectReference Include="../../src/CompanionOS.Modules/CompanionOS.Modules.csproj" />
   </ItemGroup>
 </Project>
