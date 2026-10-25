@@ -95,8 +95,20 @@ The voice used for her reflex phrases is rendered once and cached per voice sign
 | Graph view empty | talk to her once, or switch away from and back to **Memory** |
 | Everything is slow | lower the context window to 8K, or switch to the Speed Runner profile |
 
-Logs: `<data>\logs\companion.log`, rotated to `companion.previous.log` once it passes 8 MB. The last 600 lines are also kept in memory so a
-diagnostics panel can show them without reading the disk.
+Logs live under `<data>\logs\` (the data root defaults to `%LOCALAPPDATA%\CompanionOS`, or
+`COMPANIONOS_HOME` when configured):
+
+| File | What it records |
+|---|---|
+| `companion.log` | Readable app, voice, module, memory, and recovery messages; rotates at 8 MB and keeps one previous segment. |
+| `iris-YYYYMMDD.jsonl` | Structured behavior events and durations, suitable for filtering or replay-oriented debugging; bounded daily segments are retained for seven days. |
+| `system-YYYYMMDD.jsonl` | Process lifecycle, UI heartbeat and stalls, plus a lightweight CPU/RAM/process snapshot at startup and every 30 seconds; bounded daily segments are retained for seven days. |
+
+Use **Diagnostics → Behavior**, **App diary**, and **OS watch** to inspect the live tails, or
+choose **Open logs folder** to collect the files. Host snapshots use in-process Windows and
+.NET counters; they do not launch a GPU probe. If the data drive is unavailable at startup,
+Iris remains usable and the in-memory OS watch records that persistent system logging could
+not be opened.
 
 ## Building by hand
 

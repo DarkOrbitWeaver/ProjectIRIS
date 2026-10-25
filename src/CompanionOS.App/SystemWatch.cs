@@ -2,6 +2,7 @@ using System;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -9,6 +10,7 @@ using Avalonia.Controls;
 using Avalonia.Threading;
 using CompanionOS.Core.Configuration;
 using CompanionOS.Core.Diagnostics;
+using CompanionOS.Core.Perception;
 
 namespace CompanionOS.App;
 
@@ -47,6 +49,9 @@ public static class SystemWatch
     private static double _syncEwmaMs;
     private static bool _stackToolWarned;
     private static RollingJsonLinesWriter? _logWriter;
+    private static readonly WindowsNative.CpuLoadSampler HostCpuSampler = new();
+    private static long _lastHostSnapshotTick;
+    private static double _lastProcessCpuMilliseconds;
 
     public static event Action<string>? LineWritten;
 
@@ -61,11 +66,21 @@ public static class SystemWatch
     /// <summary>Called once at the very top of Main, before anything else runs.</summary>
     public static void InstallStatic(string[] args)
     {
-        CompanionPaths.EnsureCreated();
-        try { _logWriter = new RollingJsonLinesWriter(CompanionPaths.LogsDirectory, "system", 8L * 1024 * 1024); }
-        catch (Exception) { /* best effort: tracing must not block startup */ }
+        try
+        {
+            CompanionPaths.EnsureCreated();
+            _logWriter = new RollingJsonLinesWriter(CompanionPaths.LogsDirectory, "system", 8L * 1024 * 1024);
+        }
+        catch (Exception exception)
+        {
+            // A blocked or full data drive should leave Iris usable, while making the loss
+            // of on-disk diagnostics visible in the in-memory OS watch.
+            Trace("diagnostics", "system log unavailable", exception.GetType().Name + ": " + exception.Message);
+        }
         Trace("life", "process start", $"pid={Environment.ProcessId} argument_count={args.Length}");
         Trace("life", $"boot.uptime_before_ui={Environment.TickCount64}ms");
+        TraceHostEnvironment();
+        RecordHostSnapshot("startup");
     }
 
     /// <summary>
@@ -199,6 +214,7 @@ public static class SystemWatch
 
     private static async Task WatchdogLoop()
     {
+        long lastSnapshot = Environment.TickCount64;
         while (true)
         {
             try
@@ -206,6 +222,12 @@ public static class SystemWatch
                 await Task.Delay(400).ConfigureAwait(false);
 
                 long now = Environment.TickCount64;
+                if (now - lastSnapshot >= 30_000)
+                {
+                    lastSnapshot = now;
+                    RecordHostSnapshot("periodic");
+                }
+
                 long last = Volatile.Read(ref _lastHeartbeat);
                 long stall = now - last;
 
@@ -231,6 +253,53 @@ public static class SystemWatch
             {
                 Trace("ui", "watchdog iteration failed", exception.Message);
             }
+        }
+    }
+
+    private static void TraceHostEnvironment()
+    {
+        try
+        {
+            string osVersion = Environment.OSVersion.Version.ToString();
+            Trace("host", "host.environment",
+                $"os={osVersion} os_arch={RuntimeInformation.OSArchitecture} " +
+                $"process_arch={RuntimeInformation.ProcessArchitecture} runtime={RuntimeInformation.FrameworkDescription} " +
+                $"logical_cpus={Environment.ProcessorCount} page_size={Environment.SystemPageSize}");
+        }
+        catch (Exception exception)
+        {
+            Trace("host", "host.environment unavailable", exception.GetType().Name + ": " + exception.Message);
+        }
+    }
+
+    /// <summary>
+    /// Captures inexpensive host pressure every 30 seconds. This uses Windows' in-process
+    /// counters and process properties; it does not launch nvidia-smi or touch the GPU.
+    /// </summary>
+    private static void RecordHostSnapshot(string reason)
+    {
+        try
+        {
+            long now = Environment.TickCount64;
+            double cpuPercent = HostCpuSampler.ReadPercent();
+            (double ramUsed, double ramTotal) = WindowsNative.ReadMemoryUsage();
+            using Process process = Process.GetCurrentProcess();
+            double processCpuMilliseconds = process.TotalProcessorTime.TotalMilliseconds;
+            long previousTick = Interlocked.Exchange(ref _lastHostSnapshotTick, now);
+            double previousCpu = Interlocked.Exchange(ref _lastProcessCpuMilliseconds, processCpuMilliseconds);
+            double elapsedMilliseconds = Math.Max(1, now - previousTick);
+            double processCpuPercent = previousTick == 0 ? 0 : Math.Clamp(
+                (processCpuMilliseconds - previousCpu) / elapsedMilliseconds / Environment.ProcessorCount * 100,
+                0, 100);
+
+            Trace("host", "host.snapshot",
+                $"reason={reason} total_cpu={cpuPercent:0.0}% ram_used_mb={ramUsed:0} ram_total_mb={ramTotal:0} " +
+                $"iris_cpu_all_cores={processCpuPercent:0.0}% iris_working_set_mb={process.WorkingSet64 / 1024d / 1024d:0} " +
+                $"iris_private_mb={process.PrivateMemorySize64 / 1024d / 1024d:0} uptime_ms={now}");
+        }
+        catch (Exception exception)
+        {
+            Trace("host", "host.snapshot unavailable", exception.GetType().Name + ": " + exception.Message);
         }
     }
 
