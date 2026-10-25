@@ -171,6 +171,36 @@ public sealed class CoreRegressionTests
     }
 
     [Fact]
+    public void PocketVoiceGalleryProfilesMatchTheConfiguredPocketEngine()
+    {
+        CompanionSettings settings = new();
+        settings.Voice.Engine = "pocket";
+        settings.Voice.CandidateVoices = new() { "alba", "anna", "eve", "mary", "vera", "estelle" };
+        using VoiceGallery gallery = new(settings);
+
+        IReadOnlyList<VoiceCandidate> candidates = gallery.DescribeCandidates();
+
+        Assert.Equal(settings.Voice.CandidateVoices, candidates.Select(candidate => candidate.VoiceId).ToArray());
+        Assert.All(candidates, candidate => Assert.Equal("pocket", candidate.Engine));
+        Assert.All(candidates, candidate => Assert.Equal(candidate.VoiceId, gallery.BuildProfile(candidate).VoiceId));
+    }
+
+    [Fact]
+    public async Task PocketTtsMissingRuntimeFailsWithoutStartingAProcess()
+    {
+        VoiceSettings settings = new()
+        {
+            Engine = "pocket",
+            PocketExecutablePath = Path.Combine(Path.GetTempPath(), $"missing-pocket-{Guid.NewGuid():N}.exe")
+        };
+        await using PocketTtsServerHost host = new(settings);
+
+        bool started = await host.StartAsync();
+
+        Assert.False(started);
+    }
+
+    [Fact]
     public void DefaultEarsUseAModerateThresholdAndTwoRecognitionThreads()
     {
         EarsSettings ears = new();
@@ -245,18 +275,21 @@ public sealed class CoreRegressionTests
         using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(60));
         Assert.True(await host.StartAsync(timeout.Token));
 
-        Stopwatch stopwatch = Stopwatch.StartNew();
-        SpeechAudio? audio = await synthesizer.SynthesizeAsync(
-            "Iris here. I found your music folder. Want me to play it?",
-            new VoiceProfile { Engine = "pocket", VoiceId = "alba" }, timeout.Token);
-        stopwatch.Stop();
+        foreach (string voiceId in new[] { "alba", "anna", "eve", "mary", "vera", "estelle" })
+        {
+            Stopwatch stopwatch = Stopwatch.StartNew();
+            SpeechAudio? audio = await synthesizer.SynthesizeAsync(
+                "Iris here. I found your music folder. Want me to play it?",
+                new VoiceProfile { Engine = "pocket", VoiceId = voiceId }, timeout.Token);
+            stopwatch.Stop();
 
-        Assert.NotNull(audio);
-        Assert.Equal("wav", audio.Format);
-        Assert.True(audio.Bytes.Length > 44);
-        Assert.Equal("RIFF", System.Text.Encoding.ASCII.GetString(audio.Bytes, 0, 4));
-        Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(5),
-            $"Warm speech request took {stopwatch.Elapsed.TotalSeconds:0.00} seconds.");
+            Assert.NotNull(audio);
+            Assert.Equal("wav", audio.Format);
+            Assert.True(audio.Bytes.Length > 44);
+            Assert.Equal("RIFF", System.Text.Encoding.ASCII.GetString(audio.Bytes, 0, 4));
+            Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(5),
+                $"Warm speech request for '{voiceId}' took {stopwatch.Elapsed.TotalSeconds:0.00} seconds.");
+        }
     }
 
     [Fact]

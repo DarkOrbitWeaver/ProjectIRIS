@@ -52,6 +52,18 @@
       "overlay": true,
       "required": false,
       "note": "CUDA runtime DLLs that go next to llama-server.exe. Merged as an overlay so it never replaces the binaries."
+    },
+    {
+      "id": "pocket-uv",
+      "kind": "github-release",
+      "repo": "astral-sh/uv",
+      "releaseTag": "0.13.5",
+      "assetPattern": "uv-x86_64-pc-windows-msvc.zip",
+      "sha256": "a38b8d1902b7cfbc76b423ba1bb456f623f42064cdc72628b6075b89afd1019a",
+      "targetName": "pocket-uv",
+      "sentinelFile": "uv.exe",
+      "required": false,
+      "note": "Pinned standalone installer for the isolated, CPU-only Pocket TTS runtime."
     }
   ]
 }

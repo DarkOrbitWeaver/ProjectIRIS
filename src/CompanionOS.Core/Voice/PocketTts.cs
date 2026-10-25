@@ -60,7 +60,8 @@ public sealed class PocketTtsServerHost : IAsyncDisposable
                 !Directory.EnumerateFiles(cacheDirectory, "model.safetensors", SearchOption.AllDirectories).Any() ||
                 !Directory.EnumerateFiles(cacheDirectory, "tokenizer.model", SearchOption.AllDirectories).Any())
             {
-                CompanionLog.Warning("Voice", $"Pocket TTS model cache is missing or incomplete: {cacheDirectory}");
+                CompanionLog.Warning("Voice",
+                    $"Pocket TTS weights are missing from {cacheDirectory}. Run scripts/setup.ps1 -Component voice to install the public preset-voice model.");
                 return false;
             }
 
@@ -82,6 +83,7 @@ public sealed class PocketTtsServerHost : IAsyncDisposable
             startInfo.ArgumentList.Add("--default-voice");
             startInfo.ArgumentList.Add(string.IsNullOrWhiteSpace(_settings.VoiceId) ? "alba" : _settings.VoiceId);
             startInfo.Environment["HF_HOME"] = cacheDirectory;
+            startInfo.Environment["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "1";
             startInfo.Environment["RAYON_NUM_THREADS"] = Math.Clamp(_settings.PocketMaxThreads, 1, 2).ToString();
 
             Process process = new() { StartInfo = startInfo, EnableRaisingEvents = true };

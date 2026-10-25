@@ -90,14 +90,15 @@ in a quiet room, noisy in a shared one.
 
 Pocket TTS is the default neural voice. Check that
 `%LOCALAPPDATA%\CompanionOS\runtimes\pocket-tts\pocket-tts.exe` and the
-`models\pocket-tts-cache` folder exist, then use **Settings → Audio → Test voice**. Iris starts
-the CPU worker during application startup; it is capped at two threads and
-does not use VRAM. If the runtime reports a missing model, the Settings notice/log gives the
-runtime path and startup error.
+`models\pocket-tts-cache` folder exist. If either is missing, run
+`powershell -ExecutionPolicy Bypass -File scripts/setup.ps1 -Component voice`. Setup installs the
+public preset-voice checkpoint; it needs no Hugging Face account or voice-cloning weights. Then
+use **Settings → Audio → Test voice**. Iris starts the CPU worker only; it is capped at two
+logical processors and does not use VRAM.
 
 The six fixed profiles are `alba`, `anna`, `eve`, `mary`, `vera`, and `estelle`. Preview one in
-**Persona → Voice**; previews render on demand. Listen to the previews before choosing, since
-the profile names alone do not guarantee a particular accent or tone.
+**Persona → Voice**; previews render on demand. The labels identify the actual Pocket speaker;
+listen before choosing because the names alone do not guarantee a particular accent or tone.
 
 An OpenAI-compatible HTTP engine remains an explicit alternative: set `Voice.Engine` to `http`
 and `Voice.HttpEndpoint` to the local server's `/v1` URL. Iris does not substitute a Windows
@@ -142,10 +143,10 @@ Each of those becomes a node with typed links, and the graph view fills as soon 
 
 ## She stays silent
 
-She has exactly one voice: the neural engine at `Voice.HttpEndpoint` in `settings.json`.
-If nothing answers there, she does not speak — there is no Windows-voice fallback by
-design, and she says so in the panel. Start the speech server and she recovers
-automatically within a minute; chat, memory and hearing are unaffected.
+She uses the engine selected by `Voice.Engine` in `settings.json`. Pocket TTS requires
+`scripts/setup.ps1 -Component voice`; an explicit HTTP engine requires its configured endpoint.
+If the selected engine is offline, Iris says so and remains usable for text chat. She retries a
+failed engine periodically; she does not substitute a Windows voice.
 
 If she cannot hear you instead, see "Her ears do not understand" above.
 

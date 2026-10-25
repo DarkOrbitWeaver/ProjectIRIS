@@ -7,7 +7,7 @@
 | Windows 10 or 11 (x64) | The senses use Win32 and Windows media sessions |
 | .NET 9 SDK | `dotnet --version` should print 9.x |
 | NVIDIA driver with `nvidia-smi` | Only used for the VRAM meter |
-| ~7 GB free disk | Brain ~2.5 GB, projector ~0.9 GB, ears ~150 MB, runtime + CUDA DLLs ~0.6 GB |
+| ~8 GB free disk for the default full setup | Brain ~2.5 GB, projector ~0.9 GB, ears ~150 MB, llama runtime, and CPU-only Pocket TTS dependencies/model |
 
 ## First run
 
@@ -21,8 +21,15 @@ Hugging Face repo through the API, so a repo that renames its quantisation does 
 setup. The llama.cpp runtime comes from the newest per-build release that actually carries
 binaries (the bare version tags ship none), and the CUDA runtime DLLs arrive as a second,
 overlaying artifact so `llama-server.exe` and its `cudart64_*.dll` unpack into the same folder.
-Use `-Component brain`, `-Component ears` or `-Component runtime`
-to fetch one piece, and `-VerifyOnly` to see what is missing.
+The voice setup keeps an existing compatible Pocket runtime. On a clean install it installs the
+pinned `uv` tool and Pocket TTS 4.0.1 in an isolated Python 3.12 environment, using CPU-only
+Windows wheels. It fetches only the public, no-cloning English 18M checkpoint and six selected
+preset-voice embeddings. No CUDA PyTorch package, voice-cloning weights, unrelated language
+weights, or Hugging Face credentials are needed.
+
+Use `-Component brain`, `-Component ears`, `-Component runtime` or `-Component voice` to fetch
+one piece, and `-VerifyOnly` to see what is missing. Setup does not start the TTS engine or load
+model weights into memory.
 
 ## Where things go
 
@@ -31,7 +38,11 @@ to fetch one piece, and `-VerifyOnly` to see what is missing.
   models\brain.gguf
   models\brain-mmproj.gguf
   models\whisper-base.bin
+  models\pocket-tts-cache\hub\models--kyutai--pocket-tts-without-voice-cloning\snapshots\...
   runtimes\llama.cpp\llama-server.exe
+  runtimes\pocket-tts\pocket-tts.exe
+  runtimes\pocket-uv\...\uv.exe
+  runtimes\python\...\python.exe
   memory\brain.db
   workspace\Music\                <-- drop your songs here
 ```
@@ -51,21 +62,21 @@ Profiles are just data in `settings.json`. A new model folder only needs a new p
 
 ## Voice
 
-Pocket TTS is the default local voice. The standalone CPU runtime is expected at
-`%LOCALAPPDATA%\CompanionOS\runtimes\pocket-tts\pocket-tts.exe`; its Hugging Face cache is
-under `%LOCALAPPDATA%\CompanionOS\models\pocket-tts-cache`. The English 18M model is selected
-for this machine, and its server is limited to two logical processors at below-normal priority.
-No GPU or Windows voice fallback is used. Pocket's weights require accepting Kyutai's Hugging Face
-conditions once; the model is cached locally afterward. The chosen voice is stored as
-`Voice.VoiceId`; the six bundled profile IDs are `alba`, `anna`, `eve`, `mary`, `vera`, and
-`estelle`.
+Pocket TTS is the default local voice. `scripts/setup.ps1 -Component voice` installs the
+supported runtime and downloads the selected model/profile set; it is not present until this
+step succeeds. The English 18M model runs on CPU with a two-logical-processor ceiling and
+below-normal priority. No GPU or Windows voice fallback is used. If Hugging Face access was not
+completed, setup reports that and the app remains usable through text while voice is offline.
+The chosen voice is stored as `Voice.VoiceId`; the six bundled IDs are `alba`, `anna`, `eve`,
+`mary`, `vera`, and `estelle`.
 
 An explicitly configured OpenAI-compatible server remains supported by setting
 `Voice.Engine` to `http` and `Voice.HttpEndpoint` to its `/v1` base URL. If the selected engine is
-unavailable, Iris stays silent and reports the problem.
+unavailable, Iris stays silent and reports the problem. Voice previews and spoken replies require
+successful Pocket setup or an explicitly configured HTTP engine.
 
-Pocket TTS is by Kyutai Labs. Its runtime code is MIT-licensed and its model weights are
-[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) with the model's [use conditions](https://huggingface.co/kyutai/pocket-tts).
+Pocket TTS is by Kyutai Labs. Its runtime code is MIT-licensed. This setup uses the public,
+no-cloning checkpoint and its [CC BY 4.0 model card](https://huggingface.co/kyutai/pocket-tts-without-voice-cloning).
 The weights are kept in the local data directory, not bundled into the source tree.
 
 The voice used for her reflex phrases is rendered once and cached per voice signature, so

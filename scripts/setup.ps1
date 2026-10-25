@@ -15,7 +15,7 @@
                       binaries (brand tags) are skipped automatically
 
 .PARAMETER Component
-    all, brain, runtime, ears or tools. Defaults to all.
+    all, brain, runtime, ears or voice. Defaults to all.
 
 .PARAMETER Force
     Re-download even when the file already exists.
@@ -28,7 +28,7 @@
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('all', 'brain', 'runtime', 'ears')]
+    [ValidateSet('all', 'brain', 'runtime', 'ears', 'voice')]
     [string]$Component = 'all',
     [switch]$Force,
     [switch]$VerifyOnly
@@ -81,13 +81,20 @@ function Resolve-HuggingFaceFile {
 }
 
 function Save-Download {
-    param([string]$Url, [string]$Destination, [string]$Label)
+    param([string]$Url, [string]$Destination, [string]$Label, [string]$Sha256)
 
     Write-Host "  downloading $Label" -ForegroundColor Cyan
     $temporaryPath = "$Destination.part"
     if (Test-Path $temporaryPath) { Remove-Item $temporaryPath -Force }
 
     Invoke-WebRequest -Uri $Url -OutFile $temporaryPath -UseBasicParsing
+    if ($Sha256) {
+        $actualHash = (Get-FileHash -LiteralPath $temporaryPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($actualHash -ne $Sha256.ToLowerInvariant()) {
+            Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue
+            throw "SHA-256 verification failed for $Label."
+        }
+    }
     Move-Item -Path $temporaryPath -Destination $Destination -Force
 
     $sizeMb = [math]::Round((Get-Item $Destination).Length / 1MB, 1)
@@ -95,12 +102,18 @@ function Save-Download {
 }
 
 function Get-ReleaseAssetUrl {
-    param([string]$Repo, [string]$Pattern, [string]$FallbackPattern)
+    param([string]$Repo, [string]$Pattern, [string]$FallbackPattern, [string]$ReleaseTag)
 
     # Some releases carry no binaries at all (brand tags such as v0.7.0); the actual
     # builds land on the newest per-build tags. Walk the newest releases and use the
     # first one that actually contains what the manifest asks for.
-    $releases = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases?per_page=15" -UseBasicParsing
+    $releaseUri = if ($ReleaseTag) {
+        "https://api.github.com/repos/$Repo/releases/tags/$ReleaseTag"
+    } else {
+        "https://api.github.com/repos/$Repo/releases?per_page=15"
+    }
+    $releases = Invoke-RestMethod -Uri $releaseUri -UseBasicParsing
+    if ($ReleaseTag) { $releases = @($releases) }
     foreach ($release in $releases) {
         $asset = $release.assets | Where-Object { $_.name -like $Pattern } | Select-Object -First 1
 
@@ -125,9 +138,17 @@ foreach ($artifact in $manifest.artifacts) {
         brain   = @('brain', 'brain-vision')
         ears    = @('ears')
         runtime = @('runtime', 'runtime-cuda')
+        voice   = @('pocket-uv')
     }
 
     if ($Component -ne 'all' -and $componentArtifacts[$Component] -notcontains $artifact.id) {
+        continue
+    }
+
+    if ($artifact.id -eq 'pocket-uv' -and -not $Force -and
+        (Test-Path (Join-Path $runtimeDir 'pocket-tts\pocket-tts.exe'))) {
+        Write-Host '  present: compatible Pocket TTS runtime; keeping the existing installation' -ForegroundColor DarkGray
+        $results += [pscustomobject]@{ Artifact = $artifact.id; Status = 'present' }
         continue
     }
 
@@ -145,7 +166,7 @@ foreach ($artifact in $manifest.artifacts) {
     $isPresent =
         if ($artifact.sentinelFile) {
             $artifactFolder = Join-Path $targetDirectory $artifact.targetName
-            Get-ChildItem -Path $artifactFolder -Filter $artifact.sentinelFile -ErrorAction SilentlyContinue |
+            Get-ChildItem -Path $artifactFolder -Filter $artifact.sentinelFile -File -Recurse -ErrorAction SilentlyContinue |
                 Select-Object -First 1 -ErrorAction SilentlyContinue
         } else {
             Test-Path $targetPath
@@ -177,9 +198,9 @@ foreach ($artifact in $manifest.artifacts) {
 
             'github-release' {
                 $releaseAsset = Get-ReleaseAssetUrl -Repo $artifact.repo -Pattern $artifact.assetPattern `
-                    -FallbackPattern $artifact.fallbackAssetPattern
+                    -FallbackPattern $artifact.fallbackAssetPattern -ReleaseTag $artifact.releaseTag
                 $zipPath = Join-Path $env:TEMP $releaseAsset.Name
-                Save-Download -Url $releaseAsset.Url -Destination $zipPath -Label $releaseAsset.Name
+                Save-Download -Url $releaseAsset.Url -Destination $zipPath -Label $releaseAsset.Name -Sha256 $artifact.sha256
 
                 $extractPath = Join-Path $runtimeDir $artifact.targetName
                 if (-not $artifact.overlay) {
@@ -203,6 +224,71 @@ foreach ($artifact in $manifest.artifacts) {
     }
 }
 
+$voiceRequested = $Component -in @('all', 'voice')
+if ($voiceRequested) {
+    $voiceRuntimeDir = Join-Path $runtimeDir 'pocket-tts'
+    $voiceModelDir = Join-Path $modelsDir 'pocket-tts-cache'
+    $voiceExecutable = Join-Path $voiceRuntimeDir 'pocket-tts.exe'
+    $pocketPython = Join-Path $voiceRuntimeDir 'tools\pocket-tts\Scripts\python.exe'
+    $voiceRuntimePresent = Test-Path $voiceExecutable
+    $voiceRequiredFiles = @('model.safetensors', 'tokenizer.model', 'alba.safetensors', 'anna.safetensors',
+        'eve.safetensors', 'mary.safetensors', 'vera.safetensors', 'estelle.safetensors')
+    $voiceMissingFiles = @()
+    foreach ($requiredFile in $voiceRequiredFiles) {
+        if (-not (Get-ChildItem -Path $voiceModelDir -Filter $requiredFile -File -Recurse -ErrorAction SilentlyContinue |
+                Select-Object -First 1)) {
+            $voiceMissingFiles += $requiredFile
+        }
+    }
+    $voiceModelPresent = $voiceMissingFiles.Count -eq 0
+
+    if ($VerifyOnly) {
+        $results += [pscustomobject]@{ Artifact = 'pocket-tts-runtime'; Status = if ($voiceRuntimePresent) { 'present' } else { 'missing or incomplete' } }
+        $modelStatus = if ($voiceModelPresent) { 'present' } else { "missing: $($voiceMissingFiles -join ', ')" }
+        $results += [pscustomobject]@{ Artifact = 'pocket-tts-model'; Status = $modelStatus }
+    } else {
+        try {
+            New-Item -ItemType Directory -Force -Path $voiceRuntimeDir, $voiceModelDir | Out-Null
+            $env:UV_CACHE_DIR = Join-Path $dataRoot 'cache\uv'
+            $env:UV_TOOL_DIR = Join-Path $voiceRuntimeDir 'tools'
+            $env:UV_TOOL_BIN_DIR = $voiceRuntimeDir
+            $env:UV_PYTHON_INSTALL_DIR = Join-Path $runtimeDir 'python'
+            $env:HF_HOME = $voiceModelDir
+
+            if (-not $voiceRuntimePresent -or $Force) {
+                $uvFolder = Join-Path $runtimeDir 'pocket-uv'
+                $uvExecutable = Get-ChildItem -Path $uvFolder -Filter 'uv.exe' -File -Recurse -ErrorAction SilentlyContinue |
+                    Select-Object -First 1 -ExpandProperty FullName
+                if (-not $uvExecutable) { throw 'The pinned uv.exe installer is missing. Rerun setup with -Component voice.' }
+
+                Write-Host '  installing Pocket TTS 4.0.1 and its Python 3.12 CPU dependencies (no CUDA packages)' -ForegroundColor Cyan
+                & $uvExecutable tool install --python 3.12 --force 'pocket-tts==4.0.1'
+                if ($LASTEXITCODE -ne 0) { throw "Pocket TTS installation failed (uv exit $LASTEXITCODE)." }
+                if (-not (Test-Path $pocketPython)) { throw 'Pocket TTS installed, but its managed Python environment is incomplete.' }
+            } else {
+                Write-Host '  present: compatible Pocket TTS runtime; keeping the existing installation' -ForegroundColor DarkGray
+            }
+
+            if (-not $voiceModelPresent -or $Force) {
+                if (-not (Test-Path $pocketPython)) {
+                    throw 'The existing Pocket runtime is present, but its model cache is incomplete. Rerun setup with -Component voice -Force to provision the managed model installer.'
+                }
+                $prepareScript = Join-Path $PSScriptRoot 'prepare-pocket-tts.py'
+                & $pocketPython $prepareScript
+                if ($LASTEXITCODE -ne 0) { throw "Pocket TTS model download failed (python exit $LASTEXITCODE). Check network access and rerun setup." }
+                $results += [pscustomobject]@{ Artifact = 'pocket-tts-model'; Status = 'downloaded or verified' }
+            } else {
+                $results += [pscustomobject]@{ Artifact = 'pocket-tts-model'; Status = 'present' }
+            }
+            $results += [pscustomobject]@{ Artifact = 'pocket-tts-runtime'; Status = if (Test-Path $voiceExecutable) { 'present' } else { 'failed' } }
+        }
+        catch {
+            Write-Host "  failed: Pocket TTS setup — $($_.Exception.Message)" -ForegroundColor Red
+            $results += [pscustomobject]@{ Artifact = 'pocket-tts-runtime'; Status = 'failed' }
+        }
+    }
+}
+
 Write-Host ''
 Write-Host '  Summary' -ForegroundColor Magenta
 $results | Format-Table -AutoSize | Out-String | Write-Host
@@ -214,7 +300,7 @@ if ($missingRequired) {
 
 Write-Host ''
 Write-Host '  Next steps:' -ForegroundColor Magenta
-Write-Host '    1. Neural voice: Pocket TTS is managed locally by Iris (CPU only, capped to two logical processors).'
-Write-Host '       Runtime and model cache live under %LOCALAPPDATA%\CompanionOS\runtimes and models.'
+Write-Host '    1. Voice: Pocket TTS preset voices use the public no-cloning checkpoint; setup downloads only its English model and six selected voices.'
+Write-Host '       The runtime and model cache live under %LOCALAPPDATA%\CompanionOS\runtimes and models.'
 Write-Host '    2. Start her:  powershell -ExecutionPolicy Bypass -File scripts/run.ps1'
 Write-Host ''
