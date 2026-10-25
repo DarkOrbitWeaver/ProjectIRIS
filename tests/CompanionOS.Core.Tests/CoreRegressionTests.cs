@@ -18,6 +18,44 @@ namespace CompanionOS.Core.Tests;
 
 public sealed class CoreRegressionTests
 {
+    [Theory]
+    [InlineData("IRIS", true, "")]
+    [InlineData("Hey, Iris!", true, "")]
+    [InlineData("YO IRIS, play the next song", true, "play the next song")]
+    [InlineData("Hey irys find that folder", true, "find that folder")]
+    [InlineData("Iris's add this to my playlist", true, "add this to my playlist")]
+    [InlineData("hey there", false, "")]
+    [InlineData("Actually can you please Iris play music", false, "")]
+    public void WakeMatcherRespondsToCallsAndKeepsTheCommandWithoutWakingOnUnrelatedSpeech(
+        string transcript, bool expectedMatch, string expectedRemainder)
+    {
+        WakePhraseMatcher matcher = new(new Persona());
+
+        bool matched = matcher.TryMatch(transcript, out string remainder);
+
+        Assert.Equal(expectedMatch, matched);
+        Assert.Equal(expectedRemainder, remainder);
+    }
+
+    [Fact]
+    public void WakeMatcherUsesTheUpdatedPersonaNameAndGreetingList()
+    {
+        Persona persona = new() { WakeName = "Nova", GreetingWords = new List<string> { "salutations" } };
+        WakePhraseMatcher matcher = new(persona);
+
+        Assert.False(matcher.TryMatch("Iris play music", out _));
+        Assert.True(matcher.TryMatch("Nova, play music", out string request));
+        Assert.Equal("play music", request);
+
+        persona.WakeName = "Mira";
+        persona.GreetingWords = new List<string> { "greetings" };
+        matcher.Refresh(persona);
+
+        Assert.False(matcher.TryMatch("Nova play music", out _));
+        Assert.True(matcher.TryMatch("greetings Mira", out string greeting));
+        Assert.Empty(greeting);
+    }
+
     [Fact]
     public void MusicScanFindsSupportedTracksWithoutFollowingAnUnboundedTree()
     {
