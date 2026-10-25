@@ -1,0 +1,329 @@
+using System.Net.Http.Headers;
+using System.Text;
+using System.Text.Json;
+using CompanionOS.Core.Configuration;
+using CompanionOS.Core.Diagnostics;
+using Whisper.net;
+
+namespace CompanionOS.Core.Voice;
+
+/// <summary>Anything that can turn recorded speech into text.</summary>
+public interface ISpeechRecognizer : IDisposable
+{
+    /// <summary>"whisper" or "http", used in logs and diagnostics.</summary>
+    string EngineName { get; }
+
+    /// <summary>False when the model or server is missing.</summary>
+    bool IsAvailable { get; }
+
+    /// <summary>Transcribes 16 kHz mono float samples. Returns empty text when nothing was said.</summary>
+    Task<string> TranscribeAsync(float[] samples, CancellationToken cancellationToken);
+}
+
+/// <summary>
+/// Offline speech recognition through Whisper.net, which runs whisper.cpp locally on
+/// the CPU. This is the default ear: no server, no network, no GPU cost.
+///
+/// The model file is downloaded once by scripts/setup.ps1. If it is missing the
+/// recogniser reports itself unavailable instead of failing at the first sentence.
+/// </summary>
+public sealed class WhisperNetRecognizer : ISpeechRecognizer
+{
+    private readonly string _modelPath;
+    private readonly string _language;
+    private readonly int _threadCount;
+    private readonly object _factoryLock = new();
+    private WhisperFactory? _factory;
+
+    public WhisperNetRecognizer(string modelPath, string language, int configuredThreads = 0)
+    {
+        _modelPath = modelPath;
+        _language = language;
+        _threadCount = ResolveThreadCount(configuredThreads);
+    }
+
+    /// <summary>
+    /// How many cores transcription is allowed to touch.
+    ///
+    /// Why this matters more than it looks: whisper.cpp saturates every thread it is
+    /// given, and a game that loses cores to a background transcription drops frames.
+    /// Two threads is the default: responsive on the target mid-range CPU while leaving
+    /// most of the machine for foreground applications and games. An explicit setting
+    /// can raise this to four when the owner prefers speed over headroom.
+    /// </summary>
+    public int ThreadCount => _threadCount;
+
+    private static int ResolveThreadCount(int configuredThreads)
+    {
+        int cores = Math.Max(2, Environment.ProcessorCount);
+        if (configuredThreads > 0)
+        {
+            return Math.Clamp(configuredThreads, 1, Math.Min(4, cores));
+        }
+
+        return Math.Clamp(2, 1, Math.Min(4, cores));
+    }
+
+    public string EngineName => "whisper";
+
+    public bool IsAvailable => File.Exists(_modelPath);
+
+    public async Task<string> TranscribeAsync(float[] samples, CancellationToken cancellationToken)
+    {
+        if (samples.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        try
+        {
+            WhisperFactory factory = GetOrCreateFactory();
+            WhisperProcessorBuilder builder = factory.CreateBuilder().WithThreads(_threadCount);
+
+            if (!string.IsNullOrWhiteSpace(_language) &&
+                !_language.Equals("auto", StringComparison.OrdinalIgnoreCase))
+            {
+                builder = builder.WithLanguage(_language);
+            }
+
+            using WhisperProcessor processor = builder.Build();
+
+            StringBuilder transcript = new();
+
+            // Best effort: ask the operating system to treat this work as less urgent
+            // than whatever is in the foreground. The thread cap above is the real
+            // guarantee; this only decides who wins when the two compete for a core.
+            ThreadPriority previousPriority = ThreadPriority.Normal;
+            bool priorityLowered = TryLowerPriority(ref previousPriority);
+
+            try
+            {
+                await foreach (SegmentData segment in processor.ProcessAsync(samples, cancellationToken))
+                {
+                    if (!string.IsNullOrWhiteSpace(segment.Text))
+                    {
+                        transcript.Append(segment.Text.Trim()).Append(' ');
+                    }
+                }
+            }
+            finally
+            {
+                if (priorityLowered)
+                {
+                    RestorePriority(previousPriority);
+                }
+            }
+
+            return transcript.ToString().Trim();
+        }
+        catch (OperationCanceledException)
+        {
+            return string.Empty;
+        }
+        catch (Exception exception)
+        {
+            CompanionLog.Warning("Voice", $"Whisper could not transcribe: {exception.Message}");
+            return string.Empty;
+        }
+    }
+
+    public void Dispose()
+    {
+        lock (_factoryLock)
+        {
+            _factory?.Dispose();
+            _factory = null;
+        }
+    }
+
+    /// <summary>
+    /// Drops the calling thread's priority for the duration of a transcription.
+    /// Returns false when the runtime refuses to change it, which is not an error:
+    /// thread-pool threads are allowed to say no, and the cap still applies.
+    /// </summary>
+    private static bool TryLowerPriority(ref ThreadPriority previousPriority)
+    {
+        try
+        {
+            Thread currentThread = Thread.CurrentThread;
+            previousPriority = currentThread.Priority;
+            if (previousPriority <= ThreadPriority.BelowNormal)
+            {
+                return false;
+            }
+
+            currentThread.Priority = ThreadPriority.BelowNormal;
+            return true;
+        }
+        catch (Exception exception)
+        {
+            // ThreadStateException on a stopped thread, or a host that forbids it.
+            CompanionLog.Trace("Voice", $"Could not lower the transcription thread priority: {exception.Message}");
+            return false;
+        }
+    }
+
+    private static void RestorePriority(ThreadPriority previousPriority)
+    {
+        try
+        {
+            Thread.CurrentThread.Priority = previousPriority;
+        }
+        catch (Exception exception)
+        {
+            CompanionLog.Trace("Voice", $"Could not restore the thread priority: {exception.Message}");
+        }
+    }
+
+    private WhisperFactory GetOrCreateFactory()
+    {
+        lock (_factoryLock)
+        {
+            // Loading the model takes a moment, so it is done once and kept.
+            _factory ??= WhisperFactory.FromPath(_modelPath);
+            return _factory;
+        }
+    }
+}
+
+/// <summary>
+/// Speech recognition through a local OpenAI-compatible transcription server.
+/// Useful when the user already runs whisper.cpp's server or a speech gateway,
+/// and it keeps the desktop app free of native model files.
+/// </summary>
+public sealed class HttpSpeechRecognizer : ISpeechRecognizer
+{
+    private readonly EarsSettings _settings;
+    private readonly HttpClient _httpClient;
+
+    public HttpSpeechRecognizer(EarsSettings settings)
+    {
+        _settings = settings;
+        _httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
+    }
+
+    public string EngineName => "http";
+
+    public bool IsAvailable => !string.IsNullOrWhiteSpace(_settings.HttpEndpoint);
+
+    public async Task<string> TranscribeAsync(float[] samples, CancellationToken cancellationToken)
+    {
+        if (samples.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        try
+        {
+            byte[] waveBytes = PcmWavWriter.ToWaveBytes(samples, 16000);
+
+            using MultipartFormDataContent form = new();
+            form.Add(new StringContent(_settings.HttpModel), "model");
+            form.Add(new StringContent("json"), "response_format");
+            if (!string.IsNullOrWhiteSpace(_settings.Language) &&
+                !_settings.Language.Equals("auto", StringComparison.OrdinalIgnoreCase))
+            {
+                form.Add(new StringContent(_settings.Language), "language");
+            }
+
+            ByteArrayContent audioContent = new(waveBytes);
+            audioContent.Headers.ContentType = new MediaTypeHeaderValue("audio/wav");
+            form.Add(audioContent, "file", "speech.wav");
+
+            using HttpRequestMessage request = new(HttpMethod.Post,
+                _settings.HttpEndpoint.TrimEnd('/') + "/audio/transcriptions");
+            request.Content = form;
+            if (!string.IsNullOrWhiteSpace(_settings.ApiKey))
+            {
+                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _settings.ApiKey);
+            }
+
+            using HttpResponseMessage response = await _httpClient
+                .SendAsync(request, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                CompanionLog.Warning("Voice", $"Transcription server answered {(int)response.StatusCode}.");
+                return string.Empty;
+            }
+
+            string json = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            using JsonDocument document = JsonDocument.Parse(json);
+            return document.RootElement.TryGetProperty("text", out JsonElement textElement)
+                ? (textElement.GetString() ?? string.Empty).Trim()
+                : string.Empty;
+        }
+        catch (OperationCanceledException)
+        {
+            return string.Empty;
+        }
+        catch (Exception exception)
+        {
+            CompanionLog.Warning("Voice", $"Transcription request failed: {exception.Message}");
+            return string.Empty;
+        }
+    }
+
+    public void Dispose() => _httpClient.Dispose();
+}
+
+/// <summary>
+/// Turns float samples into a standard 16-bit WAV file in memory.
+/// Small enough to live here, and it removes a dependency on a WAV library.
+/// </summary>
+public static class PcmWavWriter
+{
+    public static byte[] ToWaveBytes(float[] samples, int sampleRate, int channelCount = 1)
+    {
+        int byteRate = sampleRate * channelCount * 2;
+        int dataLength = samples.Length * 2;
+
+        using MemoryStream stream = new(44 + dataLength);
+        using BinaryWriter writer = new(stream, Encoding.ASCII, leaveOpen: true);
+
+        writer.Write(Encoding.ASCII.GetBytes("RIFF"));
+        writer.Write(36 + dataLength);
+        writer.Write(Encoding.ASCII.GetBytes("WAVE"));
+        writer.Write(Encoding.ASCII.GetBytes("fmt "));
+        writer.Write(16);
+        writer.Write((short)1);
+        writer.Write((short)channelCount);
+        writer.Write(sampleRate);
+        writer.Write(byteRate);
+        writer.Write((short)(channelCount * 2));
+        writer.Write((short)16);
+        writer.Write(Encoding.ASCII.GetBytes("data"));
+        writer.Write(dataLength);
+
+        foreach (float sample in samples)
+        {
+            short value = (short)Math.Clamp((int)(sample * 32767f), short.MinValue, short.MaxValue);
+            writer.Write(value);
+        }
+
+        writer.Flush();
+        return stream.ToArray();
+    }
+}
+
+/// <summary>
+/// The recogniser she has while her ears are deliberately shut.
+///
+/// It exists so the rest of the system never has to ask "are the ears off?" before
+/// calling Transcribe: it simply reports itself unavailable and returns nothing. That
+/// keeps every caller honest and keeps a null check out of the audio path.
+/// </summary>
+public sealed class SuspendedRecognizer : ISpeechRecognizer
+{
+    public string EngineName => "suspended";
+
+    public bool IsAvailable => false;
+
+    public Task<string> TranscribeAsync(float[] samples, CancellationToken cancellationToken) =>
+        Task.FromResult(string.Empty);
+
+    public void Dispose()
+    {
+    }
+}

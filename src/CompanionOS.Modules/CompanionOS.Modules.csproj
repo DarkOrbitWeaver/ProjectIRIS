@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    The first-party body parts: her own music player, the YouTube finder, system control.
+    They live in their own assembly on purpose — it proves the module contract works from
+    outside the Core, exactly the way a third-party plugin would use it.
+  -->
+  <PropertyGroup>
+    <RootNamespace>CompanionOS.Modules</RootNamespace>
+    <AssemblyName>CompanionOS.Modules</AssemblyName>
+    <OutputType>Library</OutputType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../CompanionOS.Core/CompanionOS.Core.csproj" />
+  </ItemGroup>
+</Project>

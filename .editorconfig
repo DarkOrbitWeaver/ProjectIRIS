@@ -1,0 +1,27 @@
+# CompanionOS code style — deliberately strict about the things that keep a codebase readable.
+root = true
+
+[*]
+charset = utf-8
+end_of_line = crlf
+insert_final_newline = true
+indent_style = space
+indent_size = 4
+trim_trailing_whitespace = true
+
+[*.{csproj,props,targets,json,axaml,md,ps1}]
+indent_size = 2
+
+[*.cs]
+# Self-reading names are the rule; short ones are discouraged by review, not by the compiler.
+dotnet_naming_rule.private_fields_underscore.severity = suggestion
+dotnet_naming_symbols.private_fields.applicable_kinds = field
+dotnet_naming_symbols.private_fields.applicable_accessibilities = private
+dotnet_naming_style.underscore_camel.capitalization = camel_case
+dotnet_naming_style.underscore_camel.required_prefix = _
+dotnet_naming_rule.private_fields_underscore.symbols = private_fields
+dotnet_naming_rule.private_fields_underscore.style = underscore_camel
+dotnet_style_qualification_for_field = false
+dotnet_style_qualification_for_property = false
+csharp_style_var_when_type_is_apparent = true
+csharp_style_namespace_declarations = file_scoped

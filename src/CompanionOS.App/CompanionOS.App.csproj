@@ -1,0 +1,39 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <RootNamespace>CompanionOS.App</RootNamespace>
+    <AssemblyName>CompanionOS</AssemblyName>
+    <BuiltInComInteropSupport>true</BuiltInComInteropSupport>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets/iris.ico</ApplicationIcon>
+    <AvaloniaUseCompiledBindingsByDefault>false</AvaloniaUseCompiledBindingsByDefault>
+    <TrimMode>copyused</TrimMode>
+  </PropertyGroup>
+
+  <!--
+    The tray icon lives here as a real .ico rather than something drawn at start-up.
+    It is the only image asset in the project: her face in the notification area, shown
+    when she is asleep and nothing else of her is running.
+  -->
+  <ItemGroup>
+    <AvaloniaResource Include="Assets/**" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Avalonia" Version="11.2.3" />
+    <PackageReference Include="Avalonia.Desktop" Version="11.2.3" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="11.2.3" />
+    <PackageReference Include="Avalonia.Diagnostics" Version="11.2.3" Condition="'$(Configuration)' == 'Debug'" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../CompanionOS.Core/CompanionOS.Core.csproj" />
+    <ProjectReference Include="../CompanionOS.Modules/CompanionOS.Modules.csproj" />
+  </ItemGroup>
+
+  <!-- Documentation travels with the build so the zip is self-explaining. -->
+  <ItemGroup>
+    <None Include="../../README.md" Link="docs/README.md" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../docs/BUILD-AND-RUN.md" Link="docs/BUILD-AND-RUN.md" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

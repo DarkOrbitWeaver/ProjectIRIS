@@ -1,0 +1,36 @@
+<Application xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="CompanionOS.App.App"
+             RequestedThemeVariant="Dark">
+  <!--
+    The only XAML in the project, on purpose.
+
+    Fluent provides the behaviour (scrolling, input, text editing, keyboard navigation) and
+    every visual decision lives in Interface/Theme/Palette.cs so the design can be changed in
+    one file. The two styles below exist because Fluent's default input colours come from its
+    own theme dictionary rather than from the control's Background property, so they have to
+    be set once here to match the palette.
+  -->
+  <Application.Styles>
+    <FluentTheme />
+
+    <Style Selector="TextBox">
+      <Setter Property="Background" Value="#101624" />
+      <Setter Property="Foreground" Value="#E8ECF4" />
+      <Setter Property="BorderBrush" Value="#232D42" />
+      <Setter Property="CaretBrush" Value="#7C6CFF" />
+      <Setter Property="SelectionBrush" Value="#3B3568" />
+      <Setter Property="Padding" Value="12,8" />
+      <Setter Property="MinHeight" Value="34" />
+    </Style>
+
+    <Style Selector="Button">
+      <Setter Property="CornerRadius" Value="10" />
+      <Setter Property="FontFamily" Value="Segoe UI, Inter, Noto Sans, sans-serif" />
+    </Style>
+
+    <Style Selector="ScrollBar">
+      <Setter Property="Background" Value="Transparent" />
+    </Style>
+  </Application.Styles>
+</Application>

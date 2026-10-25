@@ -1,0 +1,39 @@
+# Build output
+bin/
+obj/
+verify-bin/
+verify-bin*/
+**/verify-bin*/
+*.user
+*.suo
+.vs/
+.idea/
+.vscode/
+.freebuff/
+
+# Downloaded models, voices and runtimes — these are fetched by scripts/setup.ps1,
+# they are gigabytes wide, and they must never be committed.
+models/
+runtimes/
+*.gguf
+*.onnx
+*.bin
+*.pt
+*.safetensors
+
+# Local data (only exists if someone points COMPANIONOS_HOME inside the repo)
+data/
+data-*/
+*.db
+*.db-wal
+*.db-shm
+*.jsonl
+
+# OS noise
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# Publish output
+publish/
+artifacts/

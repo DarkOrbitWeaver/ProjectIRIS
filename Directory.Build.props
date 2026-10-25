@@ -1,0 +1,31 @@
+<Project>
+  <!--
+    One place for every project's build reality.
+
+    The Windows 10 target is required, not cosmetic: she reads the Windows media session
+    (what is playing right now) and that API only exists in the Windows SDK projection.
+    Auto-detect DPI, long paths and per-monitor scaling come along with it.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net9.0-windows10.0.19041.0</TargetFramework>
+    <SupportedOSPlatformVersion>10.0.19041.0</SupportedOSPlatformVersion>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
+
+    <Company>CompanionOS</Company>
+    <Product>CompanionOS</Product>
+    <Version>0.1.0</Version>
+    <AssemblyVersion>0.1.0.0</AssemblyVersion>
+    <FileVersion>0.1.0.0</FileVersion>
+
+    <!-- Warnings are information, not failure: a first-run build should not die on a
+         nullable annotation in a corner that nobody runs. We keep them visible instead. -->
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <WarningLevel>5</WarningLevel>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <ProduceReferenceAssembly>false</ProduceReferenceAssembly>
+  </PropertyGroup>
+</Project>

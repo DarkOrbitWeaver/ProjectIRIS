@@ -1,0 +1,57 @@
+{
+  "//": "What scripts/setup.ps1 downloads. Nothing here is a machine path.",
+  "//2": "Files land in <data>/models and <data>/runtimes with these exact names, which match the default settings.",
+  "schemaVersion": 1,
+  "artifacts": [
+    {
+      "id": "brain",
+      "kind": "huggingface",
+      "repo": "Qwen/Qwen3-VL-4B-Instruct-GGUF",
+      "filePattern": "*Q4_K_M*.gguf",
+      "excludePattern": "*mmproj*",
+      "targetName": "brain.gguf",
+      "required": true,
+      "note": "The thinking layer. Text + vision, about 2.5 GB at Q4_K_M."
+    },
+    {
+      "id": "brain-vision",
+      "kind": "huggingface",
+      "repo": "Qwen/Qwen3-VL-4B-Instruct-GGUF",
+      "filePattern": "*mmproj*.gguf",
+      "excludePattern": "",
+      "targetName": "brain-mmproj.gguf",
+      "required": false,
+      "note": "Vision projector. Without it she runs text-only."
+    },
+    {
+      "id": "ears",
+      "kind": "url",
+      "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin",
+      "targetName": "whisper-base.bin",
+      "required": true,
+      "note": "Offline speech recognition, roughly 150 MB. Runs on the CPU."
+    },
+    {
+      "id": "runtime",
+      "kind": "github-release",
+      "repo": "ggml-org/llama.cpp",
+      "assetPattern": "llama-*-bin-win-cuda-13.4-x64.zip",
+      "fallbackAssetPattern": "llama-*-bin-win-vulkan-x64.zip",
+      "targetName": "llama.cpp",
+      "sentinelFile": "llama-server.exe",
+      "required": true,
+      "note": "llama-server, the process that hosts her brain. CUDA 13.4 for this machine; Vulkan build needs no CUDA DLLs at all."
+    },
+    {
+      "id": "runtime-cuda",
+      "kind": "github-release",
+      "repo": "ggml-org/llama.cpp",
+      "assetPattern": "cudart-llama-bin-win-cuda-13.4-x64.zip",
+      "targetName": "llama.cpp",
+      "sentinelFile": "cudart*.dll",
+      "overlay": true,
+      "required": false,
+      "note": "CUDA runtime DLLs that go next to llama-server.exe. Merged as an overlay so it never replaces the binaries."
+    }
+  ]
+}
