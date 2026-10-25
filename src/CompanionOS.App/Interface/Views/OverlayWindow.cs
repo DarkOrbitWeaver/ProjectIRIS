@@ -27,17 +27,17 @@ namespace CompanionOS.App.Interface.Views;
 /// screen, must never remove her from your desk. It is driven by the same ShellModel as
 /// the main window, so orb state and levels are identical in both places.
 ///
-/// Hover is read from the whole window, not from the orb cell, and the window is only
-/// resized around a fixed screen edge. That combination is what makes the reveal usable:
+/// Hover is read from the whole window, not from the orb cell. A 5 px transparent inset
+/// leaves room for the called-state contour, and the window resizes around a fixed edge.
+/// That combination is what makes the reveal usable:
 /// expanding never slides the pill out from under the pointer, and leaving it collapses
 /// after a short grace period instead of flickering. The window is shown without
 /// activation so opening the overlay never steals focus from a game.
 /// </summary>
 public sealed class OverlayWindow : Window
 {
-    // The board's pill arithmetic, in DIPs. The window is exactly as wide as its content,
-    // so the pill can never overflow its own frame (the old fixed 62 px clipped both the
-    // dot and the three buttons).
+    // The board's pill arithmetic, in DIPs. The border remains 44 px tall; transparent
+    // space around it gives the attention halo room without clipping the pill's contents.
     private const double PillHeight = 44;
     private const double OrbSize = 22;
     private const double DotSize = 6;
@@ -49,6 +49,7 @@ public sealed class OverlayWindow : Window
     private const double EqualizerGap = 3;
     private const double OrbitOnlyPadding = 15;
     private const double Hairline = 1;
+    private const double AttentionAuraInset = 5;
 
     private const double CompactWidth = (Hairline * 2) + PadLeft + OrbSize + Gap + DotSize + PadRight;
     private const double ButtonsWidth = CompactWidth + Gap + (ButtonSize * 3);
@@ -65,6 +66,7 @@ public sealed class OverlayWindow : Window
     private readonly StackPanel _buttonsHost;
     private readonly StackPanel _equalizerHost;
     private readonly Border _pill;
+    private readonly AttentionContour _attentionContour = new() { IsHitTestVisible = false };
     private readonly DispatcherTimer _syncTimer;
     private readonly DispatcherTimer _collapseTimer;
     private readonly MusicOverlayWindow _musicOverlay;
@@ -104,7 +106,7 @@ public sealed class OverlayWindow : Window
         ShowActivated = false;
         CanResize = false;
         WindowStartupLocation = WindowStartupLocation.Manual;
-        Height = PillHeight;
+        Height = PillHeight + (AttentionAuraInset * 2);
 
         _dot = new Border
         {
@@ -166,6 +168,10 @@ public sealed class OverlayWindow : Window
 
         _pill = new Border
         {
+            Width = FixedWidth(PillShape.Compact),
+            Height = PillHeight,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
             Background = new SolidColorBrush(Palette.Elevated, 0.92),
             BorderBrush = Palette.StrokeBrush,
             BorderThickness = new Thickness(Hairline),
@@ -175,8 +181,11 @@ public sealed class OverlayWindow : Window
             Child = row
         };
 
-        Content = _pill;
-        Width = CompactWidth;
+        Grid overlaySurface = new() { ClipToBounds = false };
+        overlaySurface.Children.Add(_pill);
+        overlaySurface.Children.Add(_attentionContour);
+        Content = overlaySurface;
+        Width = WindowWidth(PillShape.Compact);
 
         // Apply the resting shape before the first paint. Previously the construction
         // width was the compact one while both button and equalizer hosts still had their
@@ -360,7 +369,7 @@ public sealed class OverlayWindow : Window
         return bars;
     }
 
-    /// <summary>The fixed width a shape needs; the window is exactly as wide as its pill.</summary>
+    /// <summary>The fixed width a shape needs; the pill morphs without reshuffling its contents.</summary>
     private static double FixedWidth(PillShape shape) => shape switch
     {
         // 16 left padding + orb 22 + gap 10 + dot 6 + 8 right padding + 2 hairline = 64.
@@ -373,6 +382,8 @@ public sealed class OverlayWindow : Window
         PillShape.OrbOnly => OrbOnlyWidth,
         _ => ButtonsWidth
     };
+
+    private static double WindowWidth(PillShape shape) => FixedWidth(shape) + (AttentionAuraInset * 2);
 
     /// <summary>
     /// Where she lives: a pixel corner remembered from dragging wins; otherwise the
@@ -437,7 +448,7 @@ public sealed class OverlayWindow : Window
 
     private int PixelWidth() => Math.Max(1, (int)Math.Ceiling((Width > 0 ? Width : CompactWidth) * Scaling));
 
-    private int PixelHeight() => Math.Max(1, (int)Math.Ceiling(PillHeight * Scaling));
+    private int PixelHeight() => Math.Max(1, (int)Math.Ceiling(Height * Scaling));
 
     private void Sync()
     {
@@ -465,6 +476,12 @@ public sealed class OverlayWindow : Window
         bool dim = _model.Runtime.Settings.Current.Interface.DimWhileGaming &&
                    state == MindState.Gaming;
         _pill.Opacity = dim ? 0.4 : 1.0;
+        _attentionContour.Update(
+            DateTimeOffset.Now < _attentionUntil,
+            state,
+            _model.MicrophoneLevel,
+            _model.SpeechLevel,
+            _model.Runtime.Settings.Current.Interface.ReduceMotion);
 
         SyncMusicOverlay();
         SyncTimerOverlay();
@@ -696,7 +713,8 @@ public sealed class OverlayWindow : Window
             ? new Thickness(OrbitOnlyPadding, 0, OrbitOnlyPadding, 0)
             : new Thickness(PadLeft, 0, PadRight, 0);
 
-        Width = FixedWidth(shape);
+        Width = WindowWidth(shape);
+        _pill.Width = FixedWidth(shape);
 
         if (initial || !_hasPosition || !IsVisible || Math.Abs(oldWidth - Width) < 0.1)
         {
@@ -734,5 +752,123 @@ public sealed class OverlayWindow : Window
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// A restrained, state-colored current around the pill while Iris has been called.
+    /// Its line breathes with the live mic/speech envelope and uses only a few dozen
+    /// points at the existing 10 Hz overlay cadence, so the effect stays cheap.
+    /// </summary>
+    private sealed class AttentionContour : Control
+    {
+        private bool _active;
+        private MindState _state;
+        private double _microphoneLevel;
+        private double _speechLevel;
+        private bool _reduceMotion;
+
+        public void Update(bool active, MindState state, double microphoneLevel, double speechLevel,
+            bool reduceMotion)
+        {
+            bool needsFrame = active || _active;
+            _active = active;
+            _state = state;
+            _microphoneLevel = Math.Clamp(microphoneLevel, 0, 1);
+            _speechLevel = Math.Clamp(speechLevel, 0, 1);
+            _reduceMotion = reduceMotion;
+            if (needsFrame)
+            {
+                InvalidateVisual();
+            }
+        }
+
+        public override void Render(DrawingContext context)
+        {
+            base.Render(context);
+            if (!_active || Bounds.Width <= AttentionAuraInset * 2 ||
+                Bounds.Height <= AttentionAuraInset * 2)
+            {
+                return;
+            }
+
+            Color color = StatusOrb.ColorForState(_state);
+            double level = _state == MindState.Listening ? _microphoneLevel
+                : _state == MindState.Speaking ? _speechLevel : 0;
+            double seconds = _reduceMotion ? 0 : Environment.TickCount64 / 1000d;
+            double amplitude = _reduceMotion ? 0 : 0.55 + level * 0.9;
+            StreamGeometry contour = BuildContour(Bounds.Width, Bounds.Height, seconds, amplitude);
+
+            // The wider low-alpha stroke is a soft, non-blurred halo approximation;
+            // the crisp hairline keeps the state readable at small overlay sizes.
+            context.DrawGeometry(null,
+                new Pen(new SolidColorBrush(color, 0.13 + level * 0.05), 7), contour);
+            context.DrawGeometry(null,
+                new Pen(new SolidColorBrush(color, 0.42 + level * 0.24), 1.15), contour);
+        }
+
+        private static StreamGeometry BuildContour(double width, double height, double seconds, double amplitude)
+        {
+            double left = AttentionAuraInset;
+            double right = width - AttentionAuraInset;
+            double top = AttentionAuraInset;
+            double bottom = height - AttentionAuraInset;
+            double radius = Math.Max(1, (bottom - top) / 2);
+            double straight = Math.Max(0, right - left - (2 * radius));
+            double arc = Math.PI * radius;
+            double perimeter = Math.Max(1, (2 * straight) + (2 * arc));
+            const int samples = 88;
+
+            Point PointAt(double distance, out Vector normal)
+            {
+                distance %= perimeter;
+                if (distance < straight)
+                {
+                    normal = new Vector(0, -1);
+                    return new Point(left + radius + distance, top);
+                }
+
+                distance -= straight;
+                if (distance < arc)
+                {
+                    double angle = -Math.PI / 2 + distance / radius;
+                    normal = new Vector(Math.Cos(angle), Math.Sin(angle));
+                    return new Point(right - radius + (normal.X * radius), top + radius + (normal.Y * radius));
+                }
+
+                distance -= arc;
+                if (distance < straight)
+                {
+                    normal = new Vector(0, 1);
+                    return new Point(right - radius - distance, bottom);
+                }
+
+                distance -= straight;
+                double leftAngle = Math.PI / 2 + distance / radius;
+                normal = new Vector(Math.Cos(leftAngle), Math.Sin(leftAngle));
+                return new Point(left + radius + (normal.X * radius), top + radius + (normal.Y * radius));
+            }
+
+            StreamGeometry geometry = new();
+            using StreamGeometryContext builder = geometry.Open();
+            for (int index = 0; index < samples; index++)
+            {
+                double distance = perimeter * index / samples;
+                Point point = PointAt(distance, out Vector normal);
+                double wave = Math.Sin(distance * 0.075 - seconds * 3.4) * amplitude +
+                              Math.Sin(distance * 0.14 + seconds * 2.1) * amplitude * 0.28;
+                point += normal * wave;
+                if (index == 0)
+                {
+                    builder.BeginFigure(point, isFilled: false);
+                }
+                else
+                {
+                    builder.LineTo(point);
+                }
+            }
+
+            builder.EndFigure(isClosed: true);
+            return geometry;
+        }
     }
 }

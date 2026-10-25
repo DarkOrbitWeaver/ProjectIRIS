@@ -273,6 +273,11 @@ must stop or suspend the owning work and visibly settle every dependent componen
   when needed; each can be hidden/minimized independently, and users can control visibility.
   Improve on the reference when that makes the component easier to use. Overlay position, edge
   snapping, monitor changes, z-order, focus, and persistence work.
+- Calling Iris causes a short, smooth transition on that same pill: a dim state-colored glow and
+  fine wave trace make Listening visible immediately, follow the real microphone/speech signal,
+  then shift consistently through Thinking and Speaking. This must remain low-cost, non-focus-
+  stealing, legible over games, and static when Reduce Motion is enabled; it must not cover the
+  screen or compete with task overlays.
 - Chat handles long conversations, code/text, multiline input, scroll anchoring, cancellation,
   errors, and streaming at the 980×640 minimum. The sidebar, bottom status strip, and page content
   do not collide or stretch incorrectly.

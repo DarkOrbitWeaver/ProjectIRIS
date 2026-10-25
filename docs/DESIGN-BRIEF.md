@@ -254,6 +254,13 @@ New design — **capability poster, not a list:**
 - Hover → expands right to reveal: Open / Sleep / Close (three 32px ghost icon buttons).
 - Position: bottom-right default, 24px inset; draggable; position persists.
 - In Gaming state the pill dims to 40% opacity until spoken to.
+- When the user calls Iris, the pill makes one calm transition into an attention surface: a
+  low-opacity, state-colored halo and fine traveling contour appear around its edge while the
+  existing orb changes to Listening. The contour follows the microphone envelope gently, shifts
+  to the same violet/speech colors as she thinks and talks, and settles back to the quiet pill
+  when the attention window ends. This is a border treatment on the existing overlay, not a
+  second assistant window or a full-screen tint. Keep it legible over a game without taking
+  focus; `ReduceMotion` freezes the contour while preserving a static state outline.
 
 ### 5.8 Tray
 
@@ -293,6 +300,7 @@ Max 2 stacked. No colored left-bars; state = icon color only.
 | Button hover | background tint 120ms; active: scale 0.98, 80ms |
 | Focus | 2px accent ring, instant (never animated — keyboard needs it NOW) |
 | Overlay pill reveal | 220ms width easeOutQuart |
+| Called / listening attention | low-alpha state-colored halo; fine, low-amplitude contour wave; follows the real mic/speech level and respects Reduce Motion |
 
 Rule: anything that moves without informing state gets deleted.
 
