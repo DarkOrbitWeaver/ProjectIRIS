@@ -213,6 +213,23 @@ public sealed class CoreRegressionTests
     }
 
     [Fact]
+    public void MicrophoneSignalAssessmentDoesNotCallSilenceOrDisconnectAHealthyTest()
+    {
+        VoiceDiagnosticResult noDevice = MicrophoneSignalAssessment.Evaluate("USB microphone", false, 0.2);
+        VoiceDiagnosticResult silent = MicrophoneSignalAssessment.Evaluate("USB microphone", true, 0.001);
+        VoiceDiagnosticResult speaking = MicrophoneSignalAssessment.Evaluate("USB microphone", true, 0.04);
+        VoiceDiagnosticResult invalid = MicrophoneSignalAssessment.Evaluate("USB microphone", true, double.NaN);
+
+        Assert.False(noDevice.Succeeded);
+        Assert.Contains("did not keep", noDevice.Detail);
+        Assert.False(silent.Succeeded);
+        Assert.Contains("no clear input signal", silent.Detail);
+        Assert.True(speaking.Succeeded);
+        Assert.Contains("RMS level", speaking.Detail);
+        Assert.False(invalid.Succeeded);
+    }
+
+    [Fact]
     public void FormerDefaultHttpVoiceMigratesToPocketAndRequiresVoiceConfirmation()
     {
         string previousRoot = CompanionPaths.Root;

@@ -40,3 +40,31 @@ public sealed class VoiceDiagnosticResult
     public required bool Succeeded { get; init; }
     public required string Detail { get; init; }
 }
+
+/// <summary>Turns a short live microphone measurement into an honest diagnostic result.</summary>
+public static class MicrophoneSignalAssessment
+{
+    public const double MinimumRmsLevel = 0.01;
+
+    public static VoiceDiagnosticResult Evaluate(string deviceName, bool captureOpen, double rmsLevel)
+    {
+        if (!captureOpen)
+        {
+            return new VoiceDiagnosticResult
+            {
+                Succeeded = false,
+                Detail = $"Windows did not keep {deviceName} open. Reconnect it or choose another input."
+            };
+        }
+
+        bool signalDetected = double.IsFinite(rmsLevel) && rmsLevel >= MinimumRmsLevel;
+        string signal = signalDetected
+            ? $"Input signal detected (RMS level {rmsLevel:P0})."
+            : "The device opened, but no clear input signal was detected. Speak toward the mic and check its Windows input level.";
+        return new VoiceDiagnosticResult
+        {
+            Succeeded = signalDetected,
+            Detail = $"Windows opened {deviceName}. {signal} No audio was saved or transcribed."
+        };
+    }
+}

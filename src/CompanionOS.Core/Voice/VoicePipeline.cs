@@ -32,7 +32,7 @@ public sealed class VoicePipeline : IAsyncDisposable
     private int _silenceMilliseconds;
     private double _noiseFloor = 0.004;
     private int _microphoneDiagnosticActive;
-    private long _microphoneDiagnosticPeakBits;
+    private long _microphoneDiagnosticRmsBits;
     private DateTimeOffset _nextVoiceReprobe = DateTimeOffset.MinValue;
     private DateTimeOffset _conversationOpenUntil = DateTimeOffset.MinValue;
     private DateTimeOffset _lastLevelPublished = DateTimeOffset.MinValue;
@@ -166,73 +166,103 @@ public sealed class VoicePipeline : IAsyncDisposable
     }
 
     /// <summary>
-    /// Opens the selected microphone briefly only when it is currently closed. Samples stay in
-    /// memory for the callback and only the peak level is retained; the diagnostic never feeds
-    /// them into speech recognition.
+    /// Measures the selected microphone briefly, whether it was already open or not. Samples
+    /// stay in memory for the callback and only the loudness is retained; the diagnostic never
+    /// feeds them into speech recognition.
     /// </summary>
     public async Task<VoiceDiagnosticResult> TestMicrophoneAsync(CancellationToken cancellationToken = default)
     {
+        long started = System.Diagnostics.Stopwatch.GetTimestamp();
         VoiceReadiness readiness = GetReadiness();
         if (!readiness.IsMicrophoneConfigured)
         {
-            return new VoiceDiagnosticResult { Succeeded = false, Detail = readiness.MicrophoneDetail };
-        }
-
-        if (IsListening)
-        {
-            return new VoiceDiagnosticResult
+            VoiceDiagnosticResult unavailable = new()
             {
-                Succeeded = true,
-                Detail = "Microphone is already open. Speak normally; the live path is active."
+                Succeeded = false,
+                Detail = readiness.MicrophoneDetail
             };
+            LogMicrophoneTest(unavailable, readiness.MicrophoneDetail, captureOpen: false,
+                rmsLevel: 0, started);
+            return unavailable;
         }
 
         if (AreEarsSuspended)
         {
-            return new VoiceDiagnosticResult
+            VoiceDiagnosticResult suspended = new()
             {
                 Succeeded = false,
                 Detail = "Ears are suspended by Gaming or Sleep Mode. Resume Iris before testing the microphone."
             };
+            LogMicrophoneTest(suspended, readiness.MicrophoneDetail, captureOpen: false,
+                rmsLevel: 0, started);
+            return suspended;
         }
 
-        Interlocked.Exchange(ref _microphoneDiagnosticPeakBits, BitConverter.DoubleToInt64Bits(0));
-        Interlocked.Exchange(ref _microphoneDiagnosticActive, 1);
-        bool opened = _microphone.Start(_settings.Current.Ears.InputDeviceNumber);
+        if (Interlocked.CompareExchange(ref _microphoneDiagnosticActive, 1, 0) != 0)
+        {
+            VoiceDiagnosticResult alreadyRunning = new()
+            {
+                Succeeded = false,
+                Detail = "A microphone test is already running. Wait for it to finish before testing again."
+            };
+            LogMicrophoneTest(alreadyRunning, readiness.MicrophoneDetail, _microphone.IsCapturing,
+                rmsLevel: 0, started);
+            return alreadyRunning;
+        }
+
+        bool alreadyOpen = _microphone.IsCapturing;
+        Interlocked.Exchange(ref _microphoneDiagnosticRmsBits, BitConverter.DoubleToInt64Bits(0));
+        bool opened = alreadyOpen || _microphone.Start(_settings.Current.Ears.InputDeviceNumber);
         if (!opened)
         {
             Interlocked.Exchange(ref _microphoneDiagnosticActive, 0);
-            return new VoiceDiagnosticResult
-            {
-                Succeeded = false,
-                Detail = "Windows could not open the selected microphone. Reconnect it or choose another input."
-            };
+            VoiceDiagnosticResult couldNotOpen = MicrophoneSignalAssessment.Evaluate(
+                readiness.MicrophoneDetail, captureOpen: false, rmsLevel: 0);
+            LogMicrophoneTest(couldNotOpen, readiness.MicrophoneDetail, captureOpen: false,
+                rmsLevel: 0, started);
+            return couldNotOpen;
         }
 
         try
         {
             await Task.Delay(TimeSpan.FromMilliseconds(1200), cancellationToken).ConfigureAwait(false);
-            double peak = BitConverter.Int64BitsToDouble(
-                Interlocked.Read(ref _microphoneDiagnosticPeakBits));
-            bool signalDetected = peak >= 0.01;
-            string signal = signalDetected
-                ? $"Input signal detected (peak level {peak:P0})."
-                : "The device opened, but the input was quiet. Speak toward the mic and check its Windows input level.";
-            return new VoiceDiagnosticResult
-            {
-                Succeeded = signalDetected,
-                Detail = $"Windows opened {readiness.MicrophoneDetail}. {signal} No audio was saved or transcribed."
-            };
+            double rmsLevel = BitConverter.Int64BitsToDouble(
+                Interlocked.Read(ref _microphoneDiagnosticRmsBits));
+            bool captureStillOpen = _microphone.IsCapturing;
+            VoiceDiagnosticResult result = MicrophoneSignalAssessment.Evaluate(
+                readiness.MicrophoneDetail, captureStillOpen, rmsLevel);
+            LogMicrophoneTest(result, readiness.MicrophoneDetail, captureStillOpen, rmsLevel, started);
+            return result;
         }
         catch (OperationCanceledException)
         {
-            return new VoiceDiagnosticResult { Succeeded = false, Detail = "Microphone test cancelled." };
+            VoiceDiagnosticResult cancelled = new() { Succeeded = false, Detail = "Microphone test cancelled." };
+            LogMicrophoneTest(cancelled, readiness.MicrophoneDetail, _microphone.IsCapturing,
+                BitConverter.Int64BitsToDouble(Interlocked.Read(ref _microphoneDiagnosticRmsBits)), started);
+            return cancelled;
         }
         finally
         {
-            _microphone.Stop();
+            if (!alreadyOpen)
+            {
+                _microphone.Stop();
+            }
             Interlocked.Exchange(ref _microphoneDiagnosticActive, 0);
         }
+    }
+
+    private static void LogMicrophoneTest(VoiceDiagnosticResult result, string deviceName,
+        bool captureOpen, double rmsLevel, long started)
+    {
+        IrisEvent.Log("Voice", "microphone.test", result.Succeeded ? LogLevel.Info : LogLevel.Warning,
+            result.Detail, System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds,
+            new Dictionary<string, string?>
+            {
+                ["device"] = deviceName,
+                ["capture_open"] = captureOpen.ToString(),
+                ["rms"] = double.IsFinite(rmsLevel) ? rmsLevel.ToString("0.0000", System.Globalization.CultureInfo.InvariantCulture) : "invalid",
+                ["success"] = result.Succeeded.ToString()
+            });
     }
 
     /// <summary>
@@ -728,9 +758,9 @@ public sealed class VoicePipeline : IAsyncDisposable
             long candidate = BitConverter.DoubleToInt64Bits(level);
             while (true)
             {
-                long current = Interlocked.Read(ref _microphoneDiagnosticPeakBits);
+                long current = Interlocked.Read(ref _microphoneDiagnosticRmsBits);
                 if (level <= BitConverter.Int64BitsToDouble(current) ||
-                    Interlocked.CompareExchange(ref _microphoneDiagnosticPeakBits, candidate, current) == current)
+                    Interlocked.CompareExchange(ref _microphoneDiagnosticRmsBits, candidate, current) == current)
                 {
                     break;
                 }
