@@ -6,6 +6,7 @@ using CompanionOS.Core.Memory;
 using CompanionOS.Core.Modules;
 using CompanionOS.Core.Mind;
 using CompanionOS.Core.Voice;
+using CompanionOS.Core.Modules.BuiltIn;
 using CompanionOS.Modules;
 using System.Net;
 using System.Net.Sockets;
@@ -128,6 +129,28 @@ public sealed class CoreRegressionTests
             Directory.Delete(first, recursive: true);
             Directory.Delete(second, recursive: true);
         }
+    }
+
+    [Fact]
+    public void MusicPermissionDescriptionsNameTheResolvedFolderAndDoNotEchoControlCharacters()
+    {
+        using MusicPlayerModule module = new();
+        ModuleTool browseTool = module.Tools.Single(tool => tool.Name == "browse_music_folder");
+        ModuleTool addTool = module.Tools.Single(tool => tool.Name == "add_music_folder");
+        using JsonDocument browseArguments = JsonDocument.Parse("{\"path\":\"Downloads\\\\New Music\"}");
+        using JsonDocument addArguments = JsonDocument.Parse("{\"path\":\"C:\\\\Music\\n'quoted'\"}");
+
+        string browseDescription = module.DescribeAction(browseTool, browseArguments.RootElement);
+        string addDescription = module.DescribeAction(addTool, addArguments.RootElement);
+        string downloads = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            "Downloads", "New Music");
+
+        Assert.Contains(downloads, browseDescription, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("read-only", browseDescription);
+        Assert.Contains("C:\\Music", addDescription);
+        Assert.DoesNotContain('\n', addDescription);
+        Assert.DoesNotContain("'quoted'", addDescription);
+        Assert.Contains("no source files will be changed", addDescription);
     }
 
     [Fact]

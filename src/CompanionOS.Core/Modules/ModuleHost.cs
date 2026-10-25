@@ -327,7 +327,7 @@ public sealed class ModuleHost : IAsyncDisposable
         });
 
         bool isAllowed = await _sandbox
-            .AuthorizeAsync(owner.Id, owner.DisplayName, tool, DescribeAction(owner, tool), cancellationToken)
+            .AuthorizeAsync(owner.Id, owner.DisplayName, tool, DescribeAction(owner, tool, arguments), cancellationToken)
             .ConfigureAwait(false);
 
         if (!isAllowed)
@@ -458,8 +458,23 @@ public sealed class ModuleHost : IAsyncDisposable
         CacheDirectory = CompanionPaths.CacheDirectory
     };
 
-    private static string DescribeAction(IAssistantModule module, ModuleTool tool) =>
-        $"{module.DisplayName} wants to {tool.Description.TrimEnd('.').ToLowerInvariant()}.";
+    private static string DescribeAction(IAssistantModule module, ModuleTool tool, JsonElement arguments)
+    {
+        string action = tool.Description.TrimEnd('.').ToLowerInvariant();
+        if (module is IModuleActionDescriber describer)
+        {
+            try
+            {
+                action = describer.DescribeAction(tool, arguments);
+            }
+            catch (Exception exception)
+            {
+                CompanionLog.Warning("Modules", $"'{module.Id}' could not describe a permission target: {exception.Message}");
+            }
+        }
+
+        return $"{module.DisplayName} wants to {action.Trim().TrimEnd('.')}.";
+    }
 
     private void PublishToolFinished(string turnId, IAssistantModule owner, ModuleTool tool, ToolResult result)
     {

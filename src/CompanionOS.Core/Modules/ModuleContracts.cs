@@ -301,6 +301,15 @@ public interface IModuleSurfaceProvider
 }
 
 /// <summary>
+/// Optional module hook for permission prompts whose target depends on tool arguments
+/// or module state. The returned text is a verb phrase; ModuleHost adds the module name.
+/// </summary>
+public interface IModuleActionDescriber
+{
+    string DescribeAction(ModuleTool tool, JsonElement arguments);
+}
+
+/// <summary>
 /// The memory abilities modules are allowed to use. Keeping this small on purpose:
 /// modules may remember and recall, but only the memory engine may rewrite the graph.
 /// </summary>

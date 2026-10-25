@@ -72,7 +72,7 @@ public sealed class NowPlayingModel : ObservableObject
 /// a tier-1 reflex: music must never need permission, and it must keep working while
 /// her thinking brain is unloaded.
 /// </summary>
-public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider, IDisposable
+public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider, IModuleActionDescriber, IDisposable
 {
     private const int MaximumCachedTracks = MusicLibraryScanner.DefaultMaximumTracks * 2;
     private const int MaximumBrowseFolders = 40;
@@ -360,6 +360,39 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
         }
     };
 
+    public string DescribeAction(ModuleTool tool, JsonElement arguments)
+    {
+        string requestedPath = arguments.ValueKind == JsonValueKind.Object &&
+                               arguments.TryGetProperty("path", out JsonElement pathValue)
+            ? pathValue.ValueKind == JsonValueKind.String ? pathValue.GetString() ?? string.Empty : pathValue.ToString()
+            : string.Empty;
+        string target = tool.Name switch
+        {
+            "browse_music_folder" => ResolveBrowseDirectory(requestedPath),
+            "add_music_folder" => string.IsNullOrWhiteSpace(requestedPath)
+                ? _browseDirectory
+                : ExpandDirectory(requestedPath),
+            "remove_music_folder" => ExpandDirectory(requestedPath),
+            _ => string.Empty
+        };
+        string safeTarget = SanitizePermissionTarget(target);
+
+        return tool.Name switch
+        {
+            "browse_music_folder" => $"read the folder names and supported-audio count inside '{safeTarget}' (read-only)",
+            "add_music_folder" => $"add '{safeTarget}' to the music library and index its audio files; no source files will be changed",
+            "remove_music_folder" => $"stop indexing '{safeTarget}' in the music library; no files will be deleted",
+            _ => tool.Description.TrimEnd('.').ToLowerInvariant()
+        };
+    }
+
+    private static string SanitizePermissionTarget(string path)
+    {
+        char[] safe = path.Where(character => !char.IsControl(character) && character != '\'')
+            .Take(240).ToArray();
+        return safe.Length == 0 ? "the selected music folder" : new string(safe);
+    }
+
     public Task ShutdownAsync()
     {
         _moduleLifetime.Cancel();
@@ -563,15 +596,15 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
             return knownFolder;
         }
 
-        string absoluteOrRelative = ExpandDirectory(request);
-        if (Path.IsPathRooted(request) || Directory.Exists(absoluteOrRelative))
+        string expandedRequest = Environment.ExpandEnvironmentVariables(request);
+        if (Path.IsPathRooted(expandedRequest) || expandedRequest.StartsWith('~'))
         {
-            return absoluteOrRelative;
+            return ExpandDirectory(expandedRequest);
         }
 
         try
         {
-            return Path.GetFullPath(Path.Combine(_browseDirectory, request));
+            return Path.GetFullPath(Path.Combine(_browseDirectory, expandedRequest));
         }
         catch
         {
