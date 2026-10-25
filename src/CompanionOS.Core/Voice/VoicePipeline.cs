@@ -826,7 +826,8 @@ public sealed class VoicePipeline : IAsyncDisposable
                 });
 
             _events.Publish(new TranscriptEvent { Text = transcript, IsFinal = true, IsUser = true });
-            CompanionLog.Info("Voice", $"Heard: {transcript}");
+            // Speech text belongs in the visible conversation, not persistent diagnostics.
+            CompanionLog.Info("Voice", $"Recognized speech ({transcript.Length} characters; transcript kept in conversation only).");
 
             EarsSettings ears = _settings.Current.Ears;
             bool conversationOpen = IsConversationOpen;

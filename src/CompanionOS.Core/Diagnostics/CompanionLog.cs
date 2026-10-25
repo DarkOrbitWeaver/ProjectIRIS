@@ -47,6 +47,7 @@ public static class CompanionLog
     private static readonly Queue<LogEntry> Entries = new();
     private static LogLevel _minimumLevel = LogLevel.Info;
     private static string _logFilePath = string.Empty;
+    private static string _logDirectory = string.Empty;
 
     /// <summary>Raised for every line that passes the level filter. UI subscribes to this.</summary>
     public static event Action<LogEntry>? EntryWritten;
@@ -61,7 +62,7 @@ public static class CompanionLog
         lock (WriteGate) { _minimumLevel = level; }
     }
 
-    /// <summary>Points the log at a folder and rotates yesterday's file if it grew too large.</summary>
+    /// <summary>Points the log at a folder. The active file is bounded while the app is running.</summary>
     public static void Configure(string directory)
     {
         IrisEvent.Configure(directory);
@@ -69,15 +70,12 @@ public static class CompanionLog
         {
             Directory.CreateDirectory(directory);
             string path = Path.Combine(directory, "companion.log");
-
-            if (File.Exists(path) && new FileInfo(path).Length > MaxFileBytes)
+            string previous = Path.Combine(directory, "companion.previous.log");
+            if (File.Exists(previous) && new FileInfo(previous).Length > MaxFileBytes)
             {
-                string previous = Path.Combine(directory, "companion.previous.log");
                 File.Delete(previous);
-                File.Move(path, previous);
             }
-
-            lock (WriteGate) { _logFilePath = path; }
+            lock (WriteGate) { _logDirectory = Path.GetFullPath(directory); _logFilePath = path; }
         }
         catch (Exception failure)
         {
@@ -134,7 +132,7 @@ public static class CompanionLog
             {
                 try
                 {
-                    File.AppendAllText(_logFilePath, entry.Format() + Environment.NewLine);
+                    AppendBounded(entry.Format());
                 }
                 catch (IOException)
                 {
@@ -155,5 +153,33 @@ public static class CompanionLog
             // A broken UI listener must never take the brain down with it.
             System.Diagnostics.Debug.WriteLine($"Log listener failed: {listenerFailure.Message}");
         }
+    }
+
+    private static void AppendBounded(string text)
+    {
+        byte[] bytes = System.Text.Encoding.UTF8.GetBytes(text + Environment.NewLine);
+        if (bytes.LongLength > MaxFileBytes)
+        {
+            bytes = System.Text.Encoding.UTF8.GetBytes(text[..Math.Min(text.Length, 4096)] + " [truncated]" + Environment.NewLine);
+        }
+
+        FileInfo active = new(_logFilePath);
+        if (active.Exists && active.Length > 0 && active.Length + bytes.LongLength > MaxFileBytes)
+        {
+            string previous = Path.Combine(_logDirectory, "companion.previous.log");
+            if (active.Length <= MaxFileBytes)
+            {
+                File.Move(_logFilePath, previous, overwrite: true);
+            }
+            else
+            {
+                // Drop oversized legacy/corrupt history instead of preserving an unbounded file.
+                File.Delete(_logFilePath);
+                if (File.Exists(previous)) File.Delete(previous);
+            }
+        }
+
+        using FileStream stream = new(_logFilePath, FileMode.Append, FileAccess.Write, FileShare.ReadWrite);
+        stream.Write(bytes);
     }
 }

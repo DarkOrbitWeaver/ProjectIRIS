@@ -31,17 +31,22 @@ public sealed class DiagnosticsView : UserControl
 
     private readonly TextBox _filter = Ui.Input("Filter by area, event or text");
     private readonly ToggleButton _pauseButton;
-    private readonly ItemsControl _rows = new();
+    private readonly ItemsControl _eventRows = new();
+    private readonly ItemsControl _diaryRows = new();
+    private readonly ItemsControl _systemRows = new();
     private bool _isPaused;
     private string _filterText = string.Empty;
 
     // Truth, newest first. Plain data only; the list sorts itself out when it rebinds.
-    private readonly List<DiagnosticsEntry> _entries = new();
+    private readonly List<DiagnosticsEntry> _eventEntries = new();
+    private readonly List<DiagnosticsEntry> _diaryEntries = new();
+    private readonly List<DiagnosticsEntry> _systemEntries = new();
 
     public DiagnosticsView()
     {
         IrisEvent.EventLogged += OnEventLogged;
         CompanionLog.EntryWritten += OnEntryWritten;
+        SystemWatch.LineWritten += OnSystemLineWritten;
 
         _filter.TextChanged += (_, _) =>
         {
@@ -59,7 +64,7 @@ public sealed class DiagnosticsView : UserControl
         };
         _pauseButton.IsCheckedChanged += (_, _) => _isPaused = _pauseButton.IsChecked == true;
 
-        Button openFile = Ui.GhostButton("Open on disk", OpenOnDisk);
+        Button openFile = Ui.GhostButton("Open logs folder", OpenOnDisk);
 
         StackPanel header = new() { Spacing = Palette.SpaceSm };
 
@@ -68,7 +73,7 @@ public sealed class DiagnosticsView : UserControl
             FontWeight.SemiBold, wrap: false);
         title.LineHeight = 34;
 
-        TextBlock caption = Ui.Text("EVERYTHING SHE DID · NEWEST FIRST · NOTHING SAMPLED AWAY",
+        TextBlock caption = Ui.Text("BEHAVIOR · APP DIARY · WINDOWS WATCH",
             Palette.FontCaption, Palette.TextSecondaryBrush, FontWeight.Medium, wrap: false);
         caption.LineHeight = 16;
         caption.LetterSpacing = 0.88;
@@ -89,15 +94,19 @@ public sealed class DiagnosticsView : UserControl
         header.Children.Add(titleBlock);
         header.Children.Add(bar);
         header.Children.Add(Ui.Caption(
-            "Events are one JSON line each, stored daily under her home. " +
-            "Every action, step and failure is there."));
+            "Live diagnostics for Iris behavior, readable app logs and Windows responsiveness. " +
+            "Detailed files are stored in her local log folder."));
 
-        _rows.ItemTemplate = new FuncDataTemplate<DiagnosticsEntry>((entry, _) =>
+        FuncDataTemplate<DiagnosticsEntry> rowTemplate = new((entry, _) =>
             entry is null ? null : RowControl(entry));
+        _eventRows.ItemTemplate = rowTemplate;
+        _diaryRows.ItemTemplate = rowTemplate;
+        _systemRows.ItemTemplate = rowTemplate;
 
-        TabItem eventsTab = new() { Header = "Events", Content = WrapList() };
-        TabItem logTab = new() { Header = "Diary", Content = Ui.Caption("The readable diary mirrors the events above.") };
-        TabControl tabs = new() { Items = { eventsTab, logTab } };
+        TabItem eventsTab = new() { Header = "Behavior", Content = WrapList(_eventRows) };
+        TabItem logTab = new() { Header = "App diary", Content = WrapList(_diaryRows) };
+        TabItem systemTab = new() { Header = "OS watch", Content = WrapList(_systemRows) };
+        TabControl tabs = new() { Items = { eventsTab, logTab, systemTab } };
 
         StackPanel stack = new() { Spacing = Palette.SpaceMd, Margin = new Thickness(Palette.SpaceLg) };
         stack.Children.Add(header);
@@ -112,6 +121,9 @@ public sealed class DiagnosticsView : UserControl
             Child = stack
         };
 
+        foreach (EventRecord record in IrisEvent.Recent(MaximumRows).Reverse()) _eventEntries.Add(DiagnosticsEntry.ForEvent(record));
+        foreach (LogEntry entry in CompanionLog.Recent(MaximumRows).Reverse()) _diaryEntries.Add(DiagnosticsEntry.ForEntry(entry));
+        foreach (string line in SystemWatch.Recent(MaximumRows).Reverse()) _systemEntries.Add(DiagnosticsEntry.ForSystemLine(line));
         Rebind();
     }
 
@@ -148,11 +160,11 @@ public sealed class DiagnosticsView : UserControl
         return block;
     }
 
-    private Control WrapList()
+    private Control WrapList(ItemsControl rows)
     {
         ScrollViewer scroll = new()
         {
-            Content = _rows,
+            Content = rows,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled
         };
         return new Border
@@ -174,7 +186,7 @@ public sealed class DiagnosticsView : UserControl
             return;
         }
 
-        Add(DiagnosticsEntry.ForEvent(record));
+        Add(_eventEntries, _eventRows, DiagnosticsEntry.ForEvent(record));
     }
 
     private void OnEntryWritten(LogEntry entry)
@@ -184,42 +196,52 @@ public sealed class DiagnosticsView : UserControl
             return;
         }
 
-        Add(DiagnosticsEntry.ForEntry(entry));
+        Add(_diaryEntries, _diaryRows, DiagnosticsEntry.ForEntry(entry));
     }
 
-    private void Add(DiagnosticsEntry entry)
+    private void OnSystemLineWritten(string line)
+    {
+        if (!_isPaused) Add(_systemEntries, _systemRows, DiagnosticsEntry.ForSystemLine(line));
+    }
+
+    private void Add(List<DiagnosticsEntry> entries, ItemsControl rows, DiagnosticsEntry entry)
     {
         Dispatcher.UIThread.Post(() =>
         {
-            _entries.Insert(0, entry);
-            while (_entries.Count > MaximumRows)
+            entries.Insert(0, entry);
+            while (entries.Count > MaximumRows)
             {
-                _entries.RemoveAt(_entries.Count - 1);
+                entries.RemoveAt(entries.Count - 1);
             }
 
-            Rebind();
+            Rebind(rows, entries);
         });
     }
 
     /// <summary>Feeds the list the slice that matches the filter, newest first.</summary>
     private void Rebind()
     {
-        IReadOnlyList<DiagnosticsEntry> visible = string.IsNullOrEmpty(_filterText)
-            ? _entries.ToArray()
-            : _entries.Where(entry => entry.Matches(_filterText)).ToArray();
-        _rows.ItemsSource = visible;
+        Rebind(_eventRows, _eventEntries);
+        Rebind(_diaryRows, _diaryEntries);
+        Rebind(_systemRows, _systemEntries);
     }
+
+    private void Rebind(ItemsControl rows, List<DiagnosticsEntry> entries) =>
+        rows.ItemsSource = string.IsNullOrEmpty(_filterText)
+            ? entries.ToArray()
+            : entries.Where(entry => entry.Matches(_filterText)).ToArray();
 
     private static void OpenOnDisk()
     {
         try
         {
             string path = IrisEvent.FilePath;
-            if (path.Length > 0 && File.Exists(path))
+            string? directory = path.Length > 0 ? Path.GetDirectoryName(path) : null;
+            if (!string.IsNullOrEmpty(directory) && Directory.Exists(directory))
             {
                 System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
                 {
-                    FileName = path,
+                    FileName = directory,
                     UseShellExecute = true
                 });
             }
@@ -250,6 +272,24 @@ public sealed class DiagnosticsView : UserControl
             entry.Detail ?? string.Empty,
             string.Empty,
             ColorForLevel(entry.Level));
+
+        public static DiagnosticsEntry ForSystemLine(string line)
+        {
+            try
+            {
+                using System.Text.Json.JsonDocument json = System.Text.Json.JsonDocument.Parse(line);
+                System.Text.Json.JsonElement root = json.RootElement;
+                string stamp = root.TryGetProperty("ts", out var ts) ? ts.GetString() ?? string.Empty : string.Empty;
+                string area = root.TryGetProperty("area", out var areaValue) ? areaValue.GetString() ?? "OS" : "OS";
+                string message = root.TryGetProperty("msg", out var msg) ? msg.GetString() ?? string.Empty : line;
+                string data = root.TryGetProperty("data", out var details) ? details.GetString() ?? string.Empty : string.Empty;
+                return new(stamp.Length >= 19 ? stamp[11..] : stamp, area, message, data, string.Empty, Palette.TextFaint);
+            }
+            catch
+            {
+                return new(string.Empty, "OS", "Unparsed system event", line, string.Empty, Palette.Warning);
+            }
+        }
 
         private static string BuildDetail(string? message, IReadOnlyDictionary<string, string?>? data)
         {

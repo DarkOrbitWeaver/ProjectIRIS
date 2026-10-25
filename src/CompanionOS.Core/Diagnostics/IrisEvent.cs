@@ -16,14 +16,11 @@ namespace CompanionOS.Core.Diagnostics;
 public static class IrisEvent
 {
     private const int RememberedEvents = 1000;
-    private const long MaxFileBytes = 32L * 1024 * 1024;
+    private const long MaxFileBytes = 8L * 1024 * 1024;
 
     private static readonly object WriteGate = new();
     private static readonly Queue<EventRecord> Events = new();
-    private static string _directory = string.Empty;
-    private static string _dayStamp = string.Empty;
-    private static string _filePath = string.Empty;
-    private static bool _rotateChecked;
+    private static RollingJsonLinesWriter? _writer;
 
     /// <summary>Raised for every event, so the diagnostics panel can live-tail it.</summary>
     public static event Action<EventRecord>? EventLogged;
@@ -35,8 +32,7 @@ public static class IrisEvent
         {
             lock (WriteGate)
             {
-                _directory = directory;
-                Directory.CreateDirectory(directory);
+                _writer = new RollingJsonLinesWriter(directory, "iris", MaxFileBytes);
             }
         }
         catch (Exception failure)
@@ -48,7 +44,7 @@ public static class IrisEvent
     /// <summary>The event file currently being written.</summary>
     public static string FilePath
     {
-        get { lock (WriteGate) { return _filePath; } }
+        get { lock (WriteGate) { return _writer?.ActivePath ?? string.Empty; } }
     }
 
     /// <summary>Logs one fact. <paramref name="data"/> keys/values are written raw; keep them short and snake_case.</summary>
@@ -137,32 +133,19 @@ public static class IrisEvent
                 Events.Dequeue();
             }
 
-            if (_directory.Length == 0)
+            if (_writer is null)
             {
                 return;
             }
 
             try
             {
-                string stamp = record.Timestamp.ToString("yyyyMMdd");
-                if (stamp != _dayStamp || (!_rotateChecked && FilePathIsTooBig()))
-                {
-                    _dayStamp = stamp;
-                    _filePath = Path.Combine(_directory, $"iris-{stamp}.jsonl");
-                    _rotateChecked = true;
-                }
-
-                if (_filePath.Length > 0)
-                {
-                    File.AppendAllText(_filePath, record.ToJsonLine() + Environment.NewLine);
-                }
+                _writer.Append(record.Timestamp, record.ToJsonLine());
             }
-            catch (IOException)
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException)
             {
-                // Disk busy or full: in-memory history remains. Nothing throws from a logger.
-            }
-            catch (UnauthorizedAccessException)
-            {
+                // Disk busy/full or a malformed oversized event: in-memory history remains.
+                System.Diagnostics.Debug.WriteLine($"Event log write failed: {exception.Message}");
             }
         }
 
@@ -173,18 +156,6 @@ public static class IrisEvent
         catch (Exception listenerFailure)
         {
             System.Diagnostics.Debug.WriteLine($"Event listener failed: {listenerFailure.Message}");
-        }
-    }
-
-    private static bool FilePathIsTooBig()
-    {
-        try
-        {
-            return _filePath.Length > 0 && File.Exists(_filePath) && new FileInfo(_filePath).Length > MaxFileBytes;
-        }
-        catch
-        {
-            return false;
         }
     }
 

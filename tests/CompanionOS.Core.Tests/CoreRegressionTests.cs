@@ -9,12 +9,85 @@ using CompanionOS.Core.Voice;
 using System.Net;
 using System.Net.Sockets;
 using System.Diagnostics;
+using System.Text.Json;
 using Xunit;
 
 namespace CompanionOS.Core.Tests;
 
 public sealed class CoreRegressionTests
 {
+    [Fact]
+    public void RollingDiagnosticsStayBoundedAndKeepTheMostRecentPreviousSegment()
+    {
+        string directory = Path.Combine(Path.GetTempPath(), $"iris-log-test-{Guid.NewGuid():N}");
+        try
+        {
+            RollingJsonLinesWriter writer = new(directory, "test", 128);
+            DateTimeOffset day = new(2026, 10, 25, 12, 0, 0, TimeSpan.Zero);
+            string payload = new string('x', 32);
+            writer.Append(day, $"{{\"n\":1,\"p\":\"{payload}\"}}");
+            writer.Append(day, $"{{\"n\":2,\"p\":\"{payload}\"}}");
+            writer.Append(day, $"{{\"n\":3,\"p\":\"{payload}\"}}");
+            writer.Append(day, $"{{\"n\":4,\"p\":\"{payload}\"}}");
+
+            string active = writer.ActivePath;
+            string previous = Path.Combine(directory, "test-20261025.previous.jsonl");
+            Assert.True(File.Exists(active));
+            Assert.True(File.Exists(previous));
+            Assert.InRange(new FileInfo(active).Length, 1, 128);
+            Assert.InRange(new FileInfo(previous).Length, 1, 128);
+            Assert.Equal("4", ReadEventNumber(active));
+            Assert.Equal("2", ReadEventNumber(previous));
+        }
+        finally
+        {
+            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void RollingDiagnosticsRejectAnOversizedSingleEvent()
+    {
+        string directory = Path.Combine(Path.GetTempPath(), $"iris-log-test-{Guid.NewGuid():N}");
+        try
+        {
+            RollingJsonLinesWriter writer = new(directory, "test", 128);
+            Assert.Throws<InvalidDataException>(() => writer.Append(DateTimeOffset.Now, "{\"payload\":\"" + new string('x', 256) + "\"}"));
+        }
+        finally
+        {
+            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void RollingDiagnosticsExpireFilesOutsideTheSevenDayWindow()
+    {
+        string directory = Path.Combine(Path.GetTempPath(), $"iris-log-test-{Guid.NewGuid():N}");
+        try
+        {
+            RollingJsonLinesWriter writer = new(directory, "test", 256);
+            DateTimeOffset today = new(2026, 10, 25, 12, 0, 0, TimeSpan.Zero);
+            writer.Append(today.AddDays(-8), "{\"day\":\"expired\"}");
+            writer.Append(today.AddDays(-6), "{\"day\":\"keep\"}");
+            writer.Append(today, "{\"day\":\"today\"}");
+
+            Assert.False(File.Exists(Path.Combine(directory, "test-20261017.jsonl")));
+            Assert.True(File.Exists(Path.Combine(directory, "test-20261019.jsonl")));
+            Assert.True(File.Exists(Path.Combine(directory, "test-20261025.jsonl")));
+        }
+        finally
+        {
+            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    private static string ReadEventNumber(string path)
+    {
+        using JsonDocument json = JsonDocument.Parse(File.ReadAllLines(path)[^1]);
+        return json.RootElement.GetProperty("n").GetInt32().ToString();
+    }
+
     [Fact]
     public void PassiveReadinessDoesNotRequireModelWeightsForAnExternalBrain()
     {

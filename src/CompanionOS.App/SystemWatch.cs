@@ -36,6 +36,7 @@ namespace CompanionOS.App;
 public static class SystemWatch
 {
     private static readonly object Gate = new();
+    private static readonly Queue<string> RecentLines = new();
 
     private static long _lastHeartbeat;
     private static long _stallBegan;
@@ -45,12 +46,25 @@ public static class SystemWatch
     private static int _ticksSincePumpLine;
     private static double _syncEwmaMs;
     private static bool _stackToolWarned;
+    private static RollingJsonLinesWriter? _logWriter;
+
+    public static event Action<string>? LineWritten;
+
+    public static IReadOnlyList<string> Recent(int maximumLines = 200)
+    {
+        lock (Gate)
+        {
+            return RecentLines.Skip(Math.Max(0, RecentLines.Count - maximumLines)).ToArray();
+        }
+    }
 
     /// <summary>Called once at the very top of Main, before anything else runs.</summary>
     public static void InstallStatic(string[] args)
     {
         CompanionPaths.EnsureCreated();
-        Trace("life", "process start", $"pid={Environment.ProcessId} args={(args.Length == 0 ? "<none>" : string.Join(' ', args))}");
+        try { _logWriter = new RollingJsonLinesWriter(CompanionPaths.LogsDirectory, "system", 8L * 1024 * 1024); }
+        catch (Exception) { /* best effort: tracing must not block startup */ }
+        Trace("life", "process start", $"pid={Environment.ProcessId} argument_count={args.Length}");
         Trace("life", $"boot.uptime_before_ui={Environment.TickCount64}ms");
     }
 
@@ -117,10 +131,15 @@ public static class SystemWatch
             string line = Encode(area, message, data);
             lock (Gate)
             {
-                string path = LogPath();
-                using StreamWriter writer = new(path, append: true, Encoding.UTF8);
-                writer.WriteLine(line);
+                RecentLines.Enqueue(line);
+                while (RecentLines.Count > 600) RecentLines.Dequeue();
+                if (_logWriter is not null)
+                {
+                    _logWriter.Append(DateTimeOffset.Now, line);
+                }
             }
+            try { LineWritten?.Invoke(line); }
+            catch (Exception) { /* observers must not interfere with the process watch */ }
         }
         catch (OutOfMemoryException)
         {
@@ -282,10 +301,8 @@ public static class SystemWatch
         }
     }
 
-    private static string LogPath()
-    {
-        return Path.Combine(CompanionPaths.LogsDirectory, $"system-{DateTime.Now:yyyyMMdd}.jsonl");
-    }
+    private static string LogPath() => _logWriter?.ActivePath ??
+        Path.Combine(CompanionPaths.LogsDirectory, $"system-{DateTime.Now:yyyyMMdd}.jsonl");
 
     private static string Encode(string area, string message, string? data)
     {
