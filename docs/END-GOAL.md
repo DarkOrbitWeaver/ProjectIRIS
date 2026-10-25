@@ -255,18 +255,24 @@ must stop or suspend the owning work and visibly settle every dependent componen
 
 ### J. UI, design fidelity, and feedback
 
-- Every implemented page is compared against the supplied HTML/screenshots: Chat, Memory, Body,
-  Persona/Voice, Settings, states/notices, and compact overlay. The code implementation follows
-  the reference spacing, typography, colors, hierarchy, density, and icon style, with intentional
-  documented changes rather than accidental drift.
+- The supplied HTML, screenshots, and feedback are the **minimum floor**, not the final art
+  direction or a ceiling. Preserve the intent and recognizable language, then improve the
+  information hierarchy, interaction flow, feedback, iconography, spacing, accessibility, and
+  motion wherever the result is clearer and more coherent. Add genuinely useful overlays or
+  companion surfaces when they solve a real workflow; do not add decoration or noise just to
+  make the app busier.
+- Every implemented page is compared against the supplied references: Chat, Memory, Body,
+  Persona/Voice, Settings, states/notices, and compact overlay. Departures may be improvements;
+  they should be intentional, consistent with the product, and recorded in the design brief.
 - All cards, labels, icons, buttons, toggles, dropdowns, dialogs, separators, tooltips, empty
   states, error states, loading states, and focus rings align to a shared spacing/type/color/icon
   system. No missing icons, inconsistent stroke weights, clipping, overflow, blank cards, dead
   buttons, mismatched labels, or unexplained status colors.
 - The default mini overlay remains compact. Hover/click expands its bubble controls. Music,
-  timer, and permission surfaces appear as separate task-specific overlays when needed, each can
-  be hidden/minimized independently, and users can control which components are visible. Overlay
-  position, edge snapping, monitor changes, z-order, focus, and persistence work.
+  timer, permission, and other useful task surfaces appear in their own well-integrated overlays
+  when needed; each can be hidden/minimized independently, and users can control visibility.
+  Improve on the reference when that makes the component easier to use. Overlay position, edge
+  snapping, monitor changes, z-order, focus, and persistence work.
 - Chat handles long conversations, code/text, multiline input, scroll anchoring, cancellation,
   errors, and streaming at the 980×640 minimum. The sidebar, bottom status strip, and page content
   do not collide or stretch incorrectly.
@@ -314,22 +320,35 @@ with the build/release notes:
 | 100–200% scaling, narrow window, multi-monitor move, keyboard-only | No clipping, overlap, inaccessible control, stale overlay position, or dead keyboard path. |
 | Long idle and active session | CPU/RAM/VRAM/disk/process budgets are measured; no unbounded logs, memory, audio segments, or recurring scans. |
 
-## 6. Definition of done
+## 6. Verification ownership
+
+The assistant owns routine verification. Do not hand basic build, regression, setup, routing,
+permission, or failure-path checks back to the user. Use automated tests, local fixtures,
+mocked devices/endpoints, static inspection, and isolated integration runs first. Then use the
+real application and available hardware for live checks when the machine has safe resource
+headroom; record whether each result was simulated, model-backed, or physically observed. Load a
+large brain model only for a check that genuinely needs it, confirm available headroom first,
+and release it afterward. Never claim that a real microphone, audible timbre, or subjective
+visual preference was physically verified when it was not. Ask the user for optional taste or
+final acceptance feedback after the work is reviewable, not to do our debugging for us.
+
+## 7. Definition of done
 
 Project Iris is ready for the user's daily use only when all of these are true:
 
-- The agreed design references are implemented or each deviation is explicit and accepted.
+- The design-reference floor is met or intentionally improved upon, and additions strengthen
+  the experience without harming clarity, consistency, performance, or user control.
 - Core conversation, wake/listen, TTS, memory, music, modules, permissions, overlays, and
   sleep/game transitions pass their normal and failure scenarios on the target PC.
 - A clean setup can reach that state from a fresh checkout without undocumented manual repair.
-- Build and regression tests pass; integration tests exercise real local audio/model adapters
-  only when deliberately requested. Visual/interaction checks are done on a real run and are
-  recorded separately from headless compilation.
+- Build and regression tests pass; integration and interaction checks are exercised as far as
+  available tooling and hardware permit. Results distinguish real-device observation from
+  simulation and headless compilation.
 - Resource measurements satisfy agreed budgets during idle, voice use, brain use, and gaming.
 - No known release-blocking bug remains. Known limitations, recovery steps, model licenses, and
   hardware tradeoffs are documented. The repository is clean, committed, and reproducible.
-- User audition confirms the selected voice is acceptable; user review confirms the UI and
-  overlays feel coherent with the supplied design.
+- The voice samples and UI/overlay decisions are ready for optional user acceptance review; we
+  do not substitute user testing for engineering verification.
 
 Until those conditions are met, status must say what is implemented, what is measured, what is
 only code-reviewed, and what still needs live verification. A successful build is necessary,
