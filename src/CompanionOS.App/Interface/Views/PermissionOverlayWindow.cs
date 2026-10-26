@@ -16,6 +16,8 @@ internal sealed class PermissionOverlayWindow : Window
 
     private readonly ShellModel _model;
     private readonly TextBlock _question;
+    private readonly TextBlock _caption;
+    private readonly Button _alwaysButton;
 
     public PermissionOverlayWindow(ShellModel model)
     {
@@ -40,6 +42,8 @@ internal sealed class PermissionOverlayWindow : Window
             TextWrapping = TextWrapping.Wrap,
             MaxHeight = 64
         };
+        _alwaysButton = Ui.PrimaryButton("Always", () => _model.AnswerPermission(PermissionDecision.AllowAlways));
+        _caption = Ui.Caption(string.Empty);
         StackPanel buttons = new()
         {
             Orientation = Orientation.Horizontal,
@@ -49,7 +53,7 @@ internal sealed class PermissionOverlayWindow : Window
             {
                 Ui.GhostButton("Deny", () => _model.AnswerPermission(PermissionDecision.Deny)),
                 Ui.GhostButton("Once", () => _model.AnswerPermission(PermissionDecision.AllowOnce)),
-                Ui.PrimaryButton("Always", () => _model.AnswerPermission(PermissionDecision.AllowAlways))
+                _alwaysButton
             }
         };
         TextBlock caption = Ui.Text("NEEDS YOUR APPROVAL", Palette.FontCaption, Palette.WarningBrush,
@@ -74,7 +78,7 @@ internal sealed class PermissionOverlayWindow : Window
                 {
                     caption,
                     _question,
-                    Ui.Caption("Expires in 15 seconds. Always remembers the shown capability for this module."),
+                    _caption,
                     buttons
                 }
             }
@@ -84,6 +88,10 @@ internal sealed class PermissionOverlayWindow : Window
     public void Bind(PermissionRequest? request)
     {
         _question.Text = request?.Question ?? string.Empty;
+        _alwaysButton.IsVisible = request?.CanAlwaysAllow ?? false;
+        _caption.Text = request?.CanAlwaysAllow == true
+            ? "Expires in 15 seconds. Always remembers the shown capability for this module."
+            : "This action requires your approval each time. Expires in 15 seconds.";
     }
 
     public void PlaceNear(PixelPoint pillPosition, int pillWidth, int pillHeight, PixelRect workArea,

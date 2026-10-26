@@ -35,7 +35,8 @@ public sealed class PluginModuleAdapter : IAssistantModule, IModuleSurfaceProvid
                 tool.Description)
             {
                 PermissionScope = tool.Permission,
-                BackgroundCapable = tool.Background
+                BackgroundCapable = tool.Background,
+                AlwaysConfirm = tool.AlwaysConfirm
             })
             .ToList();
     }

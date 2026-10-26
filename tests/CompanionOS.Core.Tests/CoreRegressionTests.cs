@@ -262,12 +262,19 @@ public sealed class CoreRegressionTests
             PermissionGrantStore grants = new(grantsPath);
             SandboxGuard guard = new(events, new FileAuditTrail(Path.Combine(temp, "audit.jsonl")), grants);
             int promptCount = 0;
+            bool allowAlwaysWasOfferedForSend = true;
             using IDisposable subscription = events.Subscribe<PermissionRequestedEvent>(payload =>
             {
                 promptCount++;
-                payload.Request.Answer(payload.Request.PermissionScope == "contacts.read"
-                    ? PermissionDecision.AllowAlways
-                    : PermissionDecision.AllowOnce);
+                if (payload.Request.PermissionScope == "messages.send")
+                {
+                    allowAlwaysWasOfferedForSend &= payload.Request.CanAlwaysAllow;
+                    payload.Request.Answer(PermissionDecision.AllowAlways);
+                }
+                else
+                {
+                    payload.Request.Answer(PermissionDecision.AllowAlways);
+                }
             });
 
             ModuleTool readContact = new("read_contact", "Read a contact.", ToolTier.SystemCritical,
@@ -275,7 +282,7 @@ public sealed class CoreRegressionTests
             ModuleTool listContacts = new("list_contacts", "List contacts.", ToolTier.SystemCritical,
                 "{}") { PermissionScope = "contacts.read" };
             ModuleTool sendMessage = new("send_message", "Send a message.", ToolTier.SystemCritical,
-                "{}") { PermissionScope = "messages.send" };
+                "{}") { PermissionScope = "messages.send", AlwaysConfirm = true };
 
             Assert.True(await guard.AuthorizeAsync("plugin:telegram", "Telegram", readContact,
                 "Telegram wants to read Alex's contact.", CancellationToken.None));
@@ -287,6 +294,11 @@ public sealed class CoreRegressionTests
             Assert.True(await guard.AuthorizeAsync("plugin:telegram", "Telegram", sendMessage,
                 "Telegram wants to send a message.", CancellationToken.None));
             Assert.Equal(2, promptCount);
+            Assert.False(grants.IsScopeGranted("plugin:telegram", "messages.send"));
+            Assert.False(allowAlwaysWasOfferedForSend);
+            Assert.True(await guard.AuthorizeAsync("plugin:telegram", "Telegram", sendMessage,
+                "Telegram wants to send a second message.", CancellationToken.None));
+            Assert.Equal(3, promptCount);
             Assert.False(grants.IsScopeGranted("plugin:telegram", "messages.send"));
 
             PermissionGrantStore reloaded = new(grantsPath);
@@ -600,7 +612,7 @@ public sealed class CoreRegressionTests
               "disabled": false,
               "discoverTools": true,
               "asksPermission": ["contacts.read"],
-              "tools": [{ "name": "lookup_contact", "permission": "contacts.read", "background": true }]
+              "tools": [{ "name": "lookup_contact", "permission": "contacts.read", "background": true, "alwaysConfirm": true }]
             }
             """);
 
@@ -615,6 +627,7 @@ public sealed class CoreRegressionTests
             Assert.Equal("lookup_contact", tool.Name);
             Assert.Equal("contacts.read", tool.Permission);
             Assert.True(tool.Background);
+            Assert.True(tool.AlwaysConfirm);
             Assert.Contains("query", tool.Schema);
 
             PluginResult result = await host.CallAsync(plugin, tool, "{\"query\":\"Ada\"}", "test-turn",

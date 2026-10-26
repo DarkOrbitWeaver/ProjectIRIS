@@ -24,7 +24,7 @@ public sealed class PermissionRequest
         new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     public PermissionRequest(string moduleId, string moduleName, string toolName, string question, ToolTier tier,
-        string? permissionScope = null)
+        string? permissionScope = null, bool alwaysConfirm = false)
     {
         ModuleId = moduleId;
         ModuleName = moduleName;
@@ -32,6 +32,7 @@ public sealed class PermissionRequest
         Question = question;
         Tier = tier;
         PermissionScope = permissionScope;
+        CanAlwaysAllow = !alwaysConfirm;
     }
 
     public Guid Id { get; } = Guid.NewGuid();
@@ -41,6 +42,7 @@ public sealed class PermissionRequest
     public string Question { get; }
     public ToolTier Tier { get; }
     public string? PermissionScope { get; }
+    public bool CanAlwaysAllow { get; }
     public DateTimeOffset RequestedAt { get; } = DateTimeOffset.Now;
 
     /// <summary>Completes the request. Later answers are ignored.</summary>
@@ -62,7 +64,8 @@ public sealed class PermissionRequest
 ///   Tier 2 (scoped) runs immediately once it has been allowed once; its first use asks,
 ///   and "always allow" remembers the grant. Every run lands in the audit trail.
 ///   Tier 3 (systemCritical) asks unless it was permanently granted, times out to Deny
-///   after 15 seconds, and records the question and the answer forever.
+///   after 15 seconds, and records the question and the answer forever. Tools marked
+///   AlwaysConfirm always ask and never persist the resulting grant.
 /// </summary>
 public sealed class SandboxGuard
 {
@@ -89,7 +92,7 @@ public sealed class SandboxGuard
             ? plainEnglishAction
             : $"[{tool.PermissionScope}] {plainEnglishAction}";
 
-        if (tool.Tier == ToolTier.Reflex)
+        if (tool.Tier == ToolTier.Reflex && !tool.AlwaysConfirm)
         {
             IrisEvent.Log("Sandbox", "permission.auto", LogLevel.Trace,
                 data: new Dictionary<string, string?> { ["tool"] = tool.Name, ["module"] = moduleId, ["tier"] = "reflex" });
@@ -98,7 +101,7 @@ public sealed class SandboxGuard
             return true;
         }
 
-        if (!string.IsNullOrWhiteSpace(tool.PermissionScope) &&
+        if (!tool.AlwaysConfirm && !string.IsNullOrWhiteSpace(tool.PermissionScope) &&
             _grants.IsScopeGranted(moduleId, tool.PermissionScope))
         {
             IrisEvent.Log("Sandbox", "permission.scope_granted", LogLevel.Trace,
@@ -113,7 +116,7 @@ public sealed class SandboxGuard
             return true;
         }
 
-        if (tool.Tier == ToolTier.Scoped)
+        if (!tool.AlwaysConfirm && tool.Tier == ToolTier.Scoped)
         {
             if (string.IsNullOrWhiteSpace(tool.PermissionScope) && _grants.IsGranted(moduleId, tool.Name))
             {
@@ -125,7 +128,7 @@ public sealed class SandboxGuard
             }
         }
 
-        if (tool.Tier == ToolTier.SystemCritical && string.IsNullOrWhiteSpace(tool.PermissionScope) &&
+        if (!tool.AlwaysConfirm && tool.Tier == ToolTier.SystemCritical && string.IsNullOrWhiteSpace(tool.PermissionScope) &&
             _grants.IsGranted(moduleId, tool.Name))
         {
             IrisEvent.Log("Sandbox", "permission.granted", LogLevel.Trace,
@@ -135,12 +138,13 @@ public sealed class SandboxGuard
             return true;
         }
 
-        PermissionRequest request = new(moduleId, moduleName, tool.Name,
-            string.IsNullOrWhiteSpace(tool.PermissionScope)
-                ? plainEnglishAction
-                : $"{plainEnglishAction} Requested access: {tool.PermissionScope}. " +
-                  $"Always allow will remember this capability for {moduleName}.",
-            tool.Tier, tool.PermissionScope);
+        string question = string.IsNullOrWhiteSpace(tool.PermissionScope)
+            ? plainEnglishAction
+            : $"{plainEnglishAction} Requested access: {tool.PermissionScope}." +
+              (tool.AlwaysConfirm ? " Iris will ask again before this action is run." :
+                  $" Always allow will remember this capability for {moduleName}.");
+        PermissionRequest request = new(moduleId, moduleName, tool.Name, question,
+            tool.Tier, tool.PermissionScope, tool.AlwaysConfirm);
         _events.Publish(new PermissionRequestedEvent { Request = request });
         IrisEvent.Log("Sandbox", "permission.asked", LogLevel.Info,
             data: new Dictionary<string, string?>
@@ -164,6 +168,11 @@ public sealed class SandboxGuard
         catch (OperationCanceledException)
         {
             decision = PermissionDecision.Deny;
+        }
+
+        if (tool.AlwaysConfirm && decision == PermissionDecision.AllowAlways)
+        {
+            decision = PermissionDecision.AllowOnce;
         }
 
         if (decision == PermissionDecision.AllowAlways)

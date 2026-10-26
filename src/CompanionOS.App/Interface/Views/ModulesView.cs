@@ -281,6 +281,11 @@ public sealed class ModulesView : UserControl
                 {
                     toolRow.Children.Add(IconGlyph.Make(IconGlyph.Shield, 11, Palette.WarningBrush));
                 }
+                if (tool.AlwaysConfirm)
+                {
+                    toolRow.Children.Add(Ui.Text("CONFIRM EACH TIME", Palette.FontCaption,
+                        Palette.WarningBrush, FontWeight.Medium, wrap: false));
+                }
                 body.Children.Add(toolRow);
             }
 

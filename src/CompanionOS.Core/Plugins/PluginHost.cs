@@ -125,7 +125,12 @@ public sealed class PluginHost : IDisposable
         {
             PluginTool? policy = plugin.DeclaredTools.FirstOrDefault(declared =>
                 string.Equals(declared.Name, tool.Name, StringComparison.OrdinalIgnoreCase));
-            return tool with { Permission = policy?.Permission, Background = policy?.Background ?? false };
+            return tool with
+            {
+                Permission = policy?.Permission,
+                Background = policy?.Background ?? false,
+                AlwaysConfirm = policy?.AlwaysConfirm ?? false
+            };
         }).ToList();
 
         plugin.Tools = merged;

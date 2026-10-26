@@ -62,6 +62,8 @@ public sealed partial class MainWindow : Window
     private readonly TextBlock _microphoneLabel = new();
     private readonly ItemsControl _notices;
     private readonly Border _permissionCard = new();
+    private Button? _permissionAlwaysButton;
+    private TextBlock? _permissionCaption;
     private readonly TextBlock _permissionQuestion = Ui.Text(string.Empty, Palette.FontEmphasis);
     private readonly DispatcherTimer _uiSyncTimer;
     private readonly Dictionary<string, Button> _railButtons = new(StringComparer.Ordinal);
@@ -698,6 +700,7 @@ public sealed partial class MainWindow : Window
         Button deny = Ui.GhostButton("Deny", () => _model.AnswerPermission(PermissionDecision.Deny));
         Button allowOnce = Ui.GhostButton("Allow once", () => _model.AnswerPermission(PermissionDecision.AllowOnce));
         Button always = Ui.PrimaryButton("Always allow", () => _model.AnswerPermission(PermissionDecision.AllowAlways));
+        _permissionAlwaysButton = always;
 
         StackPanel buttons = Ui.Row(Palette.SpaceMd, deny, allowOnce, always);
         buttons.HorizontalAlignment = HorizontalAlignment.Right;
@@ -707,8 +710,8 @@ public sealed partial class MainWindow : Window
         content.Children.Add(Ui.Text("Permission", Palette.FontTitle, Palette.TextPrimaryBrush,
             FontWeight.SemiBold));
         content.Children.Add(_permissionQuestion);
-        content.Children.Add(Ui.Caption(
-            "Unanswered requests expire in 15 seconds. Always allow remembers the shown capability for this module, or just this tool when no scope is listed."));
+        _permissionCaption = Ui.Caption(string.Empty);
+        content.Children.Add(_permissionCaption);
         content.Children.Add(buttons);
 
         return CardCentered(content);

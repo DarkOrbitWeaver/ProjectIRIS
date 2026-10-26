@@ -72,9 +72,9 @@ complete until all stages below are shipped:
    includes live refresh, clear install/update/removal flows, richer authoring tools, and actionable
    validation diagnostics in the app. External modules can be enabled or disabled for the next
    launch; they are not hot-loaded.
-2. **Permission capabilities:** named grants and revocation currently work at Iris's tool-call
-   boundary. Remaining work includes OS-level process isolation and mandatory per-action review
-   for consequential actions such as sending messages or changing accounts.
+2. **Permission capabilities:** named grants and revocation work at Iris's tool-call boundary;
+   tools can require fresh approval on every call. Remaining work includes applying that policy
+   consistently to built-in actions and OS-level process isolation.
 3. **Hosted module UI:** validated declarative surfaces, inputs, buttons, icons, and multiple
    independently controlled overlays are implemented. Persistent module state, richer typed forms,
    and explicit show/hide controls remain. Iris owns rendering and focus policy while modules

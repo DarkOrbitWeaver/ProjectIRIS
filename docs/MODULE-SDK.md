@@ -44,7 +44,10 @@ permission, activity, and shell contracts so each integration feels like part of
   module and keeps the full installed tool catalog out of the repeated system prompt.
 - External tools use Iris's existing system-critical permission gate. A first call asks for
   approval; a saved "always allow" grant can authorize later calls to that tool without another
-  prompt. A tool may name one capability in `permission`, and the manifest must also list that
+  prompt. A manifest tool policy can set `"alwaysConfirm": true` to require fresh approval for
+  every call; Iris hides the persistent-grant choice and enforces this even if an old client
+  submits it. Use this for consequential actions such as sending a message or changing account
+  settings. A tool may name one capability in `permission`, and the manifest must also list that
   scope in `asksPermission`. Iris shows the scope in the permission prompt and audit trail, and
   remembers "always allow" per module and scope; tools with another scope ask separately. Saved
   scope grants can be revoked in Settings. This enforces consent at Iris's tool-call boundary,
@@ -172,7 +175,8 @@ user explicitly enables it.
   "tools": [
     {
       "name": "send_message",
-      "permission": "messages.send"
+      "permission": "messages.send",
+      "alwaysConfirm": true
     },
     {
       "name": "search_history",

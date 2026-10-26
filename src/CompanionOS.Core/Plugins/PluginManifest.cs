@@ -132,12 +132,24 @@ public sealed class PluginManifest
                         backgroundCapable = backgroundElement.ValueKind == JsonValueKind.True;
                     }
 
+                    bool alwaysConfirm = false;
+                    if (tool.TryGetProperty("alwaysConfirm", out JsonElement alwaysConfirmElement))
+                    {
+                        if (alwaysConfirmElement.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+                        {
+                            rejectionReason = "tool 'alwaysConfirm' must be a boolean";
+                            return false;
+                        }
+                        alwaysConfirm = alwaysConfirmElement.ValueKind == JsonValueKind.True;
+                    }
+
                     tools.Add(new PluginTool(
                         Name: tool.TryGetProperty("name", out JsonElement nameElement) ? nameElement.GetString() ?? "" : "",
                         Description: tool.TryGetProperty("description", out JsonElement descriptionElement) ? descriptionElement.GetString() ?? "" : "",
                         Permission: permission,
                         Schema: tool.TryGetProperty("schema", out JsonElement schemaElement) ? schemaElement.GetRawText() : "{}",
-                        Background: backgroundCapable));
+                        Background: backgroundCapable,
+                        AlwaysConfirm: alwaysConfirm));
                 }
             }
 
@@ -691,7 +703,8 @@ public sealed record PluginTool(
     string Description,
     string? Permission,
     string Schema,
-    bool Background = false);
+    bool Background = false,
+    bool AlwaysConfirm = false);
 
 public sealed record PluginSurfaceManifest(
     string Id,

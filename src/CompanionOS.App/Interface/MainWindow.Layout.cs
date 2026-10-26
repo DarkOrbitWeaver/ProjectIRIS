@@ -56,10 +56,21 @@ public sealed partial class MainWindow : Window
         // composer ring, not the status word.
         _microphoneLabel.Foreground = microphoneOpen ? Palette.SuccessBrush : Palette.TextSecondaryBrush;
 
-        if (_model.HasPendingPermission && _model.PendingPermission != _shownPermission)
+        PermissionRequest? pendingPermission = _model.PendingPermission;
+        if (pendingPermission is not null && pendingPermission != _shownPermission)
         {
-            _shownPermission = _model.PendingPermission;
+            _shownPermission = pendingPermission;
             _permissionQuestion.Text = _model.PendingPermissionQuestion;
+            if (_permissionAlwaysButton is not null)
+            {
+                _permissionAlwaysButton.IsVisible = _shownPermission.CanAlwaysAllow;
+            }
+            if (_permissionCaption is not null)
+            {
+                _permissionCaption.Text = _shownPermission.CanAlwaysAllow
+                    ? "Unanswered requests expire in 15 seconds. Always allow remembers the shown capability for this module, or just this tool when no scope is listed."
+                    : "This action requires your approval each time. Unanswered requests expire in 15 seconds.";
+            }
             _permissionCard.IsVisible = true;
         }
         else if (!_model.HasPendingPermission && _permissionCard.IsVisible)

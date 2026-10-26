@@ -51,6 +51,9 @@ public sealed class ModuleTool
     /// <summary>External capability label shown at approval time; this is not an OS sandbox.</summary>
     public string? PermissionScope { get; init; }
 
+    /// <summary>Require a fresh approval for every call, even when the capability has a saved grant.</summary>
+    public bool AlwaysConfirm { get; init; }
+
     /// <summary>Run through the host's bounded background-task manager and return its task id.</summary>
     public bool BackgroundCapable { get; init; }
 
