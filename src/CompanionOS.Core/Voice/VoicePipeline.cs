@@ -42,6 +42,7 @@ public sealed class VoicePipeline : IAsyncDisposable
     private DateTimeOffset _conversationOpenUntil = DateTimeOffset.MinValue;
     private DateTimeOffset _lastLevelPublished = DateTimeOffset.MinValue;
     private DateTimeOffset _nextRecognitionFailureNotice = DateTimeOffset.MinValue;
+    private DateTimeOffset _nextSpeechFailureNotice = DateTimeOffset.MinValue;
     private bool _isDisposed;
 
     public VoicePipeline(SettingsStore settings, EventBus events, PersonaStore personaStore)
@@ -718,8 +719,9 @@ public sealed class VoicePipeline : IAsyncDisposable
                         data: new Dictionary<string, string?>
                         {
                             ["chars"] = sentence.Length.ToString(),
-                            ["endpoint"] = VoiceEndpoint(_settings.Current.Voice)
+                            ["engine"] = Synthesizer.EngineName
                         });
+                    NotifySpeechUnavailable();
                     continue;
                 }
 
@@ -731,11 +733,24 @@ public sealed class VoicePipeline : IAsyncDisposable
                         ["format"] = audio.Format
                     });
 
-                await _player.PlayAsync(audio, Profile.Volume, cancellationToken).ConfigureAwait(false);
-                IrisEvent.Log("Voice", "speech.played", LogLevel.Trace, data: new Dictionary<string, string?>
+                bool outputAccepted = await _player.PlayAsync(audio, Profile.Volume, cancellationToken)
+                    .ConfigureAwait(false);
+                if (!outputAccepted)
                 {
-                    ["bytes"] = audio.Bytes.Length.ToString()
-                });
+                    IrisEvent.Log("Voice", "speech.playback_failed", LogLevel.Warning,
+                        data: new Dictionary<string, string?>
+                        {
+                            ["bytes"] = audio.Bytes.Length.ToString(),
+                            ["output_device"] = _settings.Current.Voice.OutputDeviceNumber.ToString(
+                                System.Globalization.CultureInfo.InvariantCulture)
+                        });
+                    NotifySpeechUnavailable();
+                    break;
+                }
+
+                _nextSpeechFailureNotice = DateTimeOffset.MinValue;
+                IrisEvent.Log("Voice", "speech.playback_accepted", LogLevel.Trace,
+                    data: new Dictionary<string, string?> { ["bytes"] = audio.Bytes.Length.ToString() });
             }
         }
         catch (OperationCanceledException)
@@ -744,6 +759,12 @@ public sealed class VoicePipeline : IAsyncDisposable
         }
         catch (Exception exception)
         {
+            IrisEvent.Log("Voice", "speech.output_failed", LogLevel.Warning,
+                data: new Dictionary<string, string?>
+                {
+                    ["error_type"] = exception.GetType().Name
+                });
+            NotifySpeechUnavailable();
             CompanionLog.Warning("Voice", $"Speaking failed: {exception.Message}");
         }
         finally
@@ -1054,6 +1075,20 @@ public sealed class VoicePipeline : IAsyncDisposable
         _nextRecognitionFailureNotice = now.AddSeconds(30);
         _events.PublishNotice(
             "I couldn't transcribe that. Check Settings → Voice to see whether the speech recognizer is available.",
+            NoticeSeverity.Warning);
+    }
+
+    private void NotifySpeechUnavailable()
+    {
+        DateTimeOffset now = DateTimeOffset.Now;
+        if (now < _nextSpeechFailureNotice)
+        {
+            return;
+        }
+
+        _nextSpeechFailureNotice = now.AddSeconds(30);
+        _events.PublishNotice(
+            "I couldn't play my spoken reply. The text is still here; check Settings → Voice and the selected output device.",
             NoticeSeverity.Warning);
     }
 

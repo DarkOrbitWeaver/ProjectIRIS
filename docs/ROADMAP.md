@@ -127,7 +127,9 @@ Remaining work:
    state is held stable through recognition so a slow ASR pass cannot expire the follow-up it is
    processing. Native microphone open, intentional close, failed open, and unexpected loss now
    produce correlated state events; segment decisions include the active capture-session ID.
-   Verify no-mic, permission denial, unplug/reconnect, wake, and media behavior on the target PC.
+   Missing speech output and rejected Windows playback now log correlated failures and show a
+   rate-limited notice while preserving the text reply. Verify no-mic, permission denial,
+   unplug/reconnect, wake, output-device loss, and media behavior on the target PC.
    Tool activity now has one start/finish pair and chat entries are associated with their turn;
    completed tools return the activity card to result review. Cancellation and failure close the
    associated module overlay as well as active chat/tool UI, and cancellation marks the journal

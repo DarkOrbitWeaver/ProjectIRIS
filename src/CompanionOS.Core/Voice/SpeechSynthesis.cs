@@ -110,7 +110,8 @@ public sealed class HttpSpeechSynthesizer : ISpeechSynthesizer
         }
         catch (Exception exception)
         {
-            CompanionLog.Warning("Voice", $"Speech request failed: {exception.Message}");
+            // HttpRequestException messages may echo an endpoint that contains credentials.
+            CompanionLog.Warning("Voice", $"Speech request failed ({exception.GetType().Name}).");
             return null;
         }
     }
