@@ -65,7 +65,7 @@ public sealed class CoreRegressionTests
     }
 
     [Fact]
-    public void ExternalModuleManifestAcceptsBoundedSidebarControlsForDeclaredTools()
+    public void ExternalModuleManifestAcceptsBoundedSidebarControlsAndModuleOverlays()
     {
         string folder = Path.Combine(Path.GetTempPath(), $"iris-plugin-surface-{Guid.NewGuid():N}");
         Directory.CreateDirectory(folder);
@@ -94,6 +94,12 @@ public sealed class CoreRegressionTests
                       {"id":"message","type":"input","name":"message","label":"Message"},
                       {"id":"send","type":"button","label":"Send","tool":"send_message"}
                     ]
+                  }, {
+                    "id": "activity",
+                    "title": "Telegram activity",
+                    "slot": "overlay",
+                    "icon": "telegram",
+                    "elements": [{"id":"progress","type":"text","label":"Sending message"}]
                   }]
                 }
                 """);
@@ -102,11 +108,16 @@ public sealed class CoreRegressionTests
 
             Assert.True(loaded, reason);
             Assert.NotNull(manifest);
-            PluginSurfaceManifest surface = Assert.Single(manifest.Surfaces);
+            Assert.Equal(2, manifest.Surfaces.Count);
+            PluginSurfaceManifest surface = manifest.Surfaces[0];
             Assert.Equal("telegram", surface.Icon);
             Assert.Equal("sidebar", surface.Slot);
             Assert.Equal(3, surface.Elements.Count);
             Assert.Equal("send_message", surface.Elements[^1].ToolName);
+            Assert.Equal("overlay", manifest.Surfaces[1].Slot);
+            using PluginHost host = new(new EventBus(), folder);
+            PluginModuleAdapter adapter = new(host, manifest);
+            Assert.Equal(ShellSlot.Overlay, adapter.GetSurfaces()[1].Slot);
         }
         finally
         {
@@ -241,6 +252,37 @@ public sealed class CoreRegressionTests
 
             Assert.False(loaded);
             Assert.Contains("declared tool", reason, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            Directory.Delete(folder, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void ExternalModuleManifestLimitsIndependentOverlaysToOnePerModule()
+    {
+        string folder = Path.Combine(Path.GetTempPath(), $"iris-plugin-overlay-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(folder);
+        try
+        {
+            File.WriteAllText(Path.Combine(folder, "plugin.json"), """
+                {
+                  "schema": 1,
+                  "id": "sample",
+                  "name": "Sample",
+                  "transport": "builtin",
+                  "surfaces": [
+                    {"id":"first","title":"First","slot":"overlay","icon":"body","elements":[{"id":"text1","type":"text","label":"One"}]},
+                    {"id":"second","title":"Second","slot":"overlay","icon":"body","elements":[{"id":"text2","type":"text","label":"Two"}]}
+                  ]
+                }
+                """);
+
+            bool loaded = PluginManifest.TryLoad(folder, out _, out string reason);
+
+            Assert.False(loaded);
+            Assert.Contains("one independent overlay", reason, StringComparison.OrdinalIgnoreCase);
         }
         finally
         {

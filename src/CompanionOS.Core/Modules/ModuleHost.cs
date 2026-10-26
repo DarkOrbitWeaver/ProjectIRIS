@@ -362,16 +362,6 @@ public sealed class ModuleHost : IAsyncDisposable
             return ToolResult.Fail($"{owner.DisplayName} is switched off right now.");
         }
 
-        _events.Publish(new ConversationEvent
-        {
-            Phase = ConversationPhase.ToolStarted,
-            TurnId = turnId,
-            Text = tool.ShortLabel,
-            Detail = owner.DisplayName,
-            ModuleId = owner.Id,
-            IconKey = owner.IconKey
-        });
-
         bool isAllowed = await _sandbox
             .AuthorizeAsync(owner.Id, owner.DisplayName, tool, DescribeAction(owner, tool, arguments), cancellationToken)
             .ConfigureAwait(false);
@@ -382,6 +372,16 @@ public sealed class ModuleHost : IAsyncDisposable
             PublishToolFinished(turnId, owner, tool, refusal);
             return refusal;
         }
+
+        _events.Publish(new ConversationEvent
+        {
+            Phase = ConversationPhase.ToolStarted,
+            TurnId = turnId,
+            Text = tool.ShortLabel,
+            Detail = owner.DisplayName,
+            ModuleId = owner.Id,
+            IconKey = owner.IconKey
+        });
 
         ToolInvocation invocation = new()
         {
@@ -524,7 +524,9 @@ public sealed class ModuleHost : IAsyncDisposable
             Phase = ConversationPhase.ToolFinished,
             TurnId = turnId,
             Text = tool.ShortLabel,
-            Detail = result.Succeeded ? result.DisplayText ?? result.ModelText : result.ModelText
+            Detail = result.Succeeded ? result.DisplayText ?? result.ModelText : result.ModelText,
+            ModuleId = owner.Id,
+            IconKey = owner.IconKey
         });
     }
 

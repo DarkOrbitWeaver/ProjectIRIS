@@ -74,9 +74,9 @@ complete until all stages below are shipped:
 2. **Permission capabilities:** named grants and revocation currently work at Iris's tool-call
    boundary. Remaining work includes OS-level process isolation and mandatory per-action review
    for consequential actions such as sending messages or changing accounts.
-3. **Hosted module UI:** validated declarative panels, inputs, buttons, icons, and independently
-   controlled overlays. The shell owns rendering and focus policy; modules provide data and
-   actions rather than arbitrary in-process UI code.
+3. **Hosted module UI:** validated declarative panels, inputs, buttons, icons, persistent state,
+   and multiple independently controlled overlays. One activity-attached overlay per module now
+   works; the shell owns rendering and focus policy while modules provide data and actions.
 4. **Activity contract:** correlated start, step, progress, wait, result, error, and cancel states
    shared by chat, the activity card, notifications, and diagnostics. Percentage remains optional.
 5. **Safe scale:** bounded execution, cancellation, versions, resource declarations, failure

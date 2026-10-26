@@ -329,6 +329,13 @@ public sealed class PluginManifest
             return false;
         }
 
+        if (plugin.Surfaces.Count(surface =>
+                string.Equals(surface.Slot, "overlay", StringComparison.OrdinalIgnoreCase)) > 1)
+        {
+            rejectionReason = "at most one independent overlay surface is allowed per module in schema v1";
+            return false;
+        }
+
         foreach (PluginSurfaceManifest surface in plugin.Surfaces)
         {
             if (!IsIdentifier(surface.Id) || !surfaceIds.Add(surface.Id) ||
@@ -337,9 +344,10 @@ public sealed class PluginManifest
                 rejectionReason = "each UI surface needs a unique id and a title of at most 64 characters";
                 return false;
             }
-            if (!string.Equals(surface.Slot, "sidebar", StringComparison.OrdinalIgnoreCase))
+            if (!string.Equals(surface.Slot, "sidebar", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(surface.Slot, "overlay", StringComparison.OrdinalIgnoreCase))
             {
-                rejectionReason = $"UI surface '{surface.Id}' uses unsupported slot '{surface.Slot}'; v1 supports sidebar";
+                rejectionReason = $"UI surface '{surface.Id}' uses unsupported slot '{surface.Slot}'; v1 supports sidebar and overlay";
                 return false;
             }
             if (!iconKeys.Contains(surface.Icon, StringComparer.OrdinalIgnoreCase))

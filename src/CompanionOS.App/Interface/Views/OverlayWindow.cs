@@ -73,9 +73,15 @@ public sealed class OverlayWindow : Window
     private readonly TimerOverlayWindow _timerOverlay;
     private readonly PermissionOverlayWindow _permissionOverlay;
     private readonly ActivityOverlayWindow _activityOverlay;
+    private readonly Dictionary<string, ModuleSurfaceOverlayWindow> _moduleSurfaceOverlays =
+        new(StringComparer.OrdinalIgnoreCase);
     private NowPlayingModel? _nowPlaying;
     private ActiveTimerModel? _activeTimer;
     private IDisposable? _moduleRegistrySubscription;
+    private IDisposable? _conversationSubscription;
+    private IDisposable? _moduleProgressSubscription;
+    private string _activeModuleId = string.Empty;
+    private string _activeModuleTurnId = string.Empty;
     private PillShape _shape = PillShape.Compact;
     private bool _pointerInside;
     private bool _dragging;
@@ -263,6 +269,8 @@ public sealed class OverlayWindow : Window
             _syncTimer.Stop();
             _collapseTimer.Stop();
             _moduleRegistrySubscription?.Dispose();
+            _conversationSubscription?.Dispose();
+            _moduleProgressSubscription?.Dispose();
             if (_nowPlaying is not null)
             {
                 _nowPlaying.PropertyChanged -= OnNowPlayingChanged;
@@ -275,6 +283,11 @@ public sealed class OverlayWindow : Window
             _timerOverlay.Close();
             _permissionOverlay.Close();
             _activityOverlay.Close();
+            foreach (ModuleSurfaceOverlayWindow window in _moduleSurfaceOverlays.Values)
+            {
+                window.Close();
+            }
+            _moduleSurfaceOverlays.Clear();
         };
 
         Opened += (_, _) => ApplyPosition();
@@ -291,6 +304,10 @@ public sealed class OverlayWindow : Window
             }));
         _moduleRegistrySubscription = _model.Runtime.Events.Subscribe<ModuleRegistryChangedEvent>(_ =>
             Dispatcher.UIThread.Post(RebindModuleSurfaces));
+        _conversationSubscription = _model.Runtime.Events.Subscribe<ConversationEvent>(payload =>
+            Dispatcher.UIThread.Post(() => HandleModuleConversation(payload)));
+        _moduleProgressSubscription = _model.Runtime.Events.Subscribe<ModuleProgressEvent>(payload =>
+            Dispatcher.UIThread.Post(() => HandleModuleProgress(payload)));
         RebindModuleSurfaces();
     }
 
@@ -489,6 +506,7 @@ public sealed class OverlayWindow : Window
         SyncMusicOverlay();
         SyncTimerOverlay();
         SyncPermissionOverlay();
+        SyncModuleSurfaceOverlays();
         SyncActivityOverlay();
         TimeSpan desired = state == MindState.Gaming
             ? TimeSpan.FromSeconds(1)
@@ -578,8 +596,9 @@ public sealed class OverlayWindow : Window
         bool hasMeaningfulWork = _model.HasActiveWork &&
                                  !string.IsNullOrWhiteSpace(_model.ActivityTurnId) &&
                                  DateTimeOffset.Now - _model.ActivityStartedAt >= TimeSpan.FromMilliseconds(650);
+        bool moduleOverlayVisible = _moduleSurfaceOverlays.Values.Any(window => window.IsVisible);
         bool canShow = IsVisible && hasMeaningfulWork && !_model.HasPendingPermission &&
-                       _model.State != MindState.Gaming && _activityOverlay.Bind(_model);
+                       _model.State != MindState.Gaming && !moduleOverlayVisible && _activityOverlay.Bind(_model);
         if (!canShow)
         {
             _activityOverlay.Hide();
@@ -604,10 +623,15 @@ public sealed class OverlayWindow : Window
     {
         NowPlayingModel? discovered = null;
         ActiveTimerModel? timer = null;
+        Dictionary<string, ModuleSurface> overlaySurfaces = new(StringComparer.OrdinalIgnoreCase);
         try
         {
             foreach (ModuleSurface surface in _model.Runtime.Modules.GetSurfaces())
             {
+                if (surface.Slot == ShellSlot.Overlay)
+                {
+                    overlaySurfaces[surface.Id] = surface;
+                }
                 if (surface.Model is NowPlayingModel candidate)
                 {
                     discovered = candidate;
@@ -651,9 +675,124 @@ public sealed class OverlayWindow : Window
             }
         }
 
+        foreach (string surfaceId in _moduleSurfaceOverlays.Keys
+                     .Where(surfaceId => !overlaySurfaces.ContainsKey(surfaceId)).ToList())
+        {
+            ModuleSurfaceOverlayWindow stale = _moduleSurfaceOverlays[surfaceId];
+            stale.Close();
+            _moduleSurfaceOverlays.Remove(surfaceId);
+        }
+        foreach (ModuleSurface surface in overlaySurfaces.Values)
+        {
+            if (!_moduleSurfaceOverlays.ContainsKey(surface.Id))
+            {
+                _moduleSurfaceOverlays[surface.Id] = new ModuleSurfaceOverlayWindow(_model, surface);
+            }
+        }
+
         SyncMusicOverlay();
         SyncTimerOverlay();
+        SyncModuleSurfaceOverlays();
     }
+
+    private void HandleModuleConversation(ConversationEvent payload)
+    {
+        if (payload.Phase == ConversationPhase.ToolStarted)
+        {
+            ModuleSurfaceOverlayWindow? window = FindModuleSurfaceOverlay(payload.ModuleId);
+            if (window is null)
+            {
+                return;
+            }
+            _activeModuleId = payload.ModuleId;
+            _activeModuleTurnId = payload.TurnId;
+            window.BindActivity(payload.TurnId, payload.Text);
+            SyncModuleSurfaceOverlays();
+            SyncActivityOverlay();
+            return;
+        }
+
+        if (payload.Phase != ConversationPhase.ToolFinished ||
+            !string.Equals(payload.ModuleId, _activeModuleId, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(payload.TurnId, _activeModuleTurnId, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        ModuleSurfaceOverlayWindow? active = FindModuleSurfaceOverlay(_activeModuleId);
+        _activeModuleId = string.Empty;
+        _activeModuleTurnId = string.Empty;
+        if (active is not null && !(payload.Detail?.Contains("did not allow", StringComparison.OrdinalIgnoreCase) ?? false))
+        {
+            bool visible = active.BindCompletion(payload.TurnId,
+                string.IsNullOrWhiteSpace(payload.Detail) ? "Done" : payload.Detail);
+            if (visible)
+            {
+                ShowModuleSurfaceOverlay(active);
+            }
+        }
+        else
+        {
+            active?.Hide();
+        }
+        SyncModuleSurfaceOverlays();
+        SyncActivityOverlay();
+    }
+
+    private void HandleModuleProgress(ModuleProgressEvent payload)
+    {
+        if (!string.Equals(payload.ModuleId, _activeModuleId, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(payload.TurnId, _activeModuleTurnId, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        ModuleSurfaceOverlayWindow? active = FindModuleSurfaceOverlay(payload.ModuleId);
+        if (active is not null)
+        {
+            active.BindProgress(payload.TurnId, payload.Message, payload.Progress, payload.Total);
+        }
+        SyncModuleSurfaceOverlays();
+    }
+
+    private void SyncModuleSurfaceOverlays()
+    {
+        foreach (ModuleSurfaceOverlayWindow window in _moduleSurfaceOverlays.Values)
+        {
+            bool activeTurn = string.Equals(window.ModuleId, _activeModuleId, StringComparison.OrdinalIgnoreCase) &&
+                              !string.IsNullOrEmpty(_activeModuleTurnId);
+            bool completed = window.IsCompletionHold;
+            bool mayShow = IsVisible && !_model.HasPendingPermission && _model.State != MindState.Gaming;
+            if (activeTurn && mayShow && !window.IsHiddenFor(_activeModuleTurnId))
+            {
+                ShowModuleSurfaceOverlay(window);
+            }
+            else if (completed && mayShow)
+            {
+                ShowModuleSurfaceOverlay(window);
+            }
+            else
+            {
+                window.Hide();
+            }
+        }
+    }
+
+    private void ShowModuleSurfaceOverlay(ModuleSurfaceOverlayWindow window)
+    {
+        if (WorkArea() is { } work)
+        {
+            window.PlaceNear(Position, PixelWidth(), PixelHeight(), work, _growsLeft);
+        }
+        if (!window.IsVisible)
+        {
+            window.Show();
+        }
+    }
+
+    private ModuleSurfaceOverlayWindow? FindModuleSurfaceOverlay(string moduleId) =>
+        _moduleSurfaceOverlays.Values.FirstOrDefault(window =>
+            string.Equals(window.ModuleId, moduleId, StringComparison.OrdinalIgnoreCase));
 
     private void OnNowPlayingChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs eventArgs)
     {

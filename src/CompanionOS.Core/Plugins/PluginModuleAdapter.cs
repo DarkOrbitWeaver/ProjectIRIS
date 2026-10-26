@@ -63,7 +63,9 @@ public sealed class PluginModuleAdapter : IAssistantModule, IModuleSurfaceProvid
             ModuleName = DisplayName,
             Id = $"{Id}:{surface.Id}",
             Title = surface.Title,
-            Slot = ShellSlot.Sidebar,
+            Slot = string.Equals(surface.Slot, "overlay", StringComparison.OrdinalIgnoreCase)
+                ? ShellSlot.Overlay
+                : ShellSlot.Sidebar,
             Model = surface,
             IconKey = surface.Icon,
             Elements = surface.Elements.Select(element => new ModuleSurfaceElement

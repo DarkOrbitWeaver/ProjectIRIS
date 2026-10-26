@@ -23,8 +23,10 @@ permission, activity, and shell contracts so each integration feels like part of
   callable discovered tools and the reason is logged. Discovered tools without a matching
   manifest permission policy still pass through the conservative system-critical approval gate;
   they simply have no named scope attached to the prompt yet.
-- External modules may declare up to six sidebar surfaces, each with at most twenty native
-  elements: plain text, text inputs, and buttons bound to that module's offered tools. A
+- External modules may declare up to six surfaces (up to five sidebar surfaces and one
+  independent overlay), each with at most twenty native elements: plain text, text inputs,
+  and buttons bound to that module's offered tools. The shell shows a module overlay while its
+  tool is running, updates it from real MCP progress, and lets the user hide it for that task. A
   button action is checked against its owning module and then uses the same permission gate
   as a model-selected tool. All inputs in one surface are string fields shared by its buttons
   and must match each target tool's JSON schema. Semantic icon keys use Iris's built-in glyph set;
@@ -54,10 +56,11 @@ permission, activity, and shell contracts so each integration feels like part of
 
 ## What the public SDK still needs
 
-The current mechanism is not yet the complete extensibility promise. Sidebar controls are
-static, use semantic glyphs rather than a module's own branded assets, and cannot yet provide
-independent overlays, main tabs, dynamic state updates, or typed form controls. The next SDK
-work must define and implement:
+The current mechanism is not yet the complete extensibility promise. Controls are static, use
+semantic glyphs rather than a module's own branded assets, and currently support only one
+activity-attached overlay per module. They cannot yet provide main tabs, persistent state updates,
+typed form controls, or explicit show/hide component APIs. The next SDK work must define and
+implement:
 
 1. A versioned manifest and authoring kit with stronger validation, dynamic discovery for
    command modules and live refresh, lifecycle hooks, installation review,
@@ -66,8 +69,8 @@ work must define and implement:
 2. Stronger permission review and enforcement for module code. Iris now gives scopes separate
    consent grants and revocation at its tool-call boundary. The remaining work is OS-level
    process isolation, publisher review, and stronger safeguards for consequential side effects.
-3. A declarative UI contract that grows the current sidebar schema into stateful cards, typed
-   forms, branded icons, buttons, and independently controlled overlays. Iris owns rendering,
+3. A declarative UI contract that grows the current schema into stateful cards, typed forms,
+   branded icons, buttons, and multiple independently controlled overlays. Iris owns rendering,
    focus, accessibility, placement, and visibility policy; modules publish state and named
    actions instead of loading arbitrary UI code into the shell.
 4. A shared activity lifecycle for queued, running, waiting, completed, partial, failed, and
@@ -95,7 +98,7 @@ she must not claim progress the service did not report. A sent message is an ext
 effect, so the user must be able to review and authorize that action according to the configured
 permission policy.
 
-### Current schema-v1 sidebar example
+### Current schema-v1 module surfaces example
 
 With `discoverTools: true`, the MCP server supplies its tool schemas and the manifest supplies
 permission policy; a button names a discovered tool and input names map to its JSON argument
@@ -131,6 +134,15 @@ user explicitly enables it.
         { "id": "recipient", "type": "input", "name": "recipient", "label": "To", "placeholder": "Contact" },
         { "id": "message", "type": "input", "name": "message", "label": "Message" },
         { "id": "send", "type": "button", "label": "Send", "tool": "send_message" }
+      ]
+    },
+    {
+      "id": "activity",
+      "title": "Telegram activity",
+      "slot": "overlay",
+      "icon": "telegram",
+      "elements": [
+        { "id": "hint", "type": "text", "label": "Sending a message" }
       ]
     }
   ]
