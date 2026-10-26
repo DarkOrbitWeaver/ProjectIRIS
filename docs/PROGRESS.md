@@ -18,8 +18,10 @@ behavior that has been exercised.
   tool results back into the conversation and can make bounded follow-up calls. Its system
   instructions now distinguish ambient metadata from actual screen images. Malformed tool JSON
   and non-object argument values now fail visibly before module execution instead of being
-  silently replaced with empty arguments. This closes one fail-open path; schema-level validation
-  and model-specific routing quality still need broader coverage.
+  silently replaced with empty arguments. The shared module host validates argument schemas
+  before permission or execution for both model and native-surface calls. It supports the
+  documented common JSON Schema subset and rejects unsupported schema keywords; full JSON Schema
+  compatibility and model-specific routing quality still need broader coverage.
 - **Voice:** microphone capture, speech segmentation, Whisper or configured HTTP recognition,
   wake matching, interruption, one locked voice profile, cached reflex phrases, and the managed
   local Pocket TTS default are implemented. Voice segments now record a correlated,
@@ -108,9 +110,11 @@ works on the target PC under real microphone, speaker, model, display, game, and
 
 ## Verification checkpoint
 
-The current worktree builds with zero warnings/errors and the core suite passes 74/74 tests. New
+The current worktree builds with zero warnings/errors and the core suite passes 77/77 tests. New
 regressions verify that `vision: off` blocks forced capture, that Iris does not claim passive
-screen access, that malformed or non-object tool arguments cannot reach a module, that ambient
+screen access, that malformed or non-object tool arguments cannot reach a module, and that module
+schemas reject missing, mistyped, unlisted, and unsupported arguments before execution; a host-level
+check confirms the rejected call never invokes its module. Ambient
 context is withheld until observed and when sensing has stopped, and
 that a failed media probe never presents the previous track as current. Sensor-health checks
 distinguish disabled, waiting, available, and unavailable sources; turn context captures health

@@ -376,6 +376,23 @@ public sealed class ModuleHost : IAsyncDisposable
             return ToolResult.Fail($"{owner.DisplayName} is switched off right now.");
         }
 
+        if (!ToolSchemaValidator.TryValidate(arguments, tool.ParametersJson, out string schemaFailure))
+        {
+            ToolResult invalidArguments = ToolResult.Fail(
+                $"I did not run {tool.Name} because its arguments did not match the action's requirements. {schemaFailure}.");
+            PublishToolStarted(turnId, owner, tool);
+            PublishToolFinished(turnId, owner, tool, invalidArguments);
+            IrisEvent.Log("Modules", "tool.arguments.invalid", LogLevel.Warning,
+                message: $"Rejected arguments for '{tool.Name}': {schemaFailure}.",
+                data: new Dictionary<string, string?>
+                {
+                    ["tool"] = tool.Name,
+                    ["module"] = owner.Id,
+                    ["turn"] = turnId
+                });
+            return invalidArguments;
+        }
+
         bool isAllowed = await _sandbox
             .AuthorizeAsync(owner.Id, owner.DisplayName, tool, DescribeAction(owner, tool, arguments), cancellationToken)
             .ConfigureAwait(false);
@@ -593,6 +610,19 @@ public sealed class ModuleHost : IAsyncDisposable
             TurnId = turnId,
             Text = tool.ShortLabel,
             Detail = result.Succeeded ? result.DisplayText ?? result.ModelText : result.ModelText,
+            ModuleId = owner.Id,
+            IconKey = owner.IconKey
+        });
+    }
+
+    private void PublishToolStarted(string turnId, IAssistantModule owner, ModuleTool tool)
+    {
+        _events.Publish(new ConversationEvent
+        {
+            Phase = ConversationPhase.ToolStarted,
+            TurnId = turnId,
+            Text = tool.ShortLabel,
+            Detail = owner.DisplayName,
             ModuleId = owner.Id,
             IconKey = owner.IconKey
         });

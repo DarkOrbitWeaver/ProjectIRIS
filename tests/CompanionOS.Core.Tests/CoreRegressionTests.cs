@@ -42,6 +42,40 @@ public sealed class CoreRegressionTests
     }
 
     [Fact]
+    public void ModuleToolSchemaRejectsMissingOrWrongArgumentsBeforeExecution()
+    {
+        using JsonDocument missing = JsonDocument.Parse("{\"minutes\":\"five\"}");
+        const string schema = """{"type":"object","properties":{"minutes":{"type":"number","minimum":1},"label":{"type":"string","enum":["tea","break"]}},"required":["minutes"],"additionalProperties":false}""";
+
+        Assert.False(ToolSchemaValidator.TryValidate(missing.RootElement, schema, out string reason));
+        Assert.Contains("wrong type", reason);
+
+        using JsonDocument absent = JsonDocument.Parse("{}");
+        Assert.False(ToolSchemaValidator.TryValidate(absent.RootElement, schema, out reason));
+        Assert.Contains("required", reason);
+    }
+
+    [Fact]
+    public void ModuleToolSchemaValidatesNestedValuesEnumsAndRejectsUnknownFields()
+    {
+        const string schema = """{"type":"object","properties":{"profile":{"type":"object","properties":{"voice":{"type":"string","enum":["a","b"]}},"required":["voice"],"additionalProperties":false}},"required":["profile"],"additionalProperties":false}""";
+
+        using JsonDocument valid = JsonDocument.Parse("{\"profile\":{\"voice\":\"b\"}}");
+        Assert.True(ToolSchemaValidator.TryValidate(valid.RootElement, schema, out _));
+
+        using JsonDocument invalidEnum = JsonDocument.Parse("{\"profile\":{\"voice\":\"c\"}}");
+        Assert.False(ToolSchemaValidator.TryValidate(invalidEnum.RootElement, schema, out _));
+
+        using JsonDocument unexpected = JsonDocument.Parse("{\"profile\":{\"voice\":\"a\"},\"extra\":true}");
+        Assert.False(ToolSchemaValidator.TryValidate(unexpected.RootElement, schema, out _));
+
+        using JsonDocument unsupported = JsonDocument.Parse("{\"value\":\"x\"}");
+        Assert.False(ToolSchemaValidator.TryValidate(unsupported.RootElement,
+            """{"type":"object","properties":{"value":{"$ref":"#/definitions/value"}}}""", out string reason));
+        Assert.Contains("unsupported keyword", reason);
+    }
+
+    [Fact]
     public async Task VisionOffCannotBeOverriddenByForcedCapture()
     {
         SettingsStore settings = new();
@@ -1181,6 +1215,43 @@ public sealed class CoreRegressionTests
     }
 
     [Fact]
+    public async Task ModuleHostRejectsSchemaMismatchBeforePermissionOrExecution()
+    {
+        string temp = Path.Combine(Path.GetTempPath(), $"iris-schema-boundary-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(temp);
+        try
+        {
+            EventBus events = new();
+            List<ConversationEvent> conversation = [];
+            using IDisposable subscription = events.Subscribe<ConversationEvent>(conversation.Add);
+            SandboxGuard sandbox = new(events,
+                new FileAuditTrail(Path.Combine(temp, "audit.jsonl")),
+                new PermissionGrantStore(Path.Combine(temp, "permissions.json")));
+            await using ModuleHost host = new(new SettingsStore(), events, sandbox, memory: null!);
+            CountingTestModule module = new($"schema-{Guid.NewGuid():N}", "Schema test", [
+                new ModuleTool("schema_test_action", "Perform schema test.", ToolTier.Reflex,
+                    """{"type":"object","properties":{"target":{"type":"string"}},"required":["target"]}""")
+            ]);
+            await host.RegisterAsync(module);
+
+            using JsonDocument arguments = JsonDocument.Parse("{}");
+            ToolResult result = await host.ExecuteAsync("schema_test_action", arguments.RootElement.Clone(),
+                "schema-turn", CancellationToken.None);
+
+            Assert.False(result.Succeeded);
+            Assert.Contains("missing a required argument", result.ModelText);
+            Assert.Equal(0, module.ExecutionCount);
+            Assert.Collection(conversation.Where(item => item.TurnId == "schema-turn"),
+                item => Assert.Equal(ConversationPhase.ToolStarted, item.Phase),
+                item => Assert.Equal(ConversationPhase.ToolFinished, item.Phase));
+        }
+        finally
+        {
+            Directory.Delete(temp, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task ModuleRegistryRefreshRemovesOldToolsAndRegistersTheReplacement()
     {
         string temp = Path.Combine(Path.GetTempPath(), $"iris-module-registry-refresh-{Guid.NewGuid():N}");
@@ -1998,6 +2069,23 @@ public sealed class CoreRegressionTests
         public Task InitializeAsync(ModuleContext context, CancellationToken cancellationToken) => Task.CompletedTask;
         public Task<ToolResult> ExecuteAsync(ToolInvocation invocation, CancellationToken cancellationToken) =>
             Task.FromResult(ToolResult.Ok("test"));
+        public Task ShutdownAsync() => Task.CompletedTask;
+    }
+
+    private sealed class CountingTestModule(string id, string name, IReadOnlyList<ModuleTool> tools) : IAssistantModule
+    {
+        public int ExecutionCount { get; private set; }
+        public string Id => id;
+        public string DisplayName => name;
+        public string Purpose => "Test tool schema enforcement.";
+        public string CapabilityDescription => Purpose;
+        public IReadOnlyList<ModuleTool> Tools => tools;
+        public Task InitializeAsync(ModuleContext context, CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task<ToolResult> ExecuteAsync(ToolInvocation invocation, CancellationToken cancellationToken)
+        {
+            ExecutionCount++;
+            return Task.FromResult(ToolResult.Ok("executed"));
+        }
         public Task ShutdownAsync() => Task.CompletedTask;
     }
 }

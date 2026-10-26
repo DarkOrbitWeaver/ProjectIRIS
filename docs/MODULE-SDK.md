@@ -28,6 +28,13 @@ permission, activity, and shell contracts so each integration feels like part of
   callable discovered tools and the reason is logged. Discovered tools without a matching
   manifest permission policy still pass through the conservative system-critical approval gate;
   they simply have no named scope attached to the prompt yet.
+- Every tool call, including calls from native module surfaces, is checked against its declared
+  argument schema at the shared host boundary before a permission prompt or module execution.
+  The supported JSON Schema contract covers object properties and required fields, nested object
+  and array schemas, primitive types (including integers), enums and constants, additional fields,
+  common string/number/collection bounds, patterns, and `allOf`/`anyOf`/`oneOf`. Unsupported
+  keywords or invalid schemas fail closed with a visible tool error. The full JSON Schema standard
+  is not implemented; modules should use this documented subset until broader support is added.
 - External modules may declare up to eight surfaces (up to five sidebar surfaces and three
   independent overlays), each with at most twenty native elements: plain text, text inputs,
   constrained select controls, and buttons bound to that module's offered tools. Select options
