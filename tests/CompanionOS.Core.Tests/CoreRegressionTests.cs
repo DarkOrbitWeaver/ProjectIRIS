@@ -83,7 +83,7 @@ public sealed class CoreRegressionTests
                     "description": "Send a message.",
                     "permission": "messages.send",
                     "background": true,
-                    "schema": {"type":"object","properties":{"recipient":{"type":"string"},"message":{"type":"string"}}}
+                    "schema": {"type":"object","properties":{"recipient":{"type":"string"},"message":{"type":"string"},"source":{"type":"string","enum":["recent","all"]}}}
                   }],
                   "surfaces": [{
                     "id": "compose",
@@ -93,6 +93,7 @@ public sealed class CoreRegressionTests
                     "elements": [
                       {"id":"recipient","type":"input","name":"recipient","label":"To","placeholder":"Contact"},
                       {"id":"message","type":"input","name":"message","label":"Message"},
+                      {"id":"source","type":"select","name":"source","label":"Contact source","options":[{"value":"recent","label":"Recent"},{"value":"all","label":"All contacts"}]},
                       {"id":"send","type":"button","label":"Send","tool":"send_message"}
                     ]
                   }, {
@@ -113,8 +114,9 @@ public sealed class CoreRegressionTests
             PluginSurfaceManifest surface = manifest.Surfaces[0];
             Assert.Equal("telegram", surface.Icon);
             Assert.Equal("sidebar", surface.Slot);
-            Assert.Equal(3, surface.Elements.Count);
+            Assert.Equal(4, surface.Elements.Count);
             Assert.Equal("send_message", surface.Elements[^1].ToolName);
+            Assert.Equal("recent", surface.Elements[2].Options[0].Value);
             Assert.Equal("overlay", manifest.Surfaces[1].Slot);
             using PluginHost host = new(new EventBus(), folder);
             PluginModuleAdapter adapter = new(host, manifest);

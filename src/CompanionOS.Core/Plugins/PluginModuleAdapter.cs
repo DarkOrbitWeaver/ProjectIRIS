@@ -77,12 +77,14 @@ public sealed class PluginModuleAdapter : IAssistantModule, IModuleSurfaceProvid
                 {
                     "text" => ModuleSurfaceElementType.Text,
                     "input" => ModuleSurfaceElementType.Input,
+                    "select" => ModuleSurfaceElementType.Select,
                     _ => ModuleSurfaceElementType.Button
                 },
                 Label = element.Label,
                 Name = element.Name,
                 Placeholder = element.Placeholder,
-                ToolName = QualifiedToolName(_plugin.Id, element.ToolName)
+                ToolName = QualifiedToolName(_plugin.Id, element.ToolName),
+                Options = element.Options.Select(option => new ModuleSurfaceOption(option.Value, option.Label)).ToList()
             }).ToList()
         })
         .ToList();

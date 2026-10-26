@@ -198,13 +198,33 @@ public sealed class PluginManifest
                                 return false;
                             }
 
+                            List<PluginSurfaceOptionManifest> options = [];
+                            if (element.TryGetProperty("options", out JsonElement optionsElement))
+                            {
+                                if (optionsElement.ValueKind != JsonValueKind.Array)
+                                {
+                                    rejectionReason = "UI element 'options' must be an array";
+                                    return false;
+                                }
+                                foreach (JsonElement option in optionsElement.EnumerateArray())
+                                {
+                                    if (option.ValueKind != JsonValueKind.Object)
+                                    {
+                                        rejectionReason = "each select option must be an object";
+                                        return false;
+                                    }
+                                    options.Add(new PluginSurfaceOptionManifest(
+                                        ReadString(option, "value"), ReadString(option, "label")));
+                                }
+                            }
+
                             elements.Add(new PluginSurfaceElementManifest(
                                 ReadString(element, "id"),
                                 ReadString(element, "type"),
                                 ReadString(element, "label"),
                                 ReadString(element, "name"),
                                 ReadString(element, "placeholder"),
-                                ReadString(element, "tool")));
+                                ReadString(element, "tool"), options));
                         }
                     }
 
@@ -375,7 +395,8 @@ public sealed class PluginManifest
 
             HashSet<string> elementIds = new(StringComparer.OrdinalIgnoreCase);
             HashSet<string> inputNames = surface.Elements
-                .Where(element => string.Equals(element.Type, "input", StringComparison.OrdinalIgnoreCase))
+                .Where(element => string.Equals(element.Type, "input", StringComparison.OrdinalIgnoreCase) ||
+                                  string.Equals(element.Type, "select", StringComparison.OrdinalIgnoreCase))
                 .Select(element => element.Name)
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
             HashSet<string> seenInputNames = new(StringComparer.OrdinalIgnoreCase);
@@ -385,6 +406,12 @@ public sealed class PluginManifest
                     element.Label.Length > 96 || element.Placeholder.Length > 96)
                 {
                     rejectionReason = $"UI surface '{surface.Id}' has an invalid or duplicate element id, or oversized text";
+                    return false;
+                }
+                if (!string.Equals(element.Type, "select", StringComparison.OrdinalIgnoreCase) &&
+                    element.Options.Count > 0)
+                {
+                    rejectionReason = $"only select element '{element.Id}' may declare options";
                     return false;
                 }
 
@@ -409,12 +436,27 @@ public sealed class PluginManifest
                     continue;
                 }
 
+                if (string.Equals(element.Type, "select", StringComparison.OrdinalIgnoreCase))
+                {
+                    HashSet<string> optionValues = new(StringComparer.Ordinal);
+                    if (!IsIdentifier(element.Name) || string.IsNullOrWhiteSpace(element.Label) ||
+                        !seenInputNames.Add(element.Name) || element.Options.Count is 0 or > 64 ||
+                        element.Options.Any(option => string.IsNullOrWhiteSpace(option.Value) || option.Value.Length > 96 ||
+                                                      string.IsNullOrWhiteSpace(option.Label) || option.Label.Length > 96 ||
+                                                      !optionValues.Add(option.Value)))
+                    {
+                        rejectionReason = $"select element '{element.Id}' needs a unique name, label, and 1 to 64 unique options";
+                        return false;
+                    }
+                    continue;
+                }
+
                 PluginTool? targetTool = plugin.Tools.FirstOrDefault(tool =>
                     string.Equals(tool.Name, element.ToolName, StringComparison.OrdinalIgnoreCase));
                 if (!string.Equals(element.Type, "button", StringComparison.OrdinalIgnoreCase) ||
                     string.IsNullOrWhiteSpace(element.Label) || (validateActionsAndSchemas && targetTool is null))
                 {
-                    rejectionReason = $"UI element '{element.Id}' must be text, input, or a button for a declared tool";
+                    rejectionReason = $"UI element '{element.Id}' must be text, input, select, or a button for a declared tool";
                     return false;
                 }
 
@@ -500,6 +542,23 @@ public sealed class PluginManifest
                 rejectionReason = $"sidebar input '{inputName}' must map to a string property on tool '{tool.Name}'";
                 return false;
             }
+
+            PluginSurfaceElementManifest? select = surface.Elements.FirstOrDefault(element =>
+                string.Equals(element.Name, inputName, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(element.Type, "select", StringComparison.OrdinalIgnoreCase));
+            if (select is not null && inputSchema.TryGetProperty("enum", out JsonElement enumValues) &&
+                enumValues.ValueKind == JsonValueKind.Array)
+            {
+                HashSet<string> allowedValues = enumValues.EnumerateArray()
+                    .Where(value => value.ValueKind == JsonValueKind.String)
+                    .Select(value => value.GetString() ?? string.Empty)
+                    .ToHashSet(StringComparer.Ordinal);
+                if (select.Options.Any(option => !allowedValues.Contains(option.Value)))
+                {
+                    rejectionReason = $"select '{select.Name}' has an option outside tool '{tool.Name}''s enum";
+                    return false;
+                }
+            }
         }
 
         if (schema.TryGetProperty("required", out JsonElement required) && required.ValueKind == JsonValueKind.Array)
@@ -546,7 +605,10 @@ public sealed record PluginSurfaceElementManifest(
     string Label,
     string Name,
     string Placeholder,
-    string ToolName);
+    string ToolName,
+    List<PluginSurfaceOptionManifest> Options);
+
+public sealed record PluginSurfaceOptionManifest(string Value, string Label);
 
 /// <summary>What a plugin run returns; failure carries the plugin's own words.</summary>
 public record PluginResult(bool Ok, string Text, string? Error = null);

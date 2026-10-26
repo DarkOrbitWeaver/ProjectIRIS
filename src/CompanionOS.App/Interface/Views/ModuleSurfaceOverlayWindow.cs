@@ -107,7 +107,7 @@ internal sealed class ModuleSurfaceOverlayWindow : Window
         Grid.SetColumn(hide, 1);
         header.Children.Add(hide);
 
-        Dictionary<string, TextBox> inputs = new(StringComparer.OrdinalIgnoreCase);
+        Dictionary<string, Func<string>> inputs = new(StringComparer.OrdinalIgnoreCase);
         StackPanel controls = new() { Spacing = 10 };
         foreach (ModuleSurfaceElement element in surface.Elements)
         {
@@ -132,11 +132,38 @@ internal sealed class ModuleSurfaceOverlayWindow : Window
                         CornerRadius = new CornerRadius(Palette.RadiusControl),
                         Padding = new Thickness(10, 8)
                     };
-                    inputs[element.Name] = input;
+                    inputs[element.Name] = () => input.Text ?? string.Empty;
                     StackPanel field = new() { Spacing = 5 };
                     field.Children.Add(Ui.Caption(element.Label));
                     field.Children.Add(input);
                     controls.Children.Add(field);
+                    break;
+
+                case ModuleSurfaceElementType.Select:
+                    ComboBox select = new()
+                    {
+                        FontFamily = Palette.UiFont,
+                        FontSize = Palette.FontBody,
+                        Foreground = Palette.TextPrimaryBrush,
+                        Background = Palette.SurfaceBrush,
+                        BorderBrush = Palette.StrokeBrush,
+                        BorderThickness = new Thickness(1),
+                        CornerRadius = new CornerRadius(Palette.RadiusControl),
+                        Padding = new Thickness(8, 5)
+                    };
+                    foreach (ModuleSurfaceOption option in element.Options)
+                    {
+                        select.Items.Add(new ComboBoxItem { Content = option.Label, Tag = option.Value });
+                    }
+                    if (select.Items.Count > 0)
+                    {
+                        select.SelectedIndex = 0;
+                    }
+                    inputs[element.Name] = () => (select.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? string.Empty;
+                    StackPanel choiceField = new() { Spacing = 5 };
+                    choiceField.Children.Add(Ui.Caption(element.Label));
+                    choiceField.Children.Add(select);
+                    controls.Children.Add(choiceField);
                     break;
 
                 case ModuleSurfaceElementType.Button:
@@ -144,7 +171,7 @@ internal sealed class ModuleSurfaceOverlayWindow : Window
                     {
                         Dictionary<string, string> values = inputs.ToDictionary(
                             pair => pair.Key,
-                            pair => pair.Value.Text ?? string.Empty,
+                            pair => pair.Value(),
                             StringComparer.OrdinalIgnoreCase);
                         _ = model.ExecuteModuleSurfaceActionAsync(surface, element, values);
                     }, wide: true));

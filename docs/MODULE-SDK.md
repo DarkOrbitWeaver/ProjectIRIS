@@ -25,7 +25,8 @@ permission, activity, and shell contracts so each integration feels like part of
   they simply have no named scope attached to the prompt yet.
 - External modules may declare up to six surfaces (up to five sidebar surfaces and one
   independent overlay), each with at most twenty native elements: plain text, text inputs,
-  and buttons bound to that module's offered tools. The shell shows a module overlay while its
+  constrained select controls, and buttons bound to that module's offered tools. Select options
+  map to string enum values in the target tool schema. The shell shows a module overlay while its
   tool is running, updates it from real MCP progress, and lets the user hide it for that task. A
   button action is checked against its owning module and then uses the same permission gate
   as a model-selected tool. All inputs in one surface are string fields shared by its buttons
@@ -86,7 +87,7 @@ the existing module enablement and capability approval still matter.
 The current mechanism is not yet the complete extensibility promise. Controls are static, use
 semantic glyphs rather than a module's own branded assets, and currently support only one
 activity-attached overlay per module. They cannot yet provide main tabs, persistent state updates,
-typed form controls, or explicit show/hide component APIs. The next SDK work must define and
+richer typed form controls, or explicit show/hide component APIs. The next SDK work must define and
 implement:
 
 1. A versioned manifest and authoring kit with stronger validation, dynamic discovery for
