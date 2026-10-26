@@ -27,13 +27,15 @@ public sealed class PluginModuleAdapter : IAssistantModule, IModuleSurfaceProvid
             .Where(tool => !string.IsNullOrWhiteSpace(tool.Name))
             .Select(tool => new ModuleTool(
                 QualifiedToolName(plugin.Id, tool.Name),
-                string.IsNullOrWhiteSpace(tool.Description) ? $"Run {tool.Name}." : tool.Description,
+                string.IsNullOrWhiteSpace(tool.Description) ? $"Run {tool.Name}." :
+                    tool.Background ? tool.Description + " This runs in the background and returns a task id; use background-task status or cancel tools to follow it." : tool.Description,
                 ToolTier.SystemCritical,
                 string.IsNullOrWhiteSpace(tool.Schema) ? "{\"type\":\"object\"}" : tool.Schema,
                 tool.Name,
                 tool.Description)
             {
-                PermissionScope = tool.Permission
+                PermissionScope = tool.Permission,
+                BackgroundCapable = tool.Background
             })
             .ToList();
     }

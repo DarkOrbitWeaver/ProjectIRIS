@@ -204,6 +204,12 @@ public sealed class ModuleProgressEvent : CompanionEvent
     public double? Total { get; init; }
 }
 
+/// <summary>One background module task changed state or reported a real progress step.</summary>
+public sealed class BackgroundTaskChangedEvent : CompanionEvent
+{
+    public required BackgroundTaskSnapshot Task { get; init; }
+}
+
 /// <summary>Live resource numbers for the status strip.</summary>
 public sealed class TelemetryEvent : CompanionEvent
 {

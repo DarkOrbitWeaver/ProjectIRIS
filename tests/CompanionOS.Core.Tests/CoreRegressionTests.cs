@@ -82,6 +82,7 @@ public sealed class CoreRegressionTests
                     "name": "send_message",
                     "description": "Send a message.",
                     "permission": "messages.send",
+                    "background": true,
                     "schema": {"type":"object","properties":{"recipient":{"type":"string"},"message":{"type":"string"}}}
                   }],
                   "surfaces": [{
@@ -118,11 +119,43 @@ public sealed class CoreRegressionTests
             using PluginHost host = new(new EventBus(), folder);
             PluginModuleAdapter adapter = new(host, manifest);
             Assert.Equal(ShellSlot.Overlay, adapter.GetSurfaces()[1].Slot);
+            Assert.True(Assert.Single(adapter.Tools).BackgroundCapable);
         }
         finally
         {
             Directory.Delete(folder, recursive: true);
         }
+    }
+
+    [Fact]
+    public async Task BackgroundModuleTaskCanBeCancelledAndReportsTerminalState()
+    {
+        EventBus events = new();
+        await using BackgroundTaskManager manager = new(events);
+        TaskCompletionSource started = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        string id = manager.Start("plugin:sample", "Sample", "scan", async (_, token) =>
+        {
+            started.TrySetResult();
+            await Task.Delay(Timeout.InfiniteTimeSpan, token);
+            return ToolResult.Ok("unexpected completion");
+        });
+
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.True(manager.Cancel(id, out _));
+
+        BackgroundTaskSnapshot? finished = null;
+        for (int attempt = 0; attempt < 100; attempt++)
+        {
+            finished = manager.Find(id);
+            if (finished?.State == BackgroundTaskState.Cancelled)
+            {
+                break;
+            }
+            await Task.Delay(10);
+        }
+
+        Assert.NotNull(finished);
+        Assert.Equal(BackgroundTaskState.Cancelled, finished.State);
     }
 
     [Theory]

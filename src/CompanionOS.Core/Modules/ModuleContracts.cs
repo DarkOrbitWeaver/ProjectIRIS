@@ -51,6 +51,9 @@ public sealed class ModuleTool
     /// <summary>External capability label shown at approval time; this is not an OS sandbox.</summary>
     public string? PermissionScope { get; init; }
 
+    /// <summary>Run through the host's bounded background-task manager and return its task id.</summary>
+    public bool BackgroundCapable { get; init; }
+
     /// <summary>JSON Schema for the arguments object.</summary>
     public string ParametersJson { get; }
 
@@ -72,6 +75,7 @@ public sealed class ModuleContext
     public required EventBus Events { get; init; }
     public required IMemoryAccess Memory { get; init; }
     public required SandboxGuard Sandbox { get; init; }
+    public required IBackgroundTaskAccess BackgroundTasks { get; init; }
 
     /// <summary>Her writable folder. Modules should keep everything here.</summary>
     public required string WorkspaceDirectory { get; init; }

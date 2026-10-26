@@ -49,6 +49,15 @@ permission, activity, and shell contracts so each integration feels like part of
 - The activity card shows the current conversation/tool step without taking focus. The compact
   call pill remains a separate surface. Progress bars appear only when the module reports both
   a finite progress value and a finite positive total; otherwise the card shows the step only.
+- External tools may opt into bounded background execution with `"background": true` in their
+  declared tool policy. Iris checks permission before starting, returns a task ID to the current
+  conversation, and keeps the task independent of later chat turns. At most two tasks run at once,
+  at most four may be queued or running, and up to 32 recent task records are retained. The shared
+  activity card shows current progress and offers stop/hide controls; the background-task tools
+  can list status or request cancellation by ID. Command processes are killed on cancellation;
+  MCP tasks receive `notifications/cancelled` (the server still has to honor it). Background
+  actions have a five-minute host timeout. This is bounded concurrency, not permission to create
+  unbounded work.
 - A bare executable such as `node` or `python` resolves through `PATH`; a relative command path
   resolves inside the module folder. External code runs only after the module is enabled.
 - A command module receives one JSON line on stdin with its module id, local tool name, and
@@ -117,11 +126,16 @@ user explicitly enables it.
   "command": ["node", "server.js"],
   "disabled": true,
   "discoverTools": true,
-  "asksPermission": ["messages.send"],
+  "asksPermission": ["messages.send", "history.read"],
   "tools": [
     {
       "name": "send_message",
       "permission": "messages.send"
+    },
+    {
+      "name": "search_history",
+      "permission": "history.read",
+      "background": true
     }
   ],
   "surfaces": [

@@ -74,7 +74,7 @@ public sealed class PluginHost : IDisposable
                 {
                     PluginTool? policy = plugin.DeclaredTools.FirstOrDefault(declared =>
                         string.Equals(declared.Name, tool.Name, StringComparison.OrdinalIgnoreCase));
-                    return tool with { Permission = policy?.Permission };
+                    return tool with { Permission = policy?.Permission, Background = policy?.Background ?? false };
                 }).ToList();
 
                 plugin.Tools = merged;
@@ -253,6 +253,19 @@ public sealed class PluginHost : IDisposable
             return new PluginResult(false, "", $"Could not start '{plugin.Name}'.");
         }
 
+        using CancellationTokenRegistration cancellationRegistration = cancellationToken.Register(() =>
+        {
+            try
+            {
+                if (!process.HasExited)
+                {
+                    process.Kill(entireProcessTree: true);
+                }
+            }
+            catch (InvalidOperationException) { }
+            catch (System.ComponentModel.Win32Exception) { }
+        });
+
         string payload = JsonSerializer.Serialize(new
         {
             plugin = plugin.Id,
@@ -417,6 +430,7 @@ internal sealed class McpConnection : IDisposable
     private readonly PluginManifest _plugin;
     private Process? _process;
     private readonly Dictionary<int, TaskCompletionSource<JsonElement>> _pending = [];
+    private readonly SemaphoreSlim _writeGate = new(1, 1);
     private readonly object _pendingLock = new();
     private readonly object _progressLock = new();
     private readonly Dictionary<string, Action<McpProgressUpdate>> _progressHandlers = new(StringComparer.Ordinal);
@@ -744,7 +758,7 @@ internal sealed class McpConnection : IDisposable
             ["params"] = JsonSerializer.SerializeToElement(parameters)
         });
 
-        await _process.StandardInput.WriteLineAsync(request).ConfigureAwait(false);
+        await WriteLineAsync(request, cancellationToken).ConfigureAwait(false);
 
         // A stuck plugin can jam its tool; 30 s is already generous before it loses the slot.
         Task finished = await Task.WhenAny(waiter.Task, Task.Delay(timeout ?? TimeSpan.FromSeconds(30), cancellationToken))
@@ -754,6 +768,21 @@ internal sealed class McpConnection : IDisposable
             lock (_pendingLock)
             {
                 _pending.Remove(id);
+            }
+            if (cancellationToken.IsCancellationRequested)
+            {
+                try
+                {
+                    await NotifyAsync("notifications/cancelled", new Dictionary<string, object?>
+                    {
+                        ["requestId"] = id,
+                        ["reason"] = "Cancelled by user"
+                    }).ConfigureAwait(false);
+                }
+                catch (Exception exception) when (exception is IOException or ObjectDisposedException or InvalidOperationException)
+                {
+                    CompanionLog.Trace("Plugins", $"Could not send MCP cancellation for '{_plugin.Name}': {exception.Message}");
+                }
             }
             cancellationToken.ThrowIfCancellationRequested();
             TimeSpan effectiveTimeout = timeout ?? TimeSpan.FromSeconds(30);
@@ -774,7 +803,24 @@ internal sealed class McpConnection : IDisposable
             ["method"] = method,
             ["params"] = JsonSerializer.SerializeToElement(parameters)
         });
-        await _process.StandardInput.WriteLineAsync(notification).ConfigureAwait(false);
+        await WriteLineAsync(notification, CancellationToken.None).ConfigureAwait(false);
+    }
+
+    private async Task WriteLineAsync(string message, CancellationToken cancellationToken)
+    {
+        await _writeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (_process is null || _process.HasExited)
+            {
+                throw new IOException("The MCP process is not running.");
+            }
+            await _process.StandardInput.WriteLineAsync(message).ConfigureAwait(false);
+        }
+        finally
+        {
+            _writeGate.Release();
+        }
     }
 
     public void Dispose()
@@ -791,6 +837,7 @@ internal sealed class McpConnection : IDisposable
 
         _process?.Kill(entireProcessTree: true);
         _process?.Dispose();
+        _writeGate.Dispose();
     }
 }
 

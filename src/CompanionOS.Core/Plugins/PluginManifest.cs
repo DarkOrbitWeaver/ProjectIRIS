@@ -111,11 +111,23 @@ public sealed class PluginManifest
                         }
                     }
 
+                    bool backgroundCapable = false;
+                    if (tool.TryGetProperty("background", out JsonElement backgroundElement))
+                    {
+                        if (backgroundElement.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+                        {
+                            rejectionReason = "tool 'background' must be a boolean";
+                            return false;
+                        }
+                        backgroundCapable = backgroundElement.ValueKind == JsonValueKind.True;
+                    }
+
                     tools.Add(new PluginTool(
                         Name: tool.TryGetProperty("name", out JsonElement nameElement) ? nameElement.GetString() ?? "" : "",
                         Description: tool.TryGetProperty("description", out JsonElement descriptionElement) ? descriptionElement.GetString() ?? "" : "",
                         Permission: permission,
-                        Schema: tool.TryGetProperty("schema", out JsonElement schemaElement) ? schemaElement.GetRawText() : "{}"));
+                        Schema: tool.TryGetProperty("schema", out JsonElement schemaElement) ? schemaElement.GetRawText() : "{}",
+                        Background: backgroundCapable));
                 }
             }
 
@@ -518,7 +530,8 @@ public sealed record PluginTool(
     string Name,
     string Description,
     string? Permission,
-    string Schema);
+    string Schema,
+    bool Background = false);
 
 public sealed record PluginSurfaceManifest(
     string Id,

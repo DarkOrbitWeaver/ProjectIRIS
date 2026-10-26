@@ -5,6 +5,7 @@ using Avalonia.Layout;
 using Avalonia.Media;
 using CompanionOS.App.Interface.Controls;
 using CompanionOS.App.Interface.Theme;
+using CompanionOS.Core.Modules;
 using AvaloniaPath = Avalonia.Controls.Shapes.Path;
 
 namespace CompanionOS.App.Interface.Views;
@@ -26,6 +27,7 @@ internal sealed class ActivityOverlayWindow : Window
     private readonly Border _progressFill;
     private readonly Button _hide;
     private readonly Button _open;
+    private readonly Button _cancel;
     private string _boundTurnId = string.Empty;
     private string _hiddenTurnId = string.Empty;
 
@@ -71,6 +73,8 @@ internal sealed class ActivityOverlayWindow : Window
             Hide();
         });
         _open = IconButton(IconGlyph.OverlayFrame, "Open Iris", openMainWindow);
+        _cancel = IconButton(IconGlyph.Stop, "Stop background task", () => { });
+        _cancel.IsVisible = false;
 
         StackPanel moduleHeading = new()
         {
@@ -79,11 +83,13 @@ internal sealed class ActivityOverlayWindow : Window
             VerticalAlignment = VerticalAlignment.Center,
             Children = { _moduleIcon, _module }
         };
-        Grid header = new() { ColumnDefinitions = new ColumnDefinitions("*,Auto,Auto") };
+        Grid header = new() { ColumnDefinitions = new ColumnDefinitions("*,Auto,Auto,Auto") };
         header.Children.Add(moduleHeading);
         Grid.SetColumn(_open, 1);
         header.Children.Add(_open);
-        Grid.SetColumn(_hide, 2);
+        Grid.SetColumn(_cancel, 2);
+        header.Children.Add(_cancel);
+        Grid.SetColumn(_hide, 3);
         header.Children.Add(_hide);
 
         StackPanel body = new()
@@ -115,6 +121,7 @@ internal sealed class ActivityOverlayWindow : Window
         }
 
         _module.Text = $"{model.ActivityModule.ToUpperInvariant()} · IN PROGRESS";
+        _cancel.IsVisible = false;
         _moduleIcon.Data = Avalonia.Media.StreamGeometry.Parse(ModuleIconGlyph.Resolve(model.ActivityIconKey));
         _step.Text = model.ActivityMessage;
         _detail.Text = model.ActivityDetail;
@@ -128,6 +135,43 @@ internal sealed class ActivityOverlayWindow : Window
         }
 
         return _hiddenTurnId != _boundTurnId;
+    }
+
+    public bool Bind(BackgroundTaskSnapshot task, IBackgroundTaskAccess tasks)
+    {
+        if (!string.Equals(_boundTurnId, task.Id, StringComparison.Ordinal))
+        {
+            _boundTurnId = task.Id;
+            _hiddenTurnId = string.Empty;
+        }
+
+        bool live = task.State is BackgroundTaskState.Queued or BackgroundTaskState.Running or BackgroundTaskState.CancelRequested;
+        _module.Text = $"{task.ModuleName.ToUpperInvariant()} · {(live ? "IN BACKGROUND" : task.State.ToString().ToUpperInvariant())}";
+        _moduleIcon.Data = Avalonia.Media.StreamGeometry.Parse(ModuleIconGlyph.Resolve("activity"));
+        _step.Text = task.CurrentStep;
+        _detail.Text = task.Result ?? $"{task.ToolName} · {task.Id}";
+        _cancel.IsVisible = live;
+        _cancel.Click -= OnCancelBackgroundTask;
+        _cancel.Click += OnCancelBackgroundTask;
+        _boundTasks = tasks;
+        _progressTrack.IsVisible = task.Progress is { } progress && task.Total is { } total && total > 0 &&
+                                   double.IsFinite(progress) && double.IsFinite(total);
+        if (_progressTrack.IsVisible)
+        {
+            RenderProgress(task.Progress!.Value / task.Total!.Value);
+        }
+
+        return _hiddenTurnId != _boundTurnId;
+    }
+
+    private IBackgroundTaskAccess? _boundTasks;
+
+    private void OnCancelBackgroundTask(object? sender, Avalonia.Interactivity.RoutedEventArgs args)
+    {
+        if (_boundTasks?.Cancel(_boundTurnId, out _) == true)
+        {
+            _cancel.IsEnabled = false;
+        }
     }
 
     public void PlaceNear(PixelPoint pillPosition, int pillWidth, int pillHeight, PixelRect workArea,

@@ -29,6 +29,7 @@ public sealed class ModuleHost : IAsyncDisposable
     private readonly EventBus _events;
     private readonly SandboxGuard _sandbox;
     private readonly IMemoryAccess _memory;
+    private readonly BackgroundTaskManager _backgroundTasks;
     private readonly object _registryLock = new();
     private readonly Dictionary<string, IAssistantModule> _modulesById = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, IAssistantModule> _toolOwners = new(StringComparer.OrdinalIgnoreCase);
@@ -41,8 +42,12 @@ public sealed class ModuleHost : IAsyncDisposable
         _events = events;
         _sandbox = sandbox;
         _memory = memory;
+        _backgroundTasks = new BackgroundTaskManager(events);
         LoadDisabledModules();
     }
+
+    /// <summary>Bounded background work contributed by explicitly opted-in module tools.</summary>
+    public IBackgroundTaskAccess BackgroundTasks => _backgroundTasks;
 
     /// <summary>
     /// Her body as seen from a module. Set once by the runtime after the brain exists,
@@ -373,6 +378,36 @@ public sealed class ModuleHost : IAsyncDisposable
             return refusal;
         }
 
+        if (tool.BackgroundCapable)
+        {
+            _events.Publish(new ConversationEvent
+            {
+                Phase = ConversationPhase.ToolStarted,
+                TurnId = turnId,
+                Text = tool.ShortLabel,
+                Detail = owner.DisplayName,
+                ModuleId = owner.Id,
+                IconKey = owner.IconKey
+            });
+            try
+            {
+                string taskId = _backgroundTasks.Start(owner.Id, owner.DisplayName, tool.Name,
+                    (backgroundTurnId, token) => ExecuteAuthorizedToolAsync(owner, tool, arguments, backgroundTurnId,
+                        token, publishConversationEvents: false, isBackground: true));
+                ToolResult started = ToolResult.Ok(
+                    $"Started {owner.DisplayName}'s background task {taskId}. It will continue while you chat; use background-task status or cancel tools to follow it.",
+                    displayText: $"Started in background · {taskId}");
+                PublishToolFinished(turnId, owner, tool, started);
+                return started;
+            }
+            catch (InvalidOperationException exception)
+            {
+                ToolResult unavailable = ToolResult.Fail(exception.Message);
+                PublishToolFinished(turnId, owner, tool, unavailable);
+                return unavailable;
+            }
+        }
+
         _events.Publish(new ConversationEvent
         {
             Phase = ConversationPhase.ToolStarted,
@@ -382,6 +417,27 @@ public sealed class ModuleHost : IAsyncDisposable
             ModuleId = owner.Id,
             IconKey = owner.IconKey
         });
+
+        return await ExecuteAuthorizedToolAsync(owner, tool, arguments, turnId, cancellationToken,
+            publishConversationEvents: true, isBackground: false).ConfigureAwait(false);
+    }
+
+    private async Task<ToolResult> ExecuteAuthorizedToolAsync(IAssistantModule owner, ModuleTool tool,
+        JsonElement arguments, string turnId, CancellationToken cancellationToken, bool publishConversationEvents,
+        bool isBackground)
+    {
+        if (publishConversationEvents)
+        {
+            _events.Publish(new ConversationEvent
+            {
+                Phase = ConversationPhase.ToolStarted,
+                TurnId = turnId,
+                Text = tool.ShortLabel,
+                Detail = owner.DisplayName,
+                ModuleId = owner.Id,
+                IconKey = owner.IconKey
+            });
+        }
 
         ToolInvocation invocation = new()
         {
@@ -394,7 +450,7 @@ public sealed class ModuleHost : IAsyncDisposable
         long started = System.Diagnostics.Stopwatch.GetTimestamp();
         ToolResult result;
         using CancellationTokenSource timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeoutSource.CancelAfter(TimeSpan.FromSeconds(ToolTimeoutSeconds));
+        timeoutSource.CancelAfter(isBackground ? TimeSpan.FromMinutes(5) : TimeSpan.FromSeconds(ToolTimeoutSeconds));
 
         try
         {
@@ -408,6 +464,10 @@ public sealed class ModuleHost : IAsyncDisposable
         }
         catch (OperationCanceledException)
         {
+            if (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
             result = ToolResult.Fail($"{tool.Name} was cancelled.");
         }
         catch (Exception exception)
@@ -417,7 +477,10 @@ public sealed class ModuleHost : IAsyncDisposable
         }
 
         double elapsed = System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds;
-        PublishToolFinished(turnId, owner, tool, result);
+        if (publishConversationEvents)
+        {
+            PublishToolFinished(turnId, owner, tool, result);
+        }
 
         IrisEvent.Log("Modules",
             result.Succeeded ? "tool.done" : "tool.refused",
@@ -469,6 +532,7 @@ public sealed class ModuleHost : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        await _backgroundTasks.DisposeAsync().ConfigureAwait(false);
         foreach (IAssistantModule module in Modules)
         {
             try
@@ -494,6 +558,7 @@ public sealed class ModuleHost : IAsyncDisposable
         Events = _events,
         Memory = _memory,
         Sandbox = _sandbox,
+        BackgroundTasks = _backgroundTasks,
         WorkspaceDirectory = CompanionPaths.WorkspaceDirectory,
         ModelsDirectory = CompanionPaths.ModelsDirectory,
         CacheDirectory = CompanionPaths.CacheDirectory

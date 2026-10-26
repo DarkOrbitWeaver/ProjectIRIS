@@ -15,6 +15,7 @@ public static class AppModules
     public static IReadOnlyList<IAssistantModule> CreateBuiltInModules() => new IAssistantModule[]
     {
         new CoreToolsModule(),
+        new BackgroundTasksModule(),
         new MusicPlayerModule(),
         new SystemControlModule()
     };

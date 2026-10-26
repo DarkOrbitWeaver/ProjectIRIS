@@ -69,6 +69,7 @@ public sealed class OverlayWindow : Window
     private readonly AttentionContour _attentionContour = new() { IsHitTestVisible = false };
     private readonly DispatcherTimer _syncTimer;
     private readonly DispatcherTimer _collapseTimer;
+    private readonly DispatcherTimer _backgroundCompletionTimer;
     private readonly MusicOverlayWindow _musicOverlay;
     private readonly TimerOverlayWindow _timerOverlay;
     private readonly PermissionOverlayWindow _permissionOverlay;
@@ -80,6 +81,8 @@ public sealed class OverlayWindow : Window
     private IDisposable? _moduleRegistrySubscription;
     private IDisposable? _conversationSubscription;
     private IDisposable? _moduleProgressSubscription;
+    private IDisposable? _backgroundTaskSubscription;
+    private BackgroundTaskSnapshot? _backgroundTask;
     private string _activeModuleId = string.Empty;
     private string _activeModuleTurnId = string.Empty;
     private PillShape _shape = PillShape.Compact;
@@ -105,6 +108,14 @@ public sealed class OverlayWindow : Window
         _timerOverlay = new TimerOverlayWindow(model);
         _permissionOverlay = new PermissionOverlayWindow(model);
         _activityOverlay = new ActivityOverlayWindow(showMainWindow);
+        _backgroundCompletionTimer = new DispatcherTimer(TimeSpan.FromMilliseconds(1800), DispatcherPriority.Background,
+            (sender, _) =>
+            {
+                (sender as DispatcherTimer)?.Stop();
+                _backgroundTask = null;
+                SyncActivityOverlay();
+            });
+        _backgroundCompletionTimer.Stop();
 
         SystemDecorations = SystemDecorations.None;
         TransparencyLevelHint = new[] { WindowTransparencyLevel.Transparent };
@@ -268,9 +279,11 @@ public sealed class OverlayWindow : Window
         {
             _syncTimer.Stop();
             _collapseTimer.Stop();
+            _backgroundCompletionTimer.Stop();
             _moduleRegistrySubscription?.Dispose();
             _conversationSubscription?.Dispose();
             _moduleProgressSubscription?.Dispose();
+            _backgroundTaskSubscription?.Dispose();
             if (_nowPlaying is not null)
             {
                 _nowPlaying.PropertyChanged -= OnNowPlayingChanged;
@@ -308,6 +321,8 @@ public sealed class OverlayWindow : Window
             Dispatcher.UIThread.Post(() => HandleModuleConversation(payload)));
         _moduleProgressSubscription = _model.Runtime.Events.Subscribe<ModuleProgressEvent>(payload =>
             Dispatcher.UIThread.Post(() => HandleModuleProgress(payload)));
+        _backgroundTaskSubscription = _model.Runtime.Events.Subscribe<BackgroundTaskChangedEvent>(payload =>
+            Dispatcher.UIThread.Post(() => HandleBackgroundTask(payload.Task)));
         RebindModuleSurfaces();
     }
 
@@ -593,12 +608,15 @@ public sealed class OverlayWindow : Window
 
     private void SyncActivityOverlay()
     {
-        bool hasMeaningfulWork = _model.HasActiveWork &&
+        bool hasMeaningfulWork = _backgroundTask is not null || (_model.HasActiveWork &&
                                  !string.IsNullOrWhiteSpace(_model.ActivityTurnId) &&
-                                 DateTimeOffset.Now - _model.ActivityStartedAt >= TimeSpan.FromMilliseconds(650);
+                                 DateTimeOffset.Now - _model.ActivityStartedAt >= TimeSpan.FromMilliseconds(650));
         bool moduleOverlayVisible = _moduleSurfaceOverlays.Values.Any(window => window.IsVisible);
         bool canShow = IsVisible && hasMeaningfulWork && !_model.HasPendingPermission &&
-                       _model.State != MindState.Gaming && !moduleOverlayVisible && _activityOverlay.Bind(_model);
+                       _model.State != MindState.Gaming && !moduleOverlayVisible &&
+                       (_backgroundTask is not null
+                           ? _activityOverlay.Bind(_backgroundTask, _model.Runtime.Modules.BackgroundTasks)
+                           : _activityOverlay.Bind(_model));
         if (!canShow)
         {
             _activityOverlay.Hide();
@@ -614,6 +632,21 @@ public sealed class OverlayWindow : Window
         {
             _activityOverlay.Show();
         }
+    }
+
+    private void HandleBackgroundTask(BackgroundTaskSnapshot task)
+    {
+        _backgroundTask = task;
+        bool live = task.State is BackgroundTaskState.Queued or BackgroundTaskState.Running or BackgroundTaskState.CancelRequested;
+        if (live)
+        {
+            _backgroundCompletionTimer.Stop();
+        }
+        else
+        {
+            _backgroundCompletionTimer.Start();
+        }
+        SyncActivityOverlay();
     }
 
     /// <summary>Looks up the module surface only when the registry changes. Progress is
