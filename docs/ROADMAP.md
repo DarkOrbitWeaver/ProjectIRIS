@@ -136,8 +136,13 @@ Remaining work:
    associated module overlay as well as active chat/tool UI, and cancellation marks the journal
    turn intentionally cancelled so restart recovery does not mislabel it as a crash. The
    module surface protocol now includes the originating foreground turn/background task ID, and
-   the overlay rejects delayed state patches from an older task. The
-   recognizer contract currently returns text only, so recognition confidence is unavailable and
+   the overlay rejects delayed state patches from an older task. The durable journal now records
+   tool operation IDs and outcomes without arguments or result text;
+   recovery warns before a retry when an interrupted turn contains an action whose external effect
+   is uncertain. Background task lifecycle transitions are also journaled without progress or result
+   text, and startup warns if any task was still active even after its parent turn completed. Verify
+   recovery and cleanup across process termination on the target PC. The recognizer contract
+   currently returns text only, so recognition confidence is unavailable and
    must not be implied in UI or prompts.
 3. Chat recall chips now identify direct matches versus association-activated memories, show the
    activation edge, stored source, strength, and score in a tooltip, and open the exact memory node

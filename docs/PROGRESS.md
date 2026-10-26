@@ -52,7 +52,12 @@ behavior that has been exercised.
   ID. Cancellation now closes the active UI state and is journaled as intentional rather than as
   an interrupted crash-recovery turn. Tool lifecycle now publishes one start/finish pair per
   synchronous action; tool capsules are matched to their turn, finalized on cancellation/error,
-  and the activity card returns to result review after each tool completes. Active module overlays
+  and the activity card returns to result review after each tool completes. The durable turn
+  journal pairs each tool start with a success, failure, background-started, or unknown outcome;
+  interrupted turns with uncertain actions warn the user before a retry, without storing
+  arguments or result text. It also records only background-task lifecycle transitions and warns
+  at startup if work was still active; progress text and task results are not persisted. Active
+  module overlays
   now hide on their correlated turn's cancellation or failure instead of remaining stuck. Module
   surface updates carry their foreground turn or background task ID, and stale patches cannot
   overwrite the currently bound overlay. Media

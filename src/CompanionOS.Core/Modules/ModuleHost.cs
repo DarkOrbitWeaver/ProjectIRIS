@@ -403,9 +403,13 @@ public sealed class ModuleHost : IAsyncDisposable
                 string taskId = _backgroundTasks.Start(owner.Id, owner.DisplayName, owner.IconKey, tool.Name,
                     (backgroundTurnId, token) => ExecuteAuthorizedToolAsync(owner, tool, arguments, backgroundTurnId,
                         token, publishConversationEvents: false, isBackground: true));
-                ToolResult started = ToolResult.Ok(
-                    $"Started {owner.DisplayName}'s background task {taskId}. It will continue while you chat; use background-task status or cancel tools to follow it.",
-                    displayText: $"Started in background · {taskId}");
+                ToolResult started = new()
+                {
+                    Succeeded = true,
+                    ModelText = $"Started {owner.DisplayName}'s background task {taskId}. It will continue while you chat; use background-task status or cancel tools to follow it.",
+                    DisplayText = $"Started in background · {taskId}",
+                    BackgroundTaskId = taskId
+                };
                 PublishToolFinished(turnId, owner, tool, started);
                 return started;
             }

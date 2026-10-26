@@ -10,6 +10,9 @@ public sealed class JournalEntry
 {
     public string Kind { get; set; } = string.Empty;
     public string TurnId { get; set; } = string.Empty;
+    public string OperationId { get; set; } = string.Empty;
+    public string RelatedId { get; set; } = string.Empty;
+    public string TaskId { get; set; } = string.Empty;
     public DateTimeOffset At { get; set; } = DateTimeOffset.Now;
     public string State { get; set; } = string.Empty;
     public string Text { get; set; } = string.Empty;
@@ -23,8 +26,26 @@ public sealed class JournalRecovery
     public string? InterruptedTurnId { get; init; }
     public string? InterruptedUserMessage { get; init; }
     public string? PartialAnswer { get; init; }
+    public IReadOnlyList<InterruptedToolAction> InterruptedTools { get; init; } = Array.Empty<InterruptedToolAction>();
+    public IReadOnlyList<InterruptedBackgroundTask> InterruptedBackgroundTasks { get; init; } =
+        Array.Empty<InterruptedBackgroundTask>();
     public bool HadIncompleteTurn => InterruptedTurnId is not null;
 }
+
+public enum JournalToolStatus
+{
+    Unknown,
+    Succeeded,
+    Failed,
+    BackgroundStarted
+}
+
+/// <summary>A tool call whose turn had not finished when Iris last stopped.</summary>
+public sealed record InterruptedToolAction(string OperationId, string Tool, JournalToolStatus Status,
+    string? BackgroundTaskId);
+
+/// <summary>A background module task that was queued or running when Iris last stopped.</summary>
+public sealed record InterruptedBackgroundTask(string TaskId, string Detail, string State);
 
 /// <summary>
 /// An append-only record of what she was doing, written before it happens.
@@ -63,10 +84,36 @@ public sealed class TurnJournal
         Append(new JournalEntry { Kind = "answer-progress", TurnId = turnId, Text = textSoFar });
 
     /// <summary>Records a tool call before it runs; a crash leaves evidence of it.</summary>
-    public void RecordToolCall(string turnId, string moduleId, string toolName) =>
+    public string RecordToolCall(string turnId, string moduleId, string toolName)
+    {
+        string operationId = Guid.NewGuid().ToString("N");
         Append(new JournalEntry
         {
-            Kind = "tool", TurnId = turnId, Detail = moduleId + "/" + toolName
+            Kind = "tool", TurnId = turnId, OperationId = operationId, Detail = moduleId + "/" + toolName
+        });
+        return operationId;
+    }
+
+    /// <summary>Records whether the action finished or only started background work; no arguments or result text are saved.</summary>
+    public void RecordToolResult(string turnId, string operationId, JournalToolStatus status,
+        string? backgroundTaskId = null) =>
+        Append(new JournalEntry
+        {
+            Kind = "tool-result",
+            TurnId = turnId,
+            OperationId = operationId,
+            State = status.ToString(),
+            RelatedId = backgroundTaskId ?? string.Empty
+        });
+
+    /// <summary>Records only lifecycle transitions, never progress text, arguments, or task results.</summary>
+    public void RecordBackgroundTaskState(string taskId, string moduleId, string toolName, string state) =>
+        Append(new JournalEntry
+        {
+            Kind = "background-task",
+            TaskId = taskId,
+            Detail = moduleId + "/" + toolName,
+            State = state
         });
 
     /// <summary>Records that the turn finished cleanly.</summary>
@@ -139,21 +186,48 @@ public sealed class TurnJournal
                 }
             }
 
+            List<InterruptedBackgroundTask> interruptedBackgroundTasks = entries
+                .Where(entry => entry.Kind == "background-task" && !string.IsNullOrWhiteSpace(entry.TaskId))
+                .GroupBy(entry => entry.TaskId, StringComparer.Ordinal)
+                .Select(group => group.Last())
+                .Where(entry => entry.State is "Queued" or "Running" or "CancelRequested")
+                .Select(entry => new InterruptedBackgroundTask(entry.TaskId, entry.Detail, entry.State))
+                .ToList();
+
             if (unanswered is null)
             {
-                return new JournalRecovery { LastState = lastState };
+                return new JournalRecovery
+                {
+                    LastState = lastState,
+                    InterruptedBackgroundTasks = interruptedBackgroundTasks
+                };
             }
 
             JournalEntry? progress = entries
                 .Where(entry => entry.Kind == "answer-progress" && entry.TurnId == unanswered.TurnId)
                 .LastOrDefault();
+            List<InterruptedToolAction> interruptedTools = entries
+                .Where(entry => entry.Kind == "tool" && entry.TurnId == unanswered.TurnId)
+                .Select(started =>
+                {
+                    JournalEntry? result = entries.LastOrDefault(entry => entry.Kind == "tool-result" &&
+                        entry.TurnId == unanswered.TurnId && entry.OperationId == started.OperationId);
+                    JournalToolStatus status = result is not null &&
+                        Enum.TryParse(result.State, out JournalToolStatus parsedStatus)
+                            ? parsedStatus
+                            : JournalToolStatus.Unknown;
+                    return new InterruptedToolAction(started.OperationId, started.Detail, status,
+                        string.IsNullOrWhiteSpace(result?.RelatedId) ? null : result.RelatedId);
+                }).ToList();
 
             return new JournalRecovery
             {
                 LastState = lastState,
                 InterruptedTurnId = unanswered.TurnId,
                 InterruptedUserMessage = unanswered.Text,
-                PartialAnswer = progress?.Text
+                PartialAnswer = progress?.Text,
+                InterruptedTools = interruptedTools,
+                InterruptedBackgroundTasks = interruptedBackgroundTasks
             };
         }
         catch (Exception exception)

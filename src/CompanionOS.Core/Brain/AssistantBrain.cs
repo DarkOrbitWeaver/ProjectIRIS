@@ -44,6 +44,9 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
     private readonly VoicePipeline _voice;
     private readonly TurnJournal _journal;
     private readonly MindStateMachine _mind;
+    private readonly IDisposable _backgroundTaskJournalSubscription;
+    private readonly object _backgroundTaskJournalLock = new();
+    private readonly Dictionary<string, string> _lastBackgroundTaskStates = new(StringComparer.Ordinal);
 
     private readonly List<ChatMessage> _history = new();
     private readonly object _historyLock = new();
@@ -84,6 +87,7 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
         _voice = voice;
         _journal = journal;
         _mind = mind;
+        _backgroundTaskJournalSubscription = events.Subscribe<BackgroundTaskChangedEvent>(RecordBackgroundTaskState);
 
         _voice.UserRequested += OnUserRequested;
         _voice.UserInterrupted += OnUserInterrupted;
@@ -112,12 +116,36 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
             .ConfigureAwait(false);
 
         JournalRecovery recovery = _journal.Analyse();
-        if (recovery.HadIncompleteTurn)
+        if (recovery.HadIncompleteTurn || recovery.InterruptedBackgroundTasks.Count > 0)
         {
-            CompanionLog.Info("Brain", "The last session was interrupted mid-turn; restoring cleanly.");
-            _events.PublishNotice(
-                "Last session was interrupted. Your question was kept, nothing was lost.",
-                NoticeSeverity.Info);
+            CompanionLog.Info("Brain", "The last session stopped with work in progress; restoring cleanly.");
+            bool uncertainTool = recovery.InterruptedTools.Any(tool =>
+                tool.Status is JournalToolStatus.Unknown or JournalToolStatus.BackgroundStarted);
+            bool actionMayHaveCompleted = uncertainTool || recovery.InterruptedBackgroundTasks.Count > 0;
+            List<string> recoveryDetails = [];
+            if (uncertainTool)
+            {
+                recoveryDetails.Add("An action may have completed externally; check before asking Iris to repeat it.");
+            }
+            if (recovery.InterruptedBackgroundTasks.Count > 0)
+            {
+                int activeTaskCount = recovery.InterruptedBackgroundTasks.Count;
+                recoveryDetails.Add(activeTaskCount == 1
+                    ? "One background task was still active; check its service before repeating it."
+                    : $"{activeTaskCount} background tasks were still active; check their services before repeating them.");
+            }
+            if (recoveryDetails.Count == 0 && recovery.InterruptedTools.Count > 0)
+            {
+                int actionCount = recovery.InterruptedTools.Count;
+                recoveryDetails.Add(actionCount == 1
+                    ? "I recorded one action result."
+                    : $"I recorded {actionCount} action results.");
+            }
+            string recoveryNotice = "Last session was interrupted. " +
+                (recoveryDetails.Count > 0 ? string.Join(" ", recoveryDetails) + " " : string.Empty) +
+                "Your question was kept.";
+            _events.PublishNotice(recoveryNotice,
+                actionMayHaveCompleted ? NoticeSeverity.Warning : NoticeSeverity.Info);
         }
 
         _mind.MoveTo(MindState.Idle, "startup");
@@ -294,10 +322,27 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
         _voice.UserInterrupted -= OnUserInterrupted;
         _voice.UserCalledHer -= OnUserCalledHer;
         _perception.SituationUpdated -= OnSituationUpdated;
+        _backgroundTaskJournalSubscription.Dispose();
         _currentTurnSource?.Dispose();
         _speechSource?.Dispose();
         _modeGate.Dispose();
         await _serverHost.StopAsync().ConfigureAwait(false);
+    }
+
+    private void RecordBackgroundTaskState(BackgroundTaskChangedEvent change)
+    {
+        BackgroundTaskSnapshot task = change.Task;
+        string state = task.State.ToString();
+        lock (_backgroundTaskJournalLock)
+        {
+            if (_lastBackgroundTaskStates.TryGetValue(task.Id, out string? previous) && previous == state)
+            {
+                return;
+            }
+            _lastBackgroundTaskStates[task.Id] = state;
+        }
+
+        _journal.RecordBackgroundTaskState(task.Id, task.ModuleId, task.ToolName, state);
     }
 
     /// <summary>The actual turn, in the order documented at the top of the file.</summary>
@@ -442,7 +487,7 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
 
             foreach (ToolCallRequest call in turn.ToolCalls)
             {
-                _journal.RecordToolCall(turnId, "router", call.Name);
+                string operationId = _journal.RecordToolCall(turnId, "router", call.Name);
 
                 JsonElement arguments;
                 try
@@ -459,6 +504,11 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
                 ToolResult result = await _modules
                     .ExecuteAsync(call.Name, arguments, turnId, cancellationToken)
                     .ConfigureAwait(false);
+                _journal.RecordToolResult(turnId, operationId,
+                    result.BackgroundTaskId is not null
+                        ? JournalToolStatus.BackgroundStarted
+                        : result.Succeeded ? JournalToolStatus.Succeeded : JournalToolStatus.Failed,
+                    result.BackgroundTaskId);
 
                 messages.Add(ChatMessage.ToolResult(call.Id, call.Name, result.ModelText));
 

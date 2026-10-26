@@ -130,15 +130,40 @@ public sealed class CoreRegressionTests
             journal.RecordAnswerCancelled("cancelled-turn");
 
             Assert.False(journal.Analyse().HadIncompleteTurn);
+            journal.RecordBackgroundTaskState("task-active", "plugin:telegram", "send_message", "Running");
+            journal.RecordBackgroundTaskState("task-finished", "plugin:web", "search", "Running");
+            journal.RecordBackgroundTaskState("task-finished", "plugin:web", "search", "Completed");
+            JournalRecovery backgroundRecovery = journal.Analyse();
+            Assert.False(backgroundRecovery.HadIncompleteTurn);
+            Assert.Equal("task-active", Assert.Single(backgroundRecovery.InterruptedBackgroundTasks).TaskId);
 
             journal.RecordUserMessage("interrupted-turn", "continue later");
             journal.RecordAnswerProgress("interrupted-turn", "partial reply");
+            string completedOperation = journal.RecordToolCall("interrupted-turn", "music", "add_to_playlist");
+            journal.RecordToolResult("interrupted-turn", completedOperation, JournalToolStatus.Succeeded);
+            string uncertainOperation = journal.RecordToolCall("interrupted-turn", "telegram", "send_message");
+            string backgroundOperation = journal.RecordToolCall("interrupted-turn", "web", "search");
+            journal.RecordToolResult("interrupted-turn", backgroundOperation,
+                JournalToolStatus.BackgroundStarted, "background-task-7");
             JournalRecovery recovery = journal.Analyse();
 
             Assert.True(recovery.HadIncompleteTurn);
             Assert.Equal("interrupted-turn", recovery.InterruptedTurnId);
             Assert.Equal("continue later", recovery.InterruptedUserMessage);
             Assert.Equal("partial reply", recovery.PartialAnswer);
+            Assert.Collection(recovery.InterruptedTools,
+                tool => Assert.Equal(JournalToolStatus.Succeeded, tool.Status),
+                tool =>
+                {
+                    Assert.Equal("telegram/send_message", tool.Tool);
+                    Assert.Equal(uncertainOperation, tool.OperationId);
+                    Assert.Equal(JournalToolStatus.Unknown, tool.Status);
+                },
+                tool =>
+                {
+                    Assert.Equal(JournalToolStatus.BackgroundStarted, tool.Status);
+                    Assert.Equal("background-task-7", tool.BackgroundTaskId);
+                });
         }
         finally
         {

@@ -207,6 +207,9 @@ public sealed class ToolResult
 {
     public bool Succeeded { get; init; }
 
+    /// <summary>Set when success means a bounded background task was started, not completed.</summary>
+    public string? BackgroundTaskId { get; init; }
+
     /// <summary>Compact factual text for the model. Never markup.</summary>
     public string ModelText { get; init; } = string.Empty;
 
