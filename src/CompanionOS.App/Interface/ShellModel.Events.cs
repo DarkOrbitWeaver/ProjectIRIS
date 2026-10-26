@@ -73,7 +73,8 @@ public sealed partial class ShellModel : ObservableObject
                 {
                     Role = ChatRole.User,
                     Text = payload.Text,
-                    Detail = _pendingUserDetail
+                    Detail = _pendingUserDetail,
+                    TurnId = payload.TurnId
                 });
                 _pendingUserDetail = string.Empty;
                 break;
@@ -85,6 +86,7 @@ public sealed partial class ShellModel : ObservableObject
                 {
                     Role = ChatRole.Assistant,
                     IsStreaming = true,
+                    TurnId = payload.TurnId,
                     RecalledTitles = _runtime.Settings.Current.Interface.ShowRecallChips
                         ? _pendingRecall
                         : Array.Empty<string>()
@@ -120,7 +122,8 @@ public sealed partial class ShellModel : ObservableObject
                 {
                     Role = ChatRole.Tool,
                     Text = payload.Text,
-                    Detail = payload.Detail ?? string.Empty
+                    Detail = payload.Detail ?? string.Empty,
+                    TurnId = payload.TurnId
                 });
                 break;
 
@@ -135,9 +138,38 @@ public sealed partial class ShellModel : ObservableObject
             case ConversationPhase.TurnFailed:
                 IsTurnInProgress = false;
                 ClearActivity();
+                FinalizeStreamingTurn(payload.TurnId);
                 AddSystemMessage($"Something went wrong: {payload.Text}");
                 break;
+
+            case ConversationPhase.TurnCancelled:
+                IsTurnInProgress = false;
+                ClearActivity();
+                FinalizeStreamingTurn(payload.TurnId);
+                AddSystemMessage(payload.Text);
+                break;
         }
+    }
+
+    private void FinalizeStreamingTurn(string turnId)
+    {
+        if (_streamingEntry is null || _streamingEntry.TurnId != turnId)
+        {
+            return;
+        }
+
+        FlushStream();
+        if (string.IsNullOrWhiteSpace(_streamingEntry.Text))
+        {
+            Messages.Remove(_streamingEntry);
+        }
+        else
+        {
+            _streamingEntry.IsStreaming = false;
+        }
+
+        _streamingEntry = null;
+        _streamBuffer.Clear();
     }
 
     private void HandleModuleProgress(ModuleProgressEvent payload)

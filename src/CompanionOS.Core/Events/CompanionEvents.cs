@@ -52,7 +52,8 @@ public enum ConversationPhase
     AssistantCompleted,
     ToolStarted,
     ToolFinished,
-    TurnFailed
+    TurnFailed,
+    TurnCancelled
 }
 
 /// <summary>

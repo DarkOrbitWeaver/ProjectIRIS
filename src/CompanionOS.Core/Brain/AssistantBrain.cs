@@ -52,6 +52,7 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
     private readonly Timer _housekeepingTimer;
 
     private CancellationTokenSource? _currentTurnSource;
+    private string? _currentTurnId;
     private CancellationTokenSource? _voiceAttentionTimeout;
     private CancellationTokenSource? _speechSource;
     private DateTimeOffset _lastActivity = DateTimeOffset.Now;
@@ -145,6 +146,7 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
         string turnId = string.IsNullOrWhiteSpace(interactionId)
             ? IrisEvent.CurrentCorrelationId ?? Guid.NewGuid().ToString("N")[..8]
             : interactionId.Trim();
+        _currentTurnId = turnId;
         using IDisposable correlationScope = IrisEvent.BeginCorrelationScope(turnId);
         try
         {
@@ -170,8 +172,16 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
         }
         catch (OperationCanceledException)
         {
-            CompanionLog.Info("Brain", "Turn cancelled.");
-            IrisEvent.Log("Brain", "turn.cancelled", LogLevel.Info);
+            CompanionLog.Info("Brain", $"Turn {turnId} cancelled.");
+            IrisEvent.Log("Brain", "turn.cancelled", LogLevel.Info,
+                data: new Dictionary<string, string?> { ["origin"] = origin });
+            _journal.RecordAnswerCancelled(turnId);
+            _events.Publish(new ConversationEvent
+            {
+                Phase = ConversationPhase.TurnCancelled,
+                TurnId = turnId,
+                Text = "Stopped."
+            });
             _mind.MoveTo(MindState.Idle, "turn cancelled");
             return string.Empty;
         }
@@ -193,6 +203,7 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
         }
         finally
         {
+            _currentTurnId = null;
             _turnGate.Release();
         }
     }

@@ -38,7 +38,9 @@ behavior that has been exercised.
   and immediate enable/disable are implemented.
 - **Shared state:** typed events connect conversation, mind state, voice, memory recall, tools,
   perception, notices, telemetry, and the interface. Local diagnostic logs and a turn journal
-  exist. Recognized transcript, attention, and speech events now carry the active interaction ID.
+  exist. Recognized transcript, attention, speech, and visible chat entries carry the interaction
+  ID. Cancellation now closes the active UI state and is journaled as intentional rather than as
+  an interrupted crash-recovery turn.
 
 These are implementation findings from source inspection. They do not prove the complete workflow
 works on the target PC under real microphone, speaker, model, display, game, and device conditions.
@@ -76,12 +78,13 @@ works on the target PC under real microphone, speaker, model, display, game, and
 
 ## Verification checkpoint
 
-The current worktree builds with zero warnings/errors and the core suite passes 63/63 tests. New
+The current worktree builds with zero warnings/errors and the core suite passes 64/64 tests. New
 regressions verify that `vision: off` blocks forced capture, that Iris does not claim passive
 screen access, that ambient context is withheld until observed and when sensing has stopped, and
 that a failed media probe never presents the previous track as current. Sensor-health checks
 distinguish disabled, waiting, available, and unavailable sources; turn context captures health
-from the same snapshot used to build the prompt. No model was loaded and
+from the same snapshot used to build the prompt; and an intentional cancellation closes the
+journal turn without hiding a later interrupted turn. No model was loaded and
 the app was not launched for this snapshot. The automated suite is still narrower than the product
 acceptance matrix; real-device audio, visual/layout, multi-display, and sustained resource behavior
 remain unverified here.

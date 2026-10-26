@@ -28,6 +28,8 @@ public sealed class ChatEntry : ObservableObject
     public ChatRole Role { get; init; }
     public DateTimeOffset Time { get; init; } = DateTimeOffset.Now;
     public string Detail { get; init; } = string.Empty;
+    /// <summary>Turn that produced this line, for linking conversation and activity state.</summary>
+    public string TurnId { get; init; } = string.Empty;
 
     /// <summary>Memory titles that fired for this turn, shown as chips under the bubble.</summary>
     public IReadOnlyList<string> RecalledTitles { get; set; } = Array.Empty<string>();

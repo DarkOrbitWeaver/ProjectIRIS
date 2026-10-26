@@ -73,6 +73,10 @@ public sealed class TurnJournal
     public void RecordAnswerCompleted(string turnId) =>
         Append(new JournalEntry { Kind = "answer-completed", TurnId = turnId });
 
+    /// <summary>Records an intentional cancellation so recovery does not call it a crash.</summary>
+    public void RecordAnswerCancelled(string turnId) =>
+        Append(new JournalEntry { Kind = "answer-cancelled", TurnId = turnId });
+
     /// <summary>Records a mind state change so the next start can restore it.</summary>
     public void RecordState(MindState state, string reason) =>
         Append(new JournalEntry { Kind = "state", State = state.ToString(), Detail = reason });
@@ -128,7 +132,8 @@ public sealed class TurnJournal
                 {
                     unanswered = entry;
                 }
-                else if (entry.Kind == "answer-completed")
+                else if (unanswered is not null && entry.TurnId == unanswered.TurnId &&
+                         entry.Kind is "answer-completed" or "answer-cancelled")
                 {
                     unanswered = null;
                 }

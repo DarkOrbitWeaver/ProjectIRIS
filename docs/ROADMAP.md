@@ -114,9 +114,11 @@ Remaining work:
    outcomes, speech, cancellation, and recovery into that same inspectable turn record.
 2. Recognized requests now pass their interaction ID explicitly into the turn coordinator;
    transcript, attention, and speech events carry the same ID. Still connect listening state,
-   wake decisions, media-pause ownership, tool progress, cancellation, and recovery into the same
-   inspectable record. The recognizer contract currently returns text only, so recognition
-   confidence is unavailable and must not be implied in UI or prompts.
+   wake decisions, media-pause ownership, and tool progress into the same inspectable record.
+   Cancellation now emits a terminal turn event, closes its streaming UI, and marks the journal
+   turn intentionally cancelled so restart recovery does not mislabel it as a crash. The
+   recognizer contract currently returns text only, so recognition confidence is unavailable and
+   must not be implied in UI or prompts.
 3. Show what memory informed a reply, with provenance and correction/forget controls; verify
    memory writes, consolidation, conflicts, and long-session bounds.
 4. Make multi-step work inspectable and interruptible. Iris must verify each result, ask when

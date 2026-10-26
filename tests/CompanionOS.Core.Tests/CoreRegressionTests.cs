@@ -9,6 +9,7 @@ using CompanionOS.Core.Voice;
 using CompanionOS.Core.Modules.BuiltIn;
 using CompanionOS.Core.Perception;
 using CompanionOS.Core.Plugins;
+using CompanionOS.Core.Recovery;
 using CompanionOS.Modules;
 using System.Net;
 using System.Net.Sockets;
@@ -115,6 +116,34 @@ public sealed class CoreRegressionTests
         Assert.Contains("System metrics sensing is disabled", prompt);
         Assert.Equal("Disabled", health["CPU load"].Status);
         Assert.Equal("Disabled", health["Screen vision"].Status);
+    }
+
+    [Fact]
+    public void TurnJournalTreatsCancellationAsTerminalAndKeepsLaterCrashRecoverable()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"iris-journal-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            TurnJournal journal = new(Path.Combine(root, "turns.jsonl"));
+            journal.RecordUserMessage("cancelled-turn", "stop this");
+            journal.RecordAnswerCancelled("cancelled-turn");
+
+            Assert.False(journal.Analyse().HadIncompleteTurn);
+
+            journal.RecordUserMessage("interrupted-turn", "continue later");
+            journal.RecordAnswerProgress("interrupted-turn", "partial reply");
+            JournalRecovery recovery = journal.Analyse();
+
+            Assert.True(recovery.HadIncompleteTurn);
+            Assert.Equal("interrupted-turn", recovery.InterruptedTurnId);
+            Assert.Equal("continue later", recovery.InterruptedUserMessage);
+            Assert.Equal("partial reply", recovery.PartialAnswer);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
     }
 
     [Fact]
