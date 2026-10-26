@@ -104,9 +104,10 @@ not yet complete multimodal awareness or reliable autonomous planning.
 
 Remaining work:
 
-1. Give observations and subsystem status a source, timestamp/freshness, and explicit
-   unavailable/disabled/stale state; distinguish configured capability from something Iris
-   actually observed in this turn.
+1. Ambient prompt context now reports whether an observation is unknown, current, stopped, stale,
+   or disabled, and hides old values when they are not current. Extend source timestamps and
+   per-sensor unavailable/error state into the UI and diagnostics; distinguish configured
+   capability from something Iris actually observed in this turn.
 2. Connect listening, recognition confidence, wake state, media-pause ownership, tool progress,
    speech playback, cancellation, and recovery through correlated, inspectable turn/activity state.
 3. Show what memory informed a reply, with provenance and correction/forget controls; verify

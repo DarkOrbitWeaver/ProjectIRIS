@@ -29,7 +29,8 @@ public sealed class PerceptionEngine : IDisposable
     private ScreenFrame? _lastFrame;
     private string _lastWindowSignature = string.Empty;
     private string _lastMediaSignature = string.Empty;
-    private bool _isRunning;
+    private bool _hasAmbientObservation;
+    private volatile bool _isRunning;
     // Timers are allowed to fire again while a slow Windows/media call is still in
     // flight.  Never queue a second copy of the same passive observation: stale
     // telemetry is preferable to stealing another worker or I/O slot from a game.
@@ -235,11 +236,44 @@ public sealed class PerceptionEngine : IDisposable
     /// <summary>The plain-English situation block that goes into every prompt.</summary>
     public string DescribeForPrompt(bool userAttachedImage = false)
     {
-        SituationSnapshot snapshot = Current;
+        SituationSnapshot snapshot;
+        bool hasAmbientObservation;
+        lock (_snapshotLock)
+        {
+            snapshot = _current;
+            hasAmbientObservation = _hasAmbientObservation;
+        }
+
+        bool sensorsRunning = _isRunning;
+        TimeSpan observationAge = DateTimeOffset.Now - snapshot.CapturedAt;
+        if (observationAge < TimeSpan.Zero)
+        {
+            observationAge = TimeSpan.Zero;
+        }
+        int observationIntervalMilliseconds = Math.Clamp(_settings.Current.Senses.StatsIntervalMilliseconds, 1000, 15000);
+        TimeSpan staleAfter = TimeSpan.FromMilliseconds(observationIntervalMilliseconds * 3L);
+        bool ambientIsCurrent = hasAmbientObservation && sensorsRunning && observationAge <= staleAfter;
         SenseSettings senses = _settings.Current.Senses;
         List<string> lines = new();
 
-        if (senses.WatchActiveWindow)
+        if (!hasAmbientObservation)
+        {
+            lines.Add("Ambient machine state is unknown; no observation has been collected in this session.");
+        }
+        else if (!sensorsRunning)
+        {
+            lines.Add($"Ambient sensing is stopped; its last sample was {FormatAge(observationAge)} ago and is not current.");
+        }
+        else if (!ambientIsCurrent)
+        {
+            lines.Add($"Ambient sensing is stale; its last sample was {FormatAge(observationAge)} ago. Do not treat it as current.");
+        }
+        else
+        {
+            lines.Add($"Ambient machine state was checked {FormatAge(observationAge)} ago and is current.");
+        }
+
+        if (ambientIsCurrent && senses.WatchActiveWindow)
         {
             string application = string.IsNullOrWhiteSpace(snapshot.ActiveApplicationName)
                 ? "the desktop"
@@ -250,7 +284,7 @@ public sealed class PerceptionEngine : IDisposable
                           : $" — window \"{Shorten(snapshot.ActiveWindowTitle, 90)}\"."));
         }
 
-        if (senses.WatchMediaSession && !string.IsNullOrWhiteSpace(snapshot.MediaTitle))
+        if (ambientIsCurrent && senses.WatchMediaSession && !string.IsNullOrWhiteSpace(snapshot.MediaTitle))
         {
             string state = string.IsNullOrWhiteSpace(snapshot.MediaPlaybackStatus)
                 ? string.Empty
@@ -259,21 +293,38 @@ public sealed class PerceptionEngine : IDisposable
             lines.Add($"Media: \"{snapshot.MediaTitle}\"{artist}{state}.");
         }
 
-        if (senses.WatchSystemStats && snapshot.RamTotalMegabytes > 0)
+        if (ambientIsCurrent && senses.WatchSystemStats && snapshot.RamTotalMegabytes > 0)
         {
             lines.Add($"Machine: CPU {snapshot.CpuPercent:0}%, RAM {snapshot.RamUsedMegabytes / 1024:0.0} of " +
                       $"{snapshot.RamTotalMegabytes / 1024:0.0} GB used, battery {snapshot.BatteryPercent}% " +
                       $"({(snapshot.IsOnAcPower ? "on mains" : "on battery")}).");
         }
 
-        if (senses.WatchIdleState && snapshot.IdleSeconds >= 60)
+        if (ambientIsCurrent && senses.WatchIdleState && snapshot.IdleSeconds >= 60)
         {
             lines.Add($"Boss has been idle for about {snapshot.IdleSeconds / 60:0} minutes.");
         }
 
-        if (!string.IsNullOrWhiteSpace(ForegroundGame))
+        if (ambientIsCurrent && !string.IsNullOrWhiteSpace(ForegroundGame))
         {
             lines.Add($"A game is running in front: {ForegroundGame}.");
+        }
+
+        if (!senses.WatchActiveWindow)
+        {
+            lines.Add("Foreground window sensing is disabled in settings.");
+        }
+        if (!senses.WatchMediaSession)
+        {
+            lines.Add("Media session sensing is disabled in settings.");
+        }
+        if (!senses.WatchSystemStats)
+        {
+            lines.Add("System metrics sensing is disabled in settings.");
+        }
+        if (!senses.WatchIdleState)
+        {
+            lines.Add("Idle sensing is disabled in settings.");
         }
 
         lines.Add($"Screen capture setting: {senses.VisionMode}. This describes configuration, not visual evidence.");
@@ -282,6 +333,18 @@ public sealed class PerceptionEngine : IDisposable
             : "No image is attached to the current user message. Ambient app/window details are not visual inspection. Describe screen pixels only after a successful screen tool result attaches an image.");
         lines.Add($"Local time: {DateTime.Now:HH:mm}.");
         return string.Join(Environment.NewLine, lines);
+    }
+
+    private static string FormatAge(TimeSpan age)
+    {
+        if (age.TotalMinutes >= 1)
+        {
+            int minutes = Math.Max(1, (int)Math.Round(age.TotalMinutes));
+            return $"{minutes} minute{(minutes == 1 ? string.Empty : "s")}";
+        }
+
+        int seconds = Math.Max(0, (int)Math.Round(age.TotalSeconds));
+        return $"{seconds} second{(seconds == 1 ? string.Empty : "s")}";
     }
 
     public void Dispose()
@@ -450,6 +513,7 @@ public sealed class PerceptionEngine : IDisposable
                       _current.MediaPlaybackStatus != snapshot.MediaPlaybackStatus ||
                       Math.Abs(_current.IdleSeconds - snapshot.IdleSeconds) > 30;
             _current = snapshot;
+            _hasAmbientObservation = true;
         }
 
         if (!changed)

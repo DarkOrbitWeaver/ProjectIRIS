@@ -66,6 +66,37 @@ public sealed class CoreRegressionTests
             StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public void SituationPromptMarksAmbientStateUnknownUntilItHasBeenObserved()
+    {
+        SettingsStore settings = new();
+        using PerceptionEngine perception = new(settings, new EventBus());
+
+        string prompt = perception.DescribeForPrompt();
+
+        Assert.Contains("Ambient machine state is unknown", prompt);
+        Assert.DoesNotContain("Foreground:", prompt);
+        Assert.DoesNotContain("Machine: CPU", prompt);
+    }
+
+    [Fact]
+    public void SituationPromptStopsPresentingAmbientValuesAsCurrentAfterSensingStops()
+    {
+        SettingsStore settings = new();
+        settings.Current.Senses.WatchMediaSession = false;
+        using PerceptionEngine perception = new(settings, new EventBus());
+
+        perception.Start();
+        string runningPrompt = perception.DescribeForPrompt();
+        perception.Stop();
+        string stoppedPrompt = perception.DescribeForPrompt();
+
+        Assert.Contains("Ambient machine state was checked", runningPrompt);
+        Assert.Contains("Ambient sensing is stopped", stoppedPrompt);
+        Assert.DoesNotContain("Foreground:", stoppedPrompt);
+        Assert.DoesNotContain("Machine: CPU", stoppedPrompt);
+    }
+
     [Theory]
     [InlineData("{\"schema\":1,\"id\":\"sample\",\"name\":\"Sample\",\"transport\":\"builtin\"}", true)]
     [InlineData("{\"schema\":1,\"id\":\"sample\",\"name\":\"Sample\",\"transport\":\"builtin\",\"disabled\":true}", true)]
