@@ -26,6 +26,7 @@ public sealed class CompanionRuntime : IAsyncDisposable
     private readonly GpuMemoryProbe _gpuProbe = new();
     private readonly IDisposable _stateSubscription;
     private readonly IDisposable _modeSubscription;
+    private readonly SemaphoreSlim _externalModuleRefreshGate = new(1, 1);
     private Timer? _telemetryTimer;
     private double _lastVramTotalMegabytes;
     private bool _isDisposed;
@@ -160,7 +161,8 @@ public sealed class CompanionRuntime : IAsyncDisposable
             await Modules.RegisterAsync(module, cancellationToken).ConfigureAwait(false);
         }
 
-        await Plugins.PrepareEnabledAsync(cancellationToken).ConfigureAwait(false);
+        await Plugins.PrepareEnabledAsync(cancellationToken,
+            plugin => Modules.IsEnabledSetting($"plugin:{plugin.Id}")).ConfigureAwait(false);
 
         // Folder plugins are real modules, not just cards in the Body screen. Registering
         // them here gives the router, sandbox and model the same contract as built-ins.
@@ -184,6 +186,39 @@ public sealed class CompanionRuntime : IAsyncDisposable
         await Brain.InitializeAsync(cancellationToken).ConfigureAwait(false);
         ReportComponentTruth();
         IrisEvent.Log("Runtime", "boot.done", LogLevel.Info);
+    }
+
+    /// <summary>Re-reads external module folders and replaces their router registrations.</summary>
+    public async Task RefreshExternalModulesAsync(CancellationToken cancellationToken)
+    {
+        await _externalModuleRefreshGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            foreach (string moduleId in Plugins.Loaded.Select(plugin => $"plugin:{plugin.Id}").ToArray())
+            {
+                await Modules.UnregisterAsync(moduleId).ConfigureAwait(false);
+            }
+
+            await Plugins.ReloadAsync(cancellationToken,
+                plugin => Modules.IsEnabledSetting($"plugin:{plugin.Id}")).ConfigureAwait(false);
+
+            foreach (PluginManifest plugin in Plugins.Loaded.Where(plugin => !plugin.Disabled))
+            {
+                await Modules.RegisterAsync(new PluginModuleAdapter(Plugins, plugin), cancellationToken)
+                    .ConfigureAwait(false);
+            }
+
+            IrisEvent.Log("Plugins", "plugins.refreshed", LogLevel.Info,
+                data: new Dictionary<string, string?>
+                {
+                    ["loaded"] = Plugins.Loaded.Count.ToString(),
+                    ["rejected"] = Plugins.Rejected.Count.ToString()
+                });
+        }
+        finally
+        {
+            _externalModuleRefreshGate.Release();
+        }
     }
 
     /// <summary>

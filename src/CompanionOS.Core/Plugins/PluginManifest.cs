@@ -64,9 +64,8 @@ public sealed class PluginManifest
     /// <summary>Manifest-authored permission and execution policy, retained when schemas are discovered.</summary>
     public List<PluginTool> DeclaredTools { get; init; } = new();
     public List<PluginSurfaceManifest> Surfaces { get; init; } = new();
-    /// <summary>Whether this external process is allowed to join Iris at next launch.
-    /// Built-in modules use the runtime switch; folder plugins deliberately require a
-    /// restart so no unreviewed executable begins running mid-session.</summary>
+    /// <summary>Whether this external process is enabled at startup and explicit folder refresh.
+    /// Built-in modules use the runtime switch; external code runs only after a user enables it.</summary>
     public bool Disabled { get; set; } = true;
     public List<PluginTool> Tools { get; set; } = new();
 

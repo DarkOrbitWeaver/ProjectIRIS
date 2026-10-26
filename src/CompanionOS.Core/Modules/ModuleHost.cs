@@ -191,6 +191,15 @@ public sealed class ModuleHost : IAsyncDisposable
         }
     }
 
+    /// <summary>Reads the persisted user preference even before an external module is registered.</summary>
+    public bool IsEnabledSetting(string moduleId)
+    {
+        lock (_registryLock)
+        {
+            return !_disabledModuleIds.Contains(moduleId);
+        }
+    }
+
     /// <summary>
     /// Chooses the tools for one turn. Returns an empty list when nothing fits, which
     /// is normal: she can still answer from memory and conversation.

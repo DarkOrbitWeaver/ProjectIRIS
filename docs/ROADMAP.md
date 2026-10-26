@@ -68,10 +68,10 @@ overlays. Named capability scopes have separate saved grants and Settings revoca
 PowerShell starter module demonstrates discovery, native UI, and progress. The platform is not
 complete until all stages below are shipped:
 
-1. **Stable SDK and lifecycle:** both transports discover schemas at startup. Remaining work
-   includes live refresh, clear install/update/removal flows, richer authoring tools, and actionable
-   validation diagnostics in the app. External modules can be enabled or disabled for the next
-   launch; they are not hot-loaded.
+1. **Stable SDK and lifecycle:** both transports discover schemas at startup. The Modules screen
+   can scan folders, refresh tools, and enable/disable modules immediately. Remaining work includes
+   guided install/update/removal flows, publisher review, richer authoring tools, and actionable
+   validation diagnostics. Refresh is explicit; there is no background folder watcher.
 2. **Permission capabilities:** named grants and revocation work at Iris's tool-call boundary;
    tools can require fresh approval on every call. Remaining work includes applying that policy
    consistently to built-in actions and OS-level process isolation.

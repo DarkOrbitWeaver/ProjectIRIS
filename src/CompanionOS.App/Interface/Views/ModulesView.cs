@@ -81,14 +81,20 @@ public sealed class ModulesView : UserControl
         _cardGrid.Children.Clear();
         _cardGrid.RowDefinitions.Clear();
 
-        IReadOnlyList<IAssistantModule> modules = _runtime.Modules.Modules;
-        int toolCount = modules.Sum(module => module.Tools.Count);
+        IReadOnlyList<IAssistantModule> allModules = _runtime.Modules.Modules;
+        IAssistantModule[] modules = allModules
+            .Where(module => !module.Id.StartsWith("plugin:", StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+        PluginManifest[] disabledPlugins = _runtime.Plugins.Loaded.Where(plugin => plugin.Disabled).ToArray();
+        int moduleCount = allModules.Count + disabledPlugins.Length;
+        int toolCount = allModules.Sum(module => module.Tools.Count) +
+                        disabledPlugins.Sum(plugin => plugin.Tools.Count);
 
         // The board's status line, with real numbers.
-        _countLine.Text = $"{modules.Count} modules · {toolCount} tools · all local"
+        _countLine.Text = $"{moduleCount} modules · {toolCount} tools · all local"
             .ToUpperInvariant();
 
-        for (int index = 0; index < modules.Count; index++)
+        for (int index = 0; index < modules.Length; index++)
         {
             IAssistantModule module = modules[index];
             int row = index / 2;
@@ -122,9 +128,9 @@ public sealed class ModulesView : UserControl
             _cardGrid.Children.Add(card.Control);
         }
 
-        if (modules.Count == 0)
+        if (modules.Length == 0)
         {
-            Control empty = Ui.Text("No modules are installed.",
+            Control empty = Ui.Text("No built-in modules are installed.",
                 Palette.FontBody, Palette.TextSecondaryBrush);
             Grid.SetColumnSpan(empty, 3);
             _cardGrid.Children.Add(empty);
@@ -187,8 +193,40 @@ public sealed class ModulesView : UserControl
         caption.LetterSpacing = 0.88;
         caption.Margin = new Thickness(0, 16, 0, 0);
 
+        Button refresh = null!;
+        refresh = Ui.GhostButton("Refresh modules", async () =>
+        {
+            refresh.IsEnabled = false;
+            _runtime.Events.PublishNotice("Refreshing module folders. Active MCP sessions will stop.",
+                NoticeSeverity.Info);
+            try
+            {
+                await _runtime.RefreshExternalModulesAsync(CancellationToken.None);
+                Refresh();
+                _runtime.Events.PublishNotice(
+                    $"Module scan complete: {_runtime.Plugins.Loaded.Count} loaded, {_runtime.Plugins.Rejected.Count} rejected.",
+                    _runtime.Plugins.Rejected.Count == 0 ? NoticeSeverity.Success : NoticeSeverity.Warning);
+            }
+            catch (Exception exception)
+            {
+                Refresh();
+                _runtime.Events.PublishNotice($"Module refresh failed: {exception.Message}", NoticeSeverity.Danger);
+            }
+            finally
+            {
+                refresh.IsEnabled = true;
+            }
+        });
+        ToolTip.SetTip(refresh,
+            "Scan module folders, validate manifests, refresh tools, and replace module registrations.");
+        Grid sectionHeader = new() { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
+        Grid.SetColumn(caption, 0);
+        Grid.SetColumn(refresh, 1);
+        sectionHeader.Children.Add(caption);
+        sectionHeader.Children.Add(refresh);
+
         Grid cards = new() { ColumnDefinitions = new ColumnDefinitions("*,16,*") };
-        StackPanel section = new() { Spacing = 12, Children = { caption, cards } };
+        StackPanel section = new() { Spacing = 12, Children = { sectionHeader, cards } };
         bool anyChild = false;
         int pluginIndex = 0;
 
@@ -233,11 +271,12 @@ public sealed class ModulesView : UserControl
             }
             string moduleId = $"plugin:{plugin.Id}";
             bool activeThisSession = _runtime.Modules.IsEnabled(moduleId);
+            bool enable = plugin.Disabled || !activeThisSession;
             string pluginState = plugin.Disabled
                 ? "DISABLED"
-                : activeThisSession ? "ACTIVE" : "NEXT LAUNCH";
+                : activeThisSession ? "ACTIVE" : "OFF";
             TextBlock stateTag = Ui.Text(pluginState, Palette.FontCaption,
-                activeThisSession ? Palette.SuccessBrush : Palette.TextSecondaryBrush,
+                !plugin.Disabled && activeThisSession ? Palette.SuccessBrush : Palette.TextSecondaryBrush,
                 FontWeight.SemiBold, wrap: false);
             stateTag.LineHeight = 16;
             stateTag.LetterSpacing = 0.88;
@@ -246,8 +285,7 @@ public sealed class ModulesView : UserControl
 
             Button launchToggle = new()
             {
-                Content = Ui.Text(plugin.Disabled ? "Enable at next launch"
-                    : activeThisSession ? "Disable now and next launch" : "Cancel next launch enable",
+                Content = Ui.Text(enable ? "Enable now" : "Disable now",
                     Palette.FontCaption, Palette.AccentSoftBrush, FontWeight.Medium, wrap: false),
                 Background = Brushes.Transparent,
                 BorderBrush = Palette.StrokeBrush,
@@ -256,12 +294,10 @@ public sealed class ModulesView : UserControl
                 Padding = new Thickness(10, 5),
                 HorizontalAlignment = HorizontalAlignment.Left
             };
-            ToolTip.SetTip(launchToggle, plugin.Disabled
-                ? "Load this external plugin after Iris restarts"
-                : activeThisSession
-                    ? "Stop routing to this plugin now and keep it disabled after restart"
-                    : "Cancel the pending enable so this plugin remains off after restart");
-            launchToggle.Click += async (_, _) => await SetPluginLaunchEnabledAsync(plugin, plugin.Disabled);
+            ToolTip.SetTip(launchToggle, enable
+                ? "Load this external plugin and refresh its tools now"
+                : "Stop routing to this plugin and close its active server now");
+            launchToggle.Click += async (_, _) => await SetPluginLaunchEnabledAsync(plugin, enable);
 
             StackPanel body = new() { Spacing = 6 };
             if (!string.IsNullOrWhiteSpace(plugin.Description))
@@ -433,25 +469,24 @@ public sealed class ModulesView : UserControl
     private async Task SetPluginLaunchEnabledAsync(PluginManifest plugin, bool enable)
     {
         string moduleId = $"plugin:{plugin.Id}";
-        bool activeThisSession = _runtime.Modules.IsEnabled(moduleId);
         if (_runtime.Plugins.SetLaunchEnabled(plugin.Id, enable, out string message))
         {
-            // Persist both parts of the state. Disabling an active plugin removes it
-            // from tool routing immediately; enabling a folder plugin remains a
-            // next-start action because its process/MCP lifecycle is owned by startup.
+            // Persist the manifest preference and runtime routing together, then
+            // replace the adapter/catalog so discovery and process state match the UI.
             _runtime.Modules.SetEnabled(moduleId, enable);
-            if (!enable && activeThisSession)
+            try
             {
-                await _runtime.Plugins.CloseMcpSessionAsync(plugin.Id);
-                message = "Disabled now and at next launch.";
+                await _runtime.RefreshExternalModulesAsync(CancellationToken.None);
+                message = enable ? "Enabled and refreshed now." : "Disabled and stopped now.";
+                _runtime.Events.PublishNotice($"{plugin.Name}: {message}", NoticeSeverity.Success);
             }
-            else if (enable)
+            catch (Exception exception)
             {
-                message = "Will load at next launch.";
+                _runtime.Events.PublishNotice(
+                    $"{plugin.Name}: preference saved, but refresh failed: {exception.Message}",
+                    NoticeSeverity.Danger);
             }
-
-            _runtime.Events.PublishNotice($"{plugin.Name}: {message}", NoticeSeverity.Success);
-            _pluginsHost.Content = BuildPluginsSection();
+            Refresh();
         }
         else
         {

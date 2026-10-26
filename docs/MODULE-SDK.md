@@ -10,8 +10,10 @@ permission, activity, and shell contracts so each integration feels like part of
 - Built-in C# modules implement `IAssistantModule` and register with `ModuleHost`.
 - External folders may declare a `plugin.json` using `command` or MCP stdio transport.
 - External modules default to disabled unless their manifest explicitly sets `"disabled": false`;
-  enabling them is a user action and takes effect after Iris restarts. Existing manifests that
-  omitted the field now require that explicit enable step.
+  the Modules screen can scan folders and enable or disable them immediately. Refresh validates
+  changed manifests, re-discovers tools, replaces registrations, and closes active MCP sessions.
+  There is no background folder watcher. Existing manifests that omitted `disabled` require an
+  explicit enable action.
 - External tools are adapted into the same dynamic router and execution boundary, and receive
   stable module-qualified router names so unrelated modules can reuse local tool names. MCP and
   command modules may set `"discoverTools": true` to load tool schemas during startup. MCP tools
@@ -126,10 +128,10 @@ activity-attached, and modules cannot persist UI state across restarts. They
 cannot yet provide main tabs, rich typed forms, or explicit show/hide component APIs. The next SDK work must define and
 implement:
 
-1. A versioned manifest and authoring kit with stronger validation, dynamic discovery for
-   command modules and live refresh, lifecycle hooks, installation review,
-   enable/disable/update/removal, and actionable in-app diagnostics. MCP discovery currently
-   happens at startup only.
+1. A versioned manifest and authoring kit with stronger validation, lifecycle hooks, installation
+   review, guided update/removal, publisher details, and actionable in-app diagnostics. Explicit
+   folder refresh and immediate enable/disable already work; MCP discovery still requires a
+   refresh after the module changes.
 2. Stronger permission review and enforcement for module code. Iris now gives scopes separate
    consent grants and revocation at its tool-call boundary. The remaining work is OS-level
    process isolation, publisher review, and stronger safeguards for consequential side effects.

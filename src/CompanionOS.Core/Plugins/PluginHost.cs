@@ -70,10 +70,12 @@ public sealed class PluginHost : IDisposable
     /// Discovery is bounded and failures leave the plugin without callable discovered
     /// tools rather than retaining stale schemas.
     /// </summary>
-    public async Task PrepareEnabledAsync(CancellationToken cancellationToken)
+    public async Task PrepareEnabledAsync(CancellationToken cancellationToken,
+        Func<PluginManifest, bool>? shouldStart = null)
     {
         foreach (PluginManifest plugin in _loaded.Where(candidate =>
-                     !candidate.Disabled && candidate.DiscoverTools && candidate.Transport is "mcp" or "command"))
+                     !candidate.Disabled && (shouldStart?.Invoke(candidate) ?? true) && candidate.DiscoverTools &&
+                     candidate.Transport is "mcp" or "command"))
         {
             using CancellationTokenSource discoveryBudget =
                 CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -122,6 +124,27 @@ public sealed class PluginHost : IDisposable
                 CompanionLog.Warning("Plugins", $"Tool discovery failed for '{plugin.Name}': {exception.Message}");
             }
         }
+    }
+
+    /// <summary>Stops live servers, reloads manifests from disk, and refreshes enabled tool schemas.</summary>
+    public async Task ReloadAsync(CancellationToken cancellationToken,
+        Func<PluginManifest, bool>? shouldStart = null)
+    {
+        await _mcpConnectionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            foreach (string pluginId in _mcpServers.Keys.ToArray())
+            {
+                StopMcp(pluginId);
+            }
+        }
+        finally
+        {
+            _mcpConnectionGate.Release();
+        }
+
+        Load();
+        await PrepareEnabledAsync(cancellationToken, shouldStart).ConfigureAwait(false);
     }
 
     private bool ApplyDiscoveredTools(PluginManifest plugin, IReadOnlyList<PluginTool> discovered)
@@ -248,9 +271,8 @@ public sealed class PluginHost : IDisposable
     }
 
     /// <summary>
-    /// Changes the launch preference in the plugin's own manifest. External plugins
-    /// are never hot-loaded or hot-unloaded: their process boundary and permissions are
-    /// reviewed at startup, so the change is explicitly for the next Iris launch.
+    /// Changes the launch preference in the plugin's own manifest. The caller then
+    /// explicitly reloads the folder registry so code starts only after user action.
     /// </summary>
     public bool SetLaunchEnabled(string pluginId, bool enabled, out string reason)
     {
@@ -280,8 +302,8 @@ public sealed class PluginHost : IDisposable
             }));
             File.Move(temporaryPath, manifestPath, true);
             plugin.Disabled = !enabled;
-            reason = enabled ? "It will be enabled the next time Iris starts."
-                : "It will be disabled the next time Iris starts.";
+            reason = enabled ? "The module enable preference was saved."
+                : "The module disable preference was saved.";
             CompanionLog.Info("Plugins", $"{plugin.Name}: {reason}");
             return true;
         }

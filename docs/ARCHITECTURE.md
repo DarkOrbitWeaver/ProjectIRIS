@@ -113,8 +113,9 @@ permission boundary. Modules can contribute bounded sidebar cards and up to thre
 overlays with text, inputs, buttons, validated select controls, and vetted semantic or local PNG
 icons. The shell displays truthful MCP or command progress and declared surface updates while
 their tools run. Named scopes have separate remembered consent grants with Settings revocation.
-The extension path still lacks OS capability isolation, persistent module UI state, hot refresh,
-install/update/removal flows, and a complete activity lifecycle. See `MODULE-SDK.md` for the
+The extension path still lacks OS capability isolation, persistent module UI state, guided
+install/update/removal flows, and a complete activity lifecycle. Folder refresh and immediate
+enable/disable are explicit user actions, not a background watcher. See `MODULE-SDK.md` for the
 current contract and remaining platform work.
 
 ---

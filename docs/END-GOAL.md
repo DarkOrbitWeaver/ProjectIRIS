@@ -211,9 +211,10 @@ must stop or suspend the owning work and visibly settle every dependent componen
 - Every tool has one owner and stable ID; the What I Can Do screen reflects the live registry,
   enabled state, descriptions, permissions, and actual routing. Disabled modules never receive
   calls. Core time context is explained separately from an optional time tool/plugin.
-- Built-in modules can be toggled immediately and persist across restart. A plugin being disabled
-  stops routing immediately and stays disabled next launch. Enabling an external plugin is
-  clearly labeled as a restart action. The sample `now.time` plugin stays optional.
+- Built-in modules can be toggled immediately and persist across restart. External modules can be
+  scanned, refreshed, enabled, or disabled through explicit user actions; disabling stops routing
+  and active sessions, while enabling refreshes validated tools immediately. The sample `now.time`
+  plugin stays optional.
 - Plugin install is opt-in and inspected before use. Manifests are validated, namespaced,
   permission-scoped, timeout-bounded, and cannot shadow core tools or leak stdout/stderr. A
   disabled, removed, crashed, malicious, or hung plugin cannot block chat or silently run again.

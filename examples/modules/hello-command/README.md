@@ -5,9 +5,9 @@ startup tool discovery, a native sidebar input/button, and truthful live progres
 third-party packages and does not access accounts or make network requests.
 
 To try it, copy this folder into Iris's module directory (`%LOCALAPPDATA%\CompanionOS\modules`,
-or the `modules` directory under the configured `COMPANIONOS_HOME`). Review `plugin.json`, change
-`"disabled": true` to `false`, and restart Iris. The module appears in Modules. Its code runs as
-your Windows user, so only enable code you trust.
+or the `modules` directory under the configured `COMPANIONOS_HOME`). In Iris, open Modules, choose
+**Refresh modules**, review the card, then choose **Enable now**. Iris discovers its tools and adds
+the module immediately. Its code runs as your Windows user, so only enable code you trust.
 
 Use this as a protocol example, not a privileged sandbox. For a service that needs a persistent
 connection or login session, use MCP transport; command modules start a fresh process for each

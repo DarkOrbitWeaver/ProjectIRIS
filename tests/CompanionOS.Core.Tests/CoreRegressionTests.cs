@@ -678,6 +678,54 @@ public sealed class CoreRegressionTests
     }
 
     [Fact]
+    public async Task PluginHostReloadRespectsEnabledPredicateAndSeesFilesystemChanges()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"iris-plugin-reload-{Guid.NewGuid():N}");
+        string folder = Path.Combine(root, "reloadable");
+        Directory.CreateDirectory(folder);
+        string marker = Path.Combine(folder, "discovery-ran.txt");
+        File.WriteAllText(Path.Combine(folder, "module.ps1"), """
+            [IO.File]::WriteAllText('discovery-ran.txt', 'yes')
+            [Console]::Out.WriteLine('{"type":"tools","tools":[]}')
+            """);
+        File.WriteAllText(Path.Combine(folder, "plugin.json"), """
+            {
+              "schema": 1,
+              "id": "reloadable",
+              "name": "Reloadable",
+              "transport": "command",
+              "command": ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "module.ps1"],
+              "disabled": false,
+              "discoverTools": true,
+              "tools": []
+            }
+            """);
+
+        try
+        {
+            using PluginHost host = new(new EventBus(), root, new ModuleSecretStore(Path.Combine(root, "secrets.json")));
+            host.Load();
+            await host.PrepareEnabledAsync(CancellationToken.None, _ => false);
+            Assert.False(File.Exists(marker));
+
+            await host.ReloadAsync(CancellationToken.None);
+            Assert.True(File.Exists(marker));
+            Assert.Equal("reloadable", Assert.Single(host.Loaded).Id);
+
+            Directory.Delete(folder, recursive: true);
+            await host.ReloadAsync(CancellationToken.None);
+            Assert.Empty(host.Loaded);
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
     public async Task ModuleRouterFindsRelevantToolsBeyondTheFirstEightDeclarations()
     {
         EventBus events = new();
@@ -712,6 +760,40 @@ public sealed class CoreRegressionTests
         finally
         {
             Directory.Delete(temp, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task ModuleRegistryRefreshRemovesOldToolsAndRegistersTheReplacement()
+    {
+        string temp = Path.Combine(Path.GetTempPath(), $"iris-module-registry-refresh-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(temp);
+        EventBus events = new();
+        SandboxGuard sandbox = new(events,
+            new FileAuditTrail(Path.Combine(temp, "audit.jsonl")),
+            new PermissionGrantStore(Path.Combine(temp, "permissions.json")));
+        await using ModuleHost host = new(new SettingsStore(), events, sandbox, memory: null!);
+        try
+        {
+            await host.RegisterAsync(new TestAssistantModule("plugin:sample", "Sample", "Old tool.",
+                [new ModuleTool("sample_old_tool", "Old tool.", ToolTier.Reflex, "{}") ]));
+            Assert.True(host.HasTool("sample_old_tool"));
+
+            await host.UnregisterAsync("plugin:sample");
+            Assert.False(host.HasTool("sample_old_tool"));
+
+            await host.RegisterAsync(new TestAssistantModule("plugin:sample", "Sample", "Replacement tool.",
+                [new ModuleTool("sample_new_tool", "Replacement tool.", ToolTier.Reflex, "{}") ]));
+            Assert.False(host.HasTool("sample_old_tool"));
+            Assert.True(host.HasTool("sample_new_tool"));
+            Assert.Contains(host.Modules, module => module.Id == "plugin:sample");
+        }
+        finally
+        {
+            if (Directory.Exists(temp))
+            {
+                Directory.Delete(temp, recursive: true);
+            }
         }
     }
 
