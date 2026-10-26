@@ -33,7 +33,9 @@ behavior that has been exercised.
 - **Memory:** a local graph with layers, typed/polarized links, activation, persistence,
   consolidation, visualization, and exact forget paths exists. Recall chips now distinguish direct
   matches from association-activated memories, show the activation path/source on demand, and open
-  the exact node in Memory for provenance, pin, and forget actions.
+  the exact node in Memory for provenance, pin, and forget actions. Each recall also writes a
+  turn-correlated diagnostic containing opaque node IDs, layer, direct-match status, and activation
+  score; it excludes memory titles and text.
 - **Capabilities:** built-in music and system tools use the shared module router and approval
   boundary. External command/MCP modules can discover tools, request scoped consent, use encrypted
   credentials, expose bounded native controls and overlays, and report progress. Folder refresh
@@ -94,8 +96,9 @@ distinguish disabled, waiting, available, and unavailable sources; turn context 
 from the same snapshot used to build the prompt; and an intentional cancellation closes the
 journal turn without hiding a later interrupted turn, and synchronous tools publish one start and
 one finish event. Media ownership regressions cover concurrent voice calls, a setting change
-while paused, cancellation before resume, visible recovery on a failed resume, and direct-versus-
-associated memory recall explanations. No model was loaded and the app was not launched for this
+while paused, cancellation before resume, visible recovery on a failed resume, direct-versus-
+associated memory recall explanations, and the privacy-safe correlated recall audit. No model was
+loaded and the app was not launched for this
 snapshot. The automated suite is still narrower than the product acceptance matrix; real-device
 audio, visual/layout, multi-display, and sustained resource behavior remain unverified here.
 

@@ -346,31 +346,44 @@ public sealed class SynapticMemoryEngine : IMemoryAccess
     /// <summary>Publishes the recall report that becomes the memory chips in the chat.</summary>
     public void PublishRecall(string turnId, ActivationResult activation, string intuitionText)
     {
-        _events.Publish(new MemoryRecallEvent(
-            turnId,
-            activation.Activated.Take(6).Select(pair =>
+        List<RecalledMemory> memories = activation.Activated.Take(6).Select(pair =>
+        {
+            bool directMatch = activation.Seeds.Any(seed => seed.Id == pair.Node.Id);
+            activation.ActivationPaths.TryGetValue(pair.Node.Id, out MemoryActivationPath? path);
+            MemoryNode? related = path is null ? null : _graph.FindById(path.ParentNodeId);
+            MemorySynapse? relationship = path is null
+                ? null
+                : activation.ActivatedSynapses.FirstOrDefault(synapse => synapse.Id == path.SynapseId);
+            RecalledMemory memory = ToRecalled(pair.Node);
+            return new RecalledMemory
             {
-                bool directMatch = activation.Seeds.Any(seed => seed.Id == pair.Node.Id);
-                activation.ActivationPaths.TryGetValue(pair.Node.Id, out MemoryActivationPath? path);
-                MemoryNode? related = path is null ? null : _graph.FindById(path.ParentNodeId);
-                MemorySynapse? relationship = path is null
-                    ? null
-                    : activation.ActivatedSynapses.FirstOrDefault(synapse => synapse.Id == path.SynapseId);
-                RecalledMemory memory = ToRecalled(pair.Node);
-                return new RecalledMemory
-                {
-                    NodeId = memory.NodeId,
-                    Title = memory.Title,
-                    Layer = memory.Layer,
-                    Strength = memory.Strength,
-                    Provenance = memory.Provenance,
-                    ActivationScore = pair.Score,
-                    IsDirectMatch = directMatch,
-                    RelatedMemoryTitle = related?.Title ?? string.Empty,
-                    Relationship = relationship is null ? string.Empty : SynapseTypes.ToWords(relationship.Type)
-                };
-            }).ToList(),
-            intuitionText));
+                NodeId = memory.NodeId,
+                Title = memory.Title,
+                Layer = memory.Layer,
+                Strength = memory.Strength,
+                Provenance = memory.Provenance,
+                ActivationScore = pair.Score,
+                IsDirectMatch = directMatch,
+                RelatedMemoryTitle = related?.Title ?? string.Empty,
+                Relationship = relationship is null ? string.Empty : SynapseTypes.ToWords(relationship.Type)
+            };
+        }).ToList();
+
+        string evidence = System.Text.Json.JsonSerializer.Serialize(memories.Select(memory => new
+        {
+            node_id = memory.NodeId,
+            layer = memory.Layer,
+            direct_match = memory.IsDirectMatch,
+            activation = memory.ActivationScore
+        }));
+        using IDisposable correlationScope = IrisEvent.BeginCorrelationScope(turnId);
+        IrisEvent.Log("Memory", "memory.recall", LogLevel.Debug,
+            data: new Dictionary<string, string?>
+            {
+                ["count"] = memories.Count.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                ["evidence"] = evidence
+            });
+        _events.Publish(new MemoryRecallEvent(turnId, memories, intuitionText));
     }
 
     /// <summary>Converts a node to the small shape the interface needs.</summary>

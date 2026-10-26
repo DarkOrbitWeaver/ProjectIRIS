@@ -1723,7 +1723,23 @@ public sealed class CoreRegressionTests
             await graph.LinkAsync(seed.Id, related.Id, SynapseType.Likes, 0.8, "user-correction");
 
             ActivationResult activation = await memory.ActivateAsync("night drive");
-            memory.PublishRecall("turn-recall", activation, memory.RenderIntuition(activation));
+            EventRecord? recallLog = null;
+            void CaptureRecallLog(EventRecord record)
+            {
+                if (record.Area == "Memory" && record.Event == "memory.recall")
+                {
+                    recallLog = record;
+                }
+            }
+            IrisEvent.EventLogged += CaptureRecallLog;
+            try
+            {
+                memory.PublishRecall("turn-recall", activation, memory.RenderIntuition(activation));
+            }
+            finally
+            {
+                IrisEvent.EventLogged -= CaptureRecallLog;
+            }
 
             MemoryRecallEvent recall = Assert.Single(recalls);
             RecalledMemory direct = Assert.Single(recall.Memories, item => item.NodeId == seed.Id);
@@ -1734,6 +1750,15 @@ public sealed class CoreRegressionTests
             Assert.Equal(seed.Title, associated.RelatedMemoryTitle);
             Assert.Equal("likes", associated.Relationship);
             Assert.Equal("conversation", associated.Provenance);
+            EventRecord capturedRecallLog = Assert.IsType<EventRecord>(recallLog);
+            Assert.Equal("turn-recall", capturedRecallLog.CorrelationId);
+            IReadOnlyDictionary<string, string?> loggedData =
+                Assert.IsAssignableFrom<IReadOnlyDictionary<string, string?>>(capturedRecallLog.Data);
+            string loggedEvidence = loggedData["evidence"]!;
+            Assert.Contains(seed.Id, loggedEvidence);
+            Assert.Contains(related.Id, loggedEvidence);
+            Assert.DoesNotContain(seed.Title, loggedEvidence);
+            Assert.DoesNotContain(related.Title, loggedEvidence);
         }
         finally
         {

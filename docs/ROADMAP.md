@@ -12,6 +12,10 @@ llama-server lifecycle, sleep and wake, atomic settings, WAL memory, turn journa
 Four layers, fifteen link types with polarity, spreading activation, plain-English intuition
 block, decay, consolidation, live graph view with inspector, export.
 
+Chat recall reports distinguish direct matches from association-activated memories and link to
+their graph provenance. A turn-correlated diagnostic records opaque node IDs and activation
+metadata without storing recalled titles or content.
+
 ## M3 - Module engine: foundation shipped; platform growth continues in M8
 
 `IAssistantModule`, dynamic routing with an eight-tool cap, three-tier sandbox with a
