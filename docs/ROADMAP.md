@@ -125,8 +125,9 @@ Remaining work:
    no speech separately from an unavailable or failed runtime; failures create a rate-limited
    user notice and diagnostics omit transcript, audio, and endpoint details. The conversation-open
    state is held stable through recognition so a slow ASR pass cannot expire the follow-up it is
-   processing. Still connect microphone open/closed and capture failures into the same inspectable
-   record; verify wake and media behavior on the target PC.
+   processing. Native microphone open, intentional close, failed open, and unexpected loss now
+   produce correlated state events; segment decisions include the active capture-session ID.
+   Verify no-mic, permission denial, unplug/reconnect, wake, and media behavior on the target PC.
    Tool activity now has one start/finish pair and chat entries are associated with their turn;
    completed tools return the activity card to result review. Cancellation and failure close the
    associated module overlay as well as active chat/tool UI, and cancellation marks the journal

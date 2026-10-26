@@ -21,8 +21,9 @@ behavior that has been exercised.
   wake matching, interruption, one locked voice profile, cached reflex phrases, and the managed
   local Pocket TTS default are implemented. Voice segments now record a correlated,
   transcript-free outcome; ASR distinguishes silence from missing or failed recognizers and shows
-  a rate-limited recovery notice. Conversation state is held stable through recognition. Missing
-  voice output is meant to fail honestly.
+  a rate-limited recovery notice. Conversation state is held stable through recognition, and mic
+  open/close/failure/loss events tie capture sessions to voice decisions. Missing voice output is
+  meant to fail honestly.
 - **Awareness:** low-cost Windows foreground, media, idle, CPU/RAM, and battery observations;
   optional screen capture; game detection; and sleep/gaming resource handoff are implemented.
   Screen vision is on demand or explicitly shared, not constant video; disabling vision now

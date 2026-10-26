@@ -36,6 +36,8 @@ public sealed class VoicePipeline : IAsyncDisposable
     private double _noiseFloor = 0.004;
     private int _microphoneDiagnosticActive;
     private long _microphoneDiagnosticRmsBits;
+    private int _microphoneStopRequested;
+    private string? _microphoneSessionId;
     private DateTimeOffset _nextVoiceReprobe = DateTimeOffset.MinValue;
     private DateTimeOffset _conversationOpenUntil = DateTimeOffset.MinValue;
     private DateTimeOffset _lastLevelPublished = DateTimeOffset.MinValue;
@@ -65,10 +67,28 @@ public sealed class VoicePipeline : IAsyncDisposable
         _microphone.LevelChanged += OnMicrophoneLevel;
         _microphone.CaptureStateChanged += isCapturing =>
         {
+            bool intentionalClose = Volatile.Read(ref _microphoneStopRequested) != 0;
+            using IDisposable correlationScope = IrisEvent.BeginCorrelationScope(_microphoneSessionId);
             IsListening = isCapturing;
+            IrisEvent.Log("Voice", isCapturing
+                    ? "microphone.capture.opened"
+                    : intentionalClose ? "microphone.capture.closed" : "microphone.capture.lost",
+                isCapturing || intentionalClose ? LogLevel.Info : LogLevel.Warning,
+                data: new Dictionary<string, string?>
+                {
+                    ["capture_open"] = isCapturing.ToString(),
+                    ["intentional_close"] = intentionalClose.ToString()
+                });
             if (!isCapturing)
             {
                 CloseConversationWindow();
+                _microphoneSessionId = null;
+                if (!intentionalClose)
+                {
+                    _events.PublishNotice(
+                        "The microphone connection ended. Check the device and reopen Iris's ears in Settings.",
+                        NoticeSeverity.Warning);
+                }
             }
         };
         _player.AmplitudeChanged += OnSpokenAmplitude;
@@ -176,6 +196,7 @@ public sealed class VoicePipeline : IAsyncDisposable
     /// </summary>
     public async Task<VoiceDiagnosticResult> TestMicrophoneAsync(CancellationToken cancellationToken = default)
     {
+        using IDisposable correlationScope = IrisEvent.BeginCorrelationScope();
         long started = System.Diagnostics.Stopwatch.GetTimestamp();
         VoiceReadiness readiness = GetReadiness();
         if (!readiness.IsMicrophoneConfigured)
@@ -216,7 +237,7 @@ public sealed class VoicePipeline : IAsyncDisposable
 
         bool alreadyOpen = _microphone.IsCapturing;
         Interlocked.Exchange(ref _microphoneDiagnosticRmsBits, BitConverter.DoubleToInt64Bits(0));
-        bool opened = alreadyOpen || _microphone.Start(_settings.Current.Ears.InputDeviceNumber);
+        bool opened = alreadyOpen || StartMicrophone();
         if (!opened)
         {
             Interlocked.Exchange(ref _microphoneDiagnosticActive, 0);
@@ -249,7 +270,7 @@ public sealed class VoicePipeline : IAsyncDisposable
         {
             if (!alreadyOpen)
             {
-                _microphone.Stop();
+                StopMicrophone();
             }
             Interlocked.Exchange(ref _microphoneDiagnosticActive, 0);
         }
@@ -321,6 +342,50 @@ public sealed class VoicePipeline : IAsyncDisposable
     /// <summary>Raised when the user only called her name.</summary>
     public event Action<string>? UserCalledHer;
 
+    private bool StartMicrophone()
+    {
+        if (_microphone.IsCapturing)
+        {
+            return true;
+        }
+
+        using IDisposable correlationScope = IrisEvent.BeginCorrelationScope();
+        _microphoneSessionId = IrisEvent.CurrentCorrelationId;
+        int deviceNumber = _settings.Current.Ears.InputDeviceNumber;
+        bool opened = _microphone.Start(deviceNumber);
+        if (!opened)
+        {
+            _microphoneSessionId = null;
+            IrisEvent.Log("Voice", "microphone.capture.open_failed", LogLevel.Warning,
+                data: new Dictionary<string, string?>
+                {
+                    ["capture_open"] = "false",
+                    ["device_index"] = deviceNumber.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    ["reason"] = "device_unavailable_or_rejected"
+                });
+        }
+
+        return opened;
+    }
+
+    private void StopMicrophone()
+    {
+        using IDisposable correlationScope = IrisEvent.BeginCorrelationScope(_microphoneSessionId);
+        Interlocked.Exchange(ref _microphoneStopRequested, 1);
+        try
+        {
+            _microphone.Stop();
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _microphoneStopRequested, 0);
+            if (!_microphone.IsCapturing)
+            {
+                _microphoneSessionId = null;
+            }
+        }
+    }
+
     /// <summary>Prepares engines and starts listening if the ears are enabled.</summary>
     public async Task StartAsync(CancellationToken cancellationToken = default)
     {
@@ -332,7 +397,7 @@ public sealed class VoicePipeline : IAsyncDisposable
 
         if (_settings.Current.Ears.Enabled && Recognizer.IsAvailable)
         {
-            IsListening = _microphone.Start(_settings.Current.Ears.InputDeviceNumber);
+            IsListening = StartMicrophone();
             if (!IsListening)
             {
                 VoiceReadiness readiness = GetReadiness();
@@ -459,7 +524,7 @@ public sealed class VoicePipeline : IAsyncDisposable
                 return;
             }
 
-            bool opened = _microphone.Start(_settings.Current.Ears.InputDeviceNumber);
+            bool opened = StartMicrophone();
             if (!opened)
             {
                 _events.PublishNotice(
@@ -473,7 +538,7 @@ public sealed class VoicePipeline : IAsyncDisposable
         }
         else
         {
-            _microphone.Stop();
+            StopMicrophone();
             CloseConversationWindow();
         }
 
@@ -502,7 +567,7 @@ public sealed class VoicePipeline : IAsyncDisposable
 
         AreEarsSuspended = true;
         StopSpeaking();
-        _microphone.Stop();
+        StopMicrophone();
         CloseConversationWindow();
 
         lock (_segmentLock)
@@ -539,7 +604,7 @@ public sealed class VoicePipeline : IAsyncDisposable
 
         if (_settings.Current.Ears.Enabled && Recognizer.IsAvailable)
         {
-            IsListening = _microphone.Start(_settings.Current.Ears.InputDeviceNumber);
+            IsListening = StartMicrophone();
         }
 
         CompanionLog.Info("Voice", $"Ears resumed using {Recognizer.EngineName}.");
@@ -972,6 +1037,7 @@ public sealed class VoicePipeline : IAsyncDisposable
                 ["recognizer"] = Recognizer.EngineName,
                 ["recognizer_available"] = Recognizer.IsAvailable.ToString(),
                 ["recognition_attempted"] = (stage is "transcription" or "addressing").ToString(),
+                ["capture_session_id"] = _microphoneSessionId ?? string.Empty,
                 ["failure_code"] = failureCode,
                 ["recognized_chars"] = recognizedCharacters.ToString(System.Globalization.CultureInfo.InvariantCulture)
             });
