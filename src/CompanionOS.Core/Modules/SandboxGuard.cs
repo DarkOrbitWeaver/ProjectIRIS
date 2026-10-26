@@ -79,6 +79,8 @@ public sealed class SandboxGuard
         _grants = grants;
     }
 
+    public PermissionGrantStore Grants => _grants;
+
     /// <summary>Asks for permission according to the tool's tier and the user's saved grants.</summary>
     public async Task<bool> AuthorizeAsync(string moduleId, string moduleName, ModuleTool tool,
         string plainEnglishAction, CancellationToken cancellationToken)
@@ -96,9 +98,24 @@ public sealed class SandboxGuard
             return true;
         }
 
+        if (!string.IsNullOrWhiteSpace(tool.PermissionScope) &&
+            _grants.IsScopeGranted(moduleId, tool.PermissionScope))
+        {
+            IrisEvent.Log("Sandbox", "permission.scope_granted", LogLevel.Trace,
+                data: new Dictionary<string, string?>
+                {
+                    ["tool"] = tool.Name,
+                    ["module"] = moduleId,
+                    ["scope"] = tool.PermissionScope
+                });
+            await _audit.RecordAsync(moduleId, tool.Name, tool.Tier, "granted", auditAction, cancellationToken)
+                .ConfigureAwait(false);
+            return true;
+        }
+
         if (tool.Tier == ToolTier.Scoped)
         {
-            if (_grants.IsGranted(moduleId, tool.Name))
+            if (string.IsNullOrWhiteSpace(tool.PermissionScope) && _grants.IsGranted(moduleId, tool.Name))
             {
                 IrisEvent.Log("Sandbox", "permission.granted", LogLevel.Trace,
                     data: new Dictionary<string, string?> { ["tool"] = tool.Name, ["module"] = moduleId, ["tier"] = "scoped" });
@@ -108,7 +125,8 @@ public sealed class SandboxGuard
             }
         }
 
-        if (tool.Tier == ToolTier.SystemCritical && _grants.IsGranted(moduleId, tool.Name))
+        if (tool.Tier == ToolTier.SystemCritical && string.IsNullOrWhiteSpace(tool.PermissionScope) &&
+            _grants.IsGranted(moduleId, tool.Name))
         {
             IrisEvent.Log("Sandbox", "permission.granted", LogLevel.Trace,
                 data: new Dictionary<string, string?> { ["tool"] = tool.Name, ["module"] = moduleId, ["tier"] = "system-critical" });
@@ -120,7 +138,8 @@ public sealed class SandboxGuard
         PermissionRequest request = new(moduleId, moduleName, tool.Name,
             string.IsNullOrWhiteSpace(tool.PermissionScope)
                 ? plainEnglishAction
-                : $"{plainEnglishAction} Requested access: {tool.PermissionScope}.",
+                : $"{plainEnglishAction} Requested access: {tool.PermissionScope}. " +
+                  $"Always allow will remember this capability for {moduleName}.",
             tool.Tier, tool.PermissionScope);
         _events.Publish(new PermissionRequestedEvent { Request = request });
         IrisEvent.Log("Sandbox", "permission.asked", LogLevel.Info,
@@ -149,7 +168,14 @@ public sealed class SandboxGuard
 
         if (decision == PermissionDecision.AllowAlways)
         {
-            _grants.Grant(moduleId, tool.Name);
+            if (string.IsNullOrWhiteSpace(tool.PermissionScope))
+            {
+                _grants.Grant(moduleId, tool.Name);
+            }
+            else
+            {
+                _grants.GrantScope(moduleId, tool.PermissionScope);
+            }
         }
 
         string outcome = decision switch
@@ -320,6 +346,7 @@ public sealed class PermissionGrantStore
     private readonly object _gate = new();
     private readonly string _filePath;
     private readonly HashSet<string> _grantedKeys = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _grantedScopes = new(StringComparer.OrdinalIgnoreCase);
 
     private static readonly JsonSerializerOptions SerializerOptions = new()
     {
@@ -345,11 +372,29 @@ public sealed class PermissionGrantStore
         }
     }
 
+    public bool IsScopeGranted(string moduleId, string permissionScope)
+    {
+        lock (_gate)
+        {
+            return _grantedScopes.Contains(ComposeKey(moduleId, permissionScope));
+        }
+    }
+
     public void Grant(string moduleId, string toolName)
     {
         lock (_gate)
         {
             _grantedKeys.Add(ComposeKey(moduleId, toolName));
+        }
+
+        Save();
+    }
+
+    public void GrantScope(string moduleId, string permissionScope)
+    {
+        lock (_gate)
+        {
+            _grantedScopes.Add(ComposeKey(moduleId, permissionScope));
         }
 
         Save();
@@ -365,6 +410,16 @@ public sealed class PermissionGrantStore
         Save();
     }
 
+    public void RevokeScope(string moduleId, string permissionScope)
+    {
+        lock (_gate)
+        {
+            _grantedScopes.Remove(ComposeKey(moduleId, permissionScope));
+        }
+
+        Save();
+    }
+
     public void RevokeAllForModule(string moduleId)
     {
         lock (_gate)
@@ -374,17 +429,34 @@ public sealed class PermissionGrantStore
             {
                 _grantedKeys.Remove(key);
             }
+            foreach (string key in _grantedScopes.Where(key => key.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)).ToList())
+            {
+                _grantedScopes.Remove(key);
+            }
         }
 
         Save();
     }
 
-    /// <summary>Every saved grant, for the permission centre.</summary>
+    /// <summary>Legacy per-tool grants, retained for existing installs.</summary>
     public IReadOnlyList<(string ModuleId, string ToolName)> ListAll()
     {
         lock (_gate)
         {
             return _grantedKeys
+                .Select(key => key.Split("::", 2))
+                .Where(parts => parts.Length == 2)
+                .Select(parts => (parts[0], parts[1]))
+                .ToList();
+        }
+    }
+
+    /// <summary>Every remembered capability grant, separate from legacy tool grants.</summary>
+    public IReadOnlyList<(string ModuleId, string PermissionScope)> ListScopeGrants()
+    {
+        lock (_gate)
+        {
+            return _grantedScopes
                 .Select(key => key.Split("::", 2))
                 .Where(parts => parts.Length == 2)
                 .Select(parts => (parts[0], parts[1]))
@@ -415,7 +487,14 @@ public sealed class PermissionGrantStore
             {
                 foreach (GrantRecord record in records)
                 {
-                    _grantedKeys.Add(ComposeKey(record.ModuleId, record.ToolName));
+                    if (!string.IsNullOrWhiteSpace(record.PermissionScope))
+                    {
+                        _grantedScopes.Add(ComposeKey(record.ModuleId, record.PermissionScope));
+                    }
+                    else if (!string.IsNullOrWhiteSpace(record.ToolName))
+                    {
+                        _grantedKeys.Add(ComposeKey(record.ModuleId, record.ToolName));
+                    }
                 }
             }
         }
@@ -436,6 +515,10 @@ public sealed class PermissionGrantStore
                     .Select(key => key.Split("::", 2))
                     .Where(parts => parts.Length == 2)
                     .Select(parts => new GrantRecord { ModuleId = parts[0], ToolName = parts[1] })
+                    .Concat(_grantedScopes
+                        .Select(key => key.Split("::", 2))
+                        .Where(parts => parts.Length == 2)
+                        .Select(parts => new GrantRecord { ModuleId = parts[0], PermissionScope = parts[1] }))
                     .ToList();
             }
 
@@ -454,5 +537,6 @@ public sealed class PermissionGrantStore
     {
         public string ModuleId { get; set; } = string.Empty;
         public string ToolName { get; set; } = string.Empty;
+        public string? PermissionScope { get; set; }
     }
 }

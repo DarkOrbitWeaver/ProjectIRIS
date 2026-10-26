@@ -62,15 +62,18 @@ body crash never touches her mind.
 ## M8 — Extensible module platform · active foundation
 
 Make adding integrations a core product capability, not a list of features compiled into Iris.
-The first foundation now carries truthful MCP progress notifications into a shared,
-non-activating activity card, and external manifests can contribute bounded sidebar forms and
-buttons routed through their owning module's permission gate. The platform is not complete
-until all stages below are shipped:
+The foundation now carries truthful MCP progress notifications into a shared, non-activating
+activity card; discovers paginated MCP tools with bounded startup cost; routes relevant tools
+from large catalogs; and lets external manifests contribute bounded sidebar forms and buttons.
+Named capability scopes have separate saved grants and Settings revocation. The platform is not
+complete until all stages below are shipped:
 
-1. **Stable SDK and lifecycle:** versioned manifests, dynamic MCP tool discovery, clear install,
-   enable, update, disable, and removal flows, plus a starter kit and validation diagnostics.
-2. **Permission capabilities:** declared scopes, reviewable grants, revocation, and per-action
-   approval for consequential actions such as sending messages or changing accounts.
+1. **Stable SDK and lifecycle:** dynamic MCP tool discovery currently works at startup; remaining
+   work includes command discovery, live refresh, clear install, update, disable, and removal
+   flows, plus a starter kit and validation diagnostics.
+2. **Permission capabilities:** named grants and revocation currently work at Iris's tool-call
+   boundary. Remaining work includes OS-level process isolation and mandatory per-action review
+   for consequential actions such as sending messages or changing accounts.
 3. **Hosted module UI:** validated declarative panels, inputs, buttons, icons, and independently
    controlled overlays. The shell owns rendering and focus policy; modules provide data and
    actions rather than arbitrary in-process UI code.

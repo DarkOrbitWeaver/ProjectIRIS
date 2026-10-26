@@ -74,7 +74,7 @@ internal sealed class PermissionOverlayWindow : Window
                 {
                     caption,
                     _question,
-                    Ui.Caption("Expires in 15 seconds if unanswered."),
+                    Ui.Caption("Expires in 15 seconds. Always remembers the shown capability for this module."),
                     buttons
                 }
             }

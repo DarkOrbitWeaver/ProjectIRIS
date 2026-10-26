@@ -9,6 +9,7 @@ using CompanionOS.Core.Brain;
 using CompanionOS.Core.Configuration;
 using CompanionOS.Core.Events;
 using CompanionOS.Core.Mind;
+using CompanionOS.Core.Modules;
 using CompanionOS.Core.Voice;
 using NAudio.Wave;
 
@@ -83,7 +84,7 @@ public sealed class SettingsView : UserControl
         Grid cards = new()
         {
             ColumnDefinitions = new ColumnDefinitions("*,16,*"),
-            RowDefinitions = new RowDefinitions("Auto,Auto,Auto")
+            RowDefinitions = new RowDefinitions("Auto,Auto,Auto,Auto")
         };
         Place(cards, BuildAudioCard(), 0, 0);
         Place(cards, BuildStartupCard(), 0, 2);
@@ -95,6 +96,11 @@ public sealed class SettingsView : UserControl
         Grid.SetColumn(readiness, 0);
         Grid.SetColumnSpan(readiness, 3);
         cards.Children.Add(readiness);
+        Control permissions = BuildPermissionGrantsCard();
+        Grid.SetRow(permissions, 3);
+        Grid.SetColumn(permissions, 0);
+        Grid.SetColumnSpan(permissions, 3);
+        cards.Children.Add(permissions);
 
         // Board scroll: 32 px top/bottom, 48 px sides, 24 px between header and grid.
         return new ScrollViewer
@@ -570,6 +576,82 @@ public sealed class SettingsView : UserControl
             Row("Model", model, "She sleeps, reloads the chosen model and wakes herself — live."),
             null,
             Row("Context window", context, "Auto sizes it from the model; big windows cost VRAM (KV cache).")
+        });
+    }
+
+    private Control BuildPermissionGrantsCard()
+    {
+        StackPanel grants = new() { Spacing = 4 };
+        PermissionGrantStore store = _runtime.Sandbox.Grants;
+        IReadOnlyList<IAssistantModule> modules = _runtime.Modules.Modules;
+
+        void RefreshGrants()
+        {
+            grants.Children.Clear();
+            IReadOnlyList<(string ModuleId, string PermissionScope)> scopes = store.ListScopeGrants();
+            IReadOnlyList<(string ModuleId, string ToolName)> toolGrants = store.ListAll();
+            if (scopes.Count == 0 && toolGrants.Count == 0)
+            {
+                grants.Children.Add(Ui.Text("No saved permissions. Iris will ask before guarded actions.",
+                    Palette.FontBody, Palette.TextSecondaryBrush, wrap: true));
+                return;
+            }
+
+            string ModuleName(string id) => modules.FirstOrDefault(module =>
+                string.Equals(module.Id, id, StringComparison.OrdinalIgnoreCase))?.DisplayName ?? id;
+
+            foreach ((string moduleId, string scope) in scopes.OrderBy(grant => grant.ModuleId)
+                         .ThenBy(grant => grant.PermissionScope))
+            {
+                AddGrantRow(ModuleName(moduleId), $"Capability · {scope}",
+                    () => store.RevokeScope(moduleId, scope));
+            }
+            foreach ((string moduleId, string tool) in toolGrants.OrderBy(grant => grant.ModuleId)
+                         .ThenBy(grant => grant.ToolName))
+            {
+                AddGrantRow(ModuleName(moduleId), $"Tool · {tool}",
+                    () => store.Revoke(moduleId, tool));
+            }
+        }
+
+        void AddGrantRow(string moduleName, string access, Action revoke)
+        {
+            StackPanel description = new() { Spacing = 2 };
+            description.Children.Add(Ui.Text(moduleName, Palette.FontEmphasis,
+                Palette.TextPrimaryBrush, wrap: false));
+            description.Children.Add(Ui.Caption(access));
+
+            Button revokeButton = Ui.GhostButton("Revoke", () =>
+            {
+                revoke();
+                RefreshGrants();
+            });
+            ToolTip.SetTip(revokeButton, "Remove this saved permission. Iris will ask again before using it.");
+
+            Grid row = new() { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
+            Grid.SetColumn(revokeButton, 1);
+            row.Children.Add(description);
+            row.Children.Add(revokeButton);
+            grants.Children.Add(new Border
+            {
+                BorderBrush = Palette.StrokeBrush,
+                BorderThickness = new Thickness(0, 0, 0, 1),
+                Padding = new Thickness(0, 10),
+                Child = row
+            });
+        }
+
+        RefreshGrants();
+        ScrollViewer grantList = new()
+        {
+            MaxHeight = 280,
+            Content = grants
+        };
+        return Card("Remembered permissions", new Control?[]
+        {
+            Ui.Text("Saved access is tied to a module and capability or legacy tool. Revoke it here at any time.",
+                Palette.FontBody, Palette.TextSecondaryBrush, wrap: true),
+            grantList
         });
     }
 

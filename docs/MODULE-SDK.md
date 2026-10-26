@@ -36,9 +36,11 @@ permission, activity, and shell contracts so each integration feels like part of
 - External tools use Iris's existing system-critical permission gate. A first call asks for
   approval; a saved "always allow" grant can authorize later calls to that tool without another
   prompt. A tool may name one capability in `permission`, and the manifest must also list that
-  scope in `asksPermission`. Iris shows the scope in the permission prompt and audit trail. The
-  scope is currently descriptive metadata: it does not enforce OS isolation or independently
-  grant/revoke access across tools. External processes still run with the current user's OS access.
+  scope in `asksPermission`. Iris shows the scope in the permission prompt and audit trail, and
+  remembers "always allow" per module and scope; tools with another scope ask separately. Saved
+  scope grants can be revoked in Settings. This enforces consent at Iris's tool-call boundary,
+  not OS isolation: an external process still runs with the current user's OS access, so the
+  user must trust enabled module code and its declared behavior.
 - MCP tools may send `notifications/progress` after Iris supplies `_meta.progressToken` with
   `tools/call`. Iris correlates those messages to the plugin, tool, and conversation and
   publishes `ModuleProgressEvent`. Intermediate updates are throttled to avoid UI event floods.
@@ -61,10 +63,9 @@ work must define and implement:
    command modules and live refresh, lifecycle hooks, installation review,
    enable/disable/update/removal, and actionable in-app diagnostics. MCP discovery currently
    happens at startup only.
-2. Permission scopes that are explicit, reviewable, revocable, and enforced by Iris. Read
-   access to contacts must be distinct from sending messages; consequential actions must still
-   have user control. Current `permission` labels document and display intent; they are not yet
-   independent grants or OS-enforced capabilities.
+2. Stronger permission review and enforcement for module code. Iris now gives scopes separate
+   consent grants and revocation at its tool-call boundary. The remaining work is OS-level
+   process isolation, publisher review, and stronger safeguards for consequential side effects.
 3. A declarative UI contract that grows the current sidebar schema into stateful cards, typed
    forms, branded icons, buttons, and independently controlled overlays. Iris owns rendering,
    focus, accessibility, placement, and visibility policy; modules publish state and named

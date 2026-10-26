@@ -102,16 +102,18 @@ replaceable piece if you ever want real embeddings.
 * `IModuleSurfaceProvider` — optional panels, exposed as data models the shell renders.
 * `ModuleHost` — registry, routing, execution, enable/disable.
 * `SandboxGuard` — tiers: reflex (instant), scoped (workspace only, logged), system-critical
-  (always asks, 15 second auto-deny, recorded forever in `audit.jsonl`).
+  (asks on first use, then follows remembered per-tool or per-capability grants; 15 second
+  unanswered requests deny, and decisions are recorded in `audit.jsonl`).
 
 Built-in modules are registered from `AppModules.CreateBuiltInModules`. External modules
 currently use a validated `plugin.json` manifest and a separate command or MCP process; they
 are adapted into the same router and sandbox, and arbitrary DLLs are not loaded into Iris.
-External tools all ask before running today. This is a basic extension path, not the finished
-SDK: plugins can contribute bounded sidebar cards with text, inputs, buttons, and vetted
-semantic icons, but not independent overlays or dynamic surface state. Permission labels are
-not yet enforceable capability grants. See `MODULE-SDK.md` for the current contract and
-remaining platform work.
+MCP plugins may discover tools at startup; external tools use the shared router and call
+boundary. Modules can contribute bounded sidebar cards with text, inputs, buttons, and vetted
+semantic icons, and MCP progress appears in the shared activity card. Named scopes now produce
+separate remembered consent grants with Settings revocation. The extension path still lacks OS
+capability isolation, independent overlays and dynamic surface state, and a complete install and
+update workflow. See `MODULE-SDK.md` for the current contract and remaining platform work.
 
 ---
 

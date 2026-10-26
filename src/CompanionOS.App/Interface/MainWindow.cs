@@ -707,7 +707,8 @@ public sealed partial class MainWindow : Window
         content.Children.Add(Ui.Text("Permission", Palette.FontTitle, Palette.TextPrimaryBrush,
             FontWeight.SemiBold));
         content.Children.Add(_permissionQuestion);
-        content.Children.Add(Ui.Caption("This closes automatically in 15 seconds and is treated as a no."));
+        content.Children.Add(Ui.Caption(
+            "Unanswered requests expire in 15 seconds. Always allow remembers the shown capability for this module, or just this tool when no scope is listed."));
         content.Children.Add(buttons);
 
         return CardCentered(content);

@@ -157,6 +157,64 @@ public sealed class CoreRegressionTests
     }
 
     [Fact]
+    public async Task CapabilityGrantsPersistPerModuleAndScopeAndCanBeRevokedIndependently()
+    {
+        string temp = Path.Combine(Path.GetTempPath(), $"iris-scope-grants-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(temp);
+        string grantsPath = Path.Combine(temp, "permissions.json");
+        File.WriteAllText(grantsPath, "[{\"ModuleId\":\"plugin:telegram\",\"ToolName\":\"legacy_tool\"}]");
+
+        try
+        {
+            EventBus events = new();
+            PermissionGrantStore grants = new(grantsPath);
+            SandboxGuard guard = new(events, new FileAuditTrail(Path.Combine(temp, "audit.jsonl")), grants);
+            int promptCount = 0;
+            using IDisposable subscription = events.Subscribe<PermissionRequestedEvent>(payload =>
+            {
+                promptCount++;
+                payload.Request.Answer(payload.Request.PermissionScope == "contacts.read"
+                    ? PermissionDecision.AllowAlways
+                    : PermissionDecision.AllowOnce);
+            });
+
+            ModuleTool readContact = new("read_contact", "Read a contact.", ToolTier.SystemCritical,
+                "{}") { PermissionScope = "contacts.read" };
+            ModuleTool listContacts = new("list_contacts", "List contacts.", ToolTier.SystemCritical,
+                "{}") { PermissionScope = "contacts.read" };
+            ModuleTool sendMessage = new("send_message", "Send a message.", ToolTier.SystemCritical,
+                "{}") { PermissionScope = "messages.send" };
+
+            Assert.True(await guard.AuthorizeAsync("plugin:telegram", "Telegram", readContact,
+                "Telegram wants to read Alex's contact.", CancellationToken.None));
+            Assert.True(grants.IsScopeGranted("plugin:telegram", "contacts.read"));
+            Assert.False(grants.IsScopeGranted("plugin:telegram", "messages.send"));
+            Assert.True(await guard.AuthorizeAsync("plugin:telegram", "Telegram", listContacts,
+                "Telegram wants to list contacts.", CancellationToken.None));
+            Assert.Equal(1, promptCount);
+            Assert.True(await guard.AuthorizeAsync("plugin:telegram", "Telegram", sendMessage,
+                "Telegram wants to send a message.", CancellationToken.None));
+            Assert.Equal(2, promptCount);
+            Assert.False(grants.IsScopeGranted("plugin:telegram", "messages.send"));
+
+            PermissionGrantStore reloaded = new(grantsPath);
+            Assert.Contains(reloaded.ListAll(), grant =>
+                grant.ModuleId == "plugin:telegram" && grant.ToolName == "legacy_tool");
+            Assert.Contains(reloaded.ListScopeGrants(), grant =>
+                grant.ModuleId == "plugin:telegram" && grant.PermissionScope == "contacts.read");
+            reloaded.RevokeScope("plugin:telegram", "contacts.read");
+
+            PermissionGrantStore afterRevoke = new(grantsPath);
+            Assert.False(afterRevoke.IsScopeGranted("plugin:telegram", "contacts.read"));
+            Assert.True(afterRevoke.IsGranted("plugin:telegram", "legacy_tool"));
+        }
+        finally
+        {
+            Directory.Delete(temp, recursive: true);
+        }
+    }
+
+    [Fact]
     public void ExternalModuleManifestRejectsSurfaceActionsThatAreNotDeclaredTools()
     {
         string folder = Path.Combine(Path.GetTempPath(), $"iris-plugin-surface-{Guid.NewGuid():N}");
