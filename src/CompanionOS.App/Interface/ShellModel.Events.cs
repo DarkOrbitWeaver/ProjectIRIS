@@ -43,6 +43,7 @@ public sealed partial class ShellModel : ObservableObject
         _subscriptions.Add(events.Subscribe<SpeechEvent>(payload => OnUiThread(() => HandleSpeech(payload))));
         _subscriptions.Add(events.Subscribe<AudioLevelEvent>(payload => OnUiThread(() => HandleAudio(payload))));
         _subscriptions.Add(events.Subscribe<ModelStatusEvent>(payload => OnUiThread(() => HandleModelStatus(payload))));
+        _subscriptions.Add(events.Subscribe<RuntimeReadyEvent>(_ => OnUiThread(() => IsRuntimeReady = true)));
         _subscriptions.Add(events.Subscribe<TelemetryEvent>(payload => OnUiThread(() => HandleTelemetry(payload))));
         _subscriptions.Add(events.Subscribe<PermissionRequestedEvent>(payload => OnUiThread(() => HandlePermission(payload))));
         _subscriptions.Add(events.Subscribe<NoticeEvent>(payload => OnUiThread(() => HandleNotice(payload))));
@@ -368,7 +369,13 @@ public sealed partial class ShellModel : ObservableObject
 
     private void HandleNotice(NoticeEvent payload)
     {
-        Notices.Add(new NoticeItem { Message = payload.Message, Severity = payload.Severity });
+        Notices.Add(new NoticeItem
+        {
+            Message = payload.Message,
+            Severity = payload.Severity,
+            ActionLabel = payload.ActionLabel,
+            Action = payload.Action
+        });
         // The States board allows two stacked cards, no more.
         while (Notices.Count > 2)
         {
@@ -395,7 +402,9 @@ public sealed partial class ShellModel : ObservableObject
         {
             // Short status and success notices clear themselves. Warnings get longer;
             // actionable errors stay until the user reads Details or dismisses them.
-            TimeSpan? lifetime = Notices[index].Severity switch
+            TimeSpan? lifetime = Notices[index].ActionLabel is not null
+                ? null
+                : Notices[index].Severity switch
             {
                 NoticeSeverity.Success => TimeSpan.FromSeconds(4),
                 NoticeSeverity.Info => TimeSpan.FromSeconds(5),

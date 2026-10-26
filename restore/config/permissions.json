@@ -1,0 +1,12 @@
+[
+  {
+    "ModuleId": "system",
+    "ToolName": "open_application",
+    "PermissionScope": null
+  },
+  {
+    "ModuleId": "music",
+    "ToolName": "add_music_folder",
+    "PermissionScope": null
+  }
+]

@@ -163,7 +163,7 @@ public sealed class VoiceSettings
     public string Engine { get; set; } = "pocket";
 
     /// <summary>Locked timbre. With the HTTP engine this is the server's voice name.</summary>
-    public string VoiceId { get; set; } = "alba";
+    public string VoiceId { get; set; } = "vera";
 
     /// <summary>OpenAI-compatible speech endpoint used only when Engine is "http".</summary>
     public string HttpEndpoint { get; set; } = "http://127.0.0.1:8880/v1";
@@ -182,9 +182,36 @@ public sealed class VoiceSettings
     /// <summary>CPU model. English 18M is selected for measured latency and bounded footprint.</summary>
     public string PocketLanguage { get; set; } = "english_18m_2026-10";
 
+    /// <summary>
+    /// Local Kokoro-82M HTTP endpoint (OpenAI-compatible /audio/speech). Iris starts
+    /// the worker only for the Kokoro engine; like Pocket, it is loopback-only.
+    /// </summary>
+    public string KokoroEndpoint { get; set; } = "http://127.0.0.1:18766";
+
+    /// <summary>Hard thread ceiling for the Kokoro worker's ORT session.</summary>
+    public int KokoroMaxThreads { get; set; } = 2;
+
+    /// <summary>
+    /// Kokoro voice to fall back to when her profile does not name one. af_heart is
+    /// the researched first choice; af_bella is the audition alternative.
+    /// </summary>
+    public string KokoroDefaultVoice { get; set; } = "af_heart";
+
     public double Rate { get; set; } = 1.0;
     public double Pitch { get; set; } = 0.0;
     public double Volume { get; set; } = 1.0;
+
+    /// <summary>
+    /// The endpoint the configured engine actually speaks through. One resolver for
+    /// every caller — the pipeline, the voice picker, the boot status — so no screen
+    /// can ever report a port for an engine that is not the one chosen.
+    /// </summary>
+    public string GetEffectiveEndpoint() => (Engine ?? "pocket").Trim().ToLowerInvariant() switch
+    {
+        "kokoro" => KokoroEndpoint,
+        "http" => HttpEndpoint,
+        _ => PocketEndpoint
+    };
 
     /// <summary>Lower music automatically while she speaks.</summary>
     public double MusicDuckLevel { get; set; } = 0.25;
@@ -192,8 +219,28 @@ public sealed class VoiceSettings
     /// <summary>Speak answers out loud without being asked.</summary>
     public bool SpeakReplies { get; set; } = true;
 
-    /// <summary>Play a cached "on it" while she thinks.</summary>
+    /// <summary>
+    /// Spoken answers are capped at this many characters; the full text still renders on
+    /// screen, but the voice carries only the verdict and offers the rest. 0 keeps whole
+    /// answers. The library-list monologue (161 characters rendered, 9.4 s played) is why
+    /// this floor exists.
+    /// </summary>
+    public int SpeechBudgetCharacters { get; set; } = 240;
+
+    /// <summary>
+    /// Her one switch for spontaneous chatter: the boot greeting and mode-change
+    /// announcements. The old per-action acks ("I'll check") were removed outright —
+    /// she now speaks real answers only, unless this switch allows her the niceties.
+    /// </summary>
     public bool ReflexPhrasesEnabled { get; set; } = true;
+
+    /// <summary>
+    /// The system-wide invoke switch, Siri-style: pressing it anywhere in Windows opens
+    /// her ears without needing her wake phrase — press again to close them. "Ctrl+K"
+    /// by default; set to empty to disable the switch and keep her wake phrase as the
+    /// only voice door.
+    /// </summary>
+    public string WakeHotkey { get; set; } = "Ctrl+K";
 
     /// <summary>Stop talking the moment the user speaks.</summary>
     public bool BargeInEnabled { get; set; } = true;
@@ -233,7 +280,7 @@ public sealed class VoiceSettings
     /// </summary>
     public List<string> CandidateVoices { get; set; } = new()
     {
-        "alba", "anna", "eve", "mary", "vera", "estelle"
+        "anna", "mary", "vera"
     };
 }
 
@@ -241,10 +288,19 @@ public sealed class EarsSettings
 {
     public bool Enabled { get; set; } = true;
 
-    /// <summary>"auto", "whisper" (offline, needs the model file) or "http" (local Whisper server).</summary>
+    /// <summary>
+    /// "auto", "whisper" (offline whisper.cpp model), "parakeet" (offline NVIDIA
+    /// Parakeet through transcribe.cpp) or "http" (local transcription server).
+    /// </summary>
     public string Recognizer { get; set; } = "auto";
 
     public string WhisperModelFile { get; set; } = "whisper-base.bin";
+
+    /// <summary>
+    /// The Parakeet GGUF file in models\ used when the recogniser is "parakeet".
+    /// The name matches the download manifest, so a plain install needs no edit here.
+    /// </summary>
+    public string ParakeetModelFile { get; set; } = "parakeet-unified-en-0.6b-Q5_K_M.gguf";
     public string HttpEndpoint { get; set; } = "http://127.0.0.1:8000/v1";
     public string HttpModel { get; set; } = "whisper-1";
     public string ApiKey { get; set; } = string.Empty;
@@ -355,9 +411,18 @@ public sealed class InterfaceSettings
 
     /// <summary>
     /// The pixel corner she was dragged to, remembered the way the board's caption says:
-    /// "position persists". Empty means "use the corner words above".
+    /// "position persists". Empty means "use the corner words above". A remembered spot
+    /// is only honoured when it hugs a screen edge — a stale coordinate from an older
+    /// resolution must never leave the pill floating mid-screen.
     /// </summary>
     public string OverlayPositionPx { get; set; } = "";
+
+    /// <summary>
+    /// The music card's own remembered position from dragging, in the pill's "x,y"
+    /// format but only trusted while it stays docked near the right screen edge.
+    /// Empty means "spawn top right, about a fifth of the screen down".
+    /// </summary>
+    public string MusicOverlayPositionPx { get; set; } = "";
 
     /// <summary>When she games, the overlay pill dims to 40 % so it is noticed, not loud.</summary>
     public bool DimWhileGaming { get; set; } = true;

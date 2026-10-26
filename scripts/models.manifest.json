@@ -24,12 +24,26 @@
       "note": "Vision projector. Without it she runs text-only."
     },
     {
-      "id": "ears",
+      "id": "ears-parakeet",
       "kind": "url",
-      "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin",
-      "targetName": "whisper-base.bin",
+      "url": "https://huggingface.co/handy-computer/parakeet-unified-en-0.6b-gguf/resolve/main/parakeet-unified-en-0.6b-Q5_K_M.gguf",
+      "sha256": "f9def6f9b4e83ab7d006df3e1b676dfa1f973a3b6da232a9c99fcaa66bcd2836",
+      "targetName": "parakeet-unified-en-0.6b-Q5_K_M.gguf",
       "required": true,
-      "note": "Offline speech recognition, roughly 150 MB. Runs on the CPU."
+      "note": "Production ears: NVIDIA Parakeet Unified EN 0.6B at Q5_K_M, 541 MB, English-only, CPU-only through transcribe.cpp. NVIDIA Open Model License, accepted by the owner."
+    },
+    {
+      "id": "ears-transcribe-runtime",
+      "kind": "github-release",
+      "repo": "handy-computer/transcribe.cpp",
+      "releaseTag": "v0.4.1",
+      "assetPattern": "transcribe-native-0.4.1-windows-x86_64-cpu-vulkan.tar.gz",
+      "fallbackAssetPattern": "transcribe-native-*windows-x86_64-cpu-vulkan.tar.gz",
+      "sha256": "272eb97795048ccb557c85bb9dd44c9e530e1c928443114c39816a8a5f76269d",
+      "targetName": "transcribe-native-windows-x86_64-cpu-vulkan",
+      "sentinelFile": "transcribe.dll",
+      "required": true,
+      "note": "The transcribe.cpp C-API runtime the Parakeet ears live in. MIT licensed; ships GPU helper DLLs, but the adapter pins the backend registry to CPU so they are never loaded."
     },
     {
       "id": "runtime",

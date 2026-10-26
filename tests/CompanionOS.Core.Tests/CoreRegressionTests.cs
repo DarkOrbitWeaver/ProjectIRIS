@@ -1260,10 +1260,61 @@ public sealed class CoreRegressionTests
 
             Assert.Contains(module, selected);
             Assert.Contains(routed, tool => tool.Name == "send_telegram_message");
-            Assert.DoesNotContain(routed, tool => tool.Name == "calendar_0");
+            // The chosen module hands the model its complete toolset (cap raised from
+            // 8 so requests naming unknown things still surface the right hand), so the
+            // zero-hit calendar fillers ride along — but only behind the signal. The
+            // requested hand must lead the offer, never trail it by lottery.
+            List<ModuleTool> offered = routed.ToList();
+            Assert.True(
+                offered.FindIndex(tool => tool.Name == "send_telegram_message")
+                < offered.FindIndex(tool => tool.Name == "calendar_0"),
+                "The requested tool must outrank the zero-hit filler declared before it.");
             Assert.True(routed.Count <= ModuleHost.MaximumToolsPerTurn);
             Assert.DoesNotContain("calendar_0", host.DescribeCapabilities());
-            Assert.True(host.DescribeCapabilities().Length < 200);
+            // Terse on purpose, but room for the act-don't-narrate guidance sentence.
+            Assert.True(host.DescribeCapabilities().Length < 260);
+        }
+        finally
+        {
+            Directory.Delete(temp, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task RouterKeepsTheLauncherVisibleWhenFillerWordsDiluteTheSentence()
+    {
+        EventBus events = new();
+        string temp = Path.Combine(Path.GetTempPath(), $"iris-launcher-routing-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(temp);
+        try
+        {
+            SandboxGuard sandbox = new(events,
+                new FileAuditTrail(Path.Combine(temp, "audit.jsonl")),
+                new PermissionGrantStore(Path.Combine(temp, "permissions.json")));
+            await using ModuleHost host = new(new SettingsStore(), events, sandbox, memory: null!);
+
+            // The launcher exactly as SystemControlModule declares it, with the same
+            // routing keywords, against a distractor module — reproducing the live
+            // miss where "Uh open up calculator" left open_application unroutable.
+            ModuleTool launcher = new("open_application",
+                "Launch an application by name from the allowed set.",
+                ToolTier.Scoped,
+                """{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}""",
+                "open app", "launch", "start program", "open calculator", "open the calculator");
+            TestAssistantModule system = new("system", "System Control",
+                "Opens allowed applications and reports system status.", [launcher]);
+            TestAssistantModule media = new("media", "Media",
+                "Controls music playback volume.",
+                [new ModuleTool("control_media", "Pause or resume media.", ToolTier.Scoped, "{}",
+                    "play", "pause", "music", "volume")]);
+            await host.RegisterAsync(system);
+            await host.RegisterAsync(media);
+
+            IReadOnlyList<ModuleTool> routed = host.RouteTools(
+                "Uh open up calculator", out IReadOnlyList<IAssistantModule> selected);
+
+            Assert.Contains(system, selected);
+            Assert.Contains(routed, tool => tool.Name == "open_application");
         }
         finally
         {
@@ -1392,6 +1443,52 @@ public sealed class CoreRegressionTests
 
         Assert.Equal(expectedMatch, matched);
         Assert.Equal(expectedRemainder, remainder);
+    }
+
+    [Theory]
+    [InlineData("on this play the playlist", true, "play the playlist")]
+    [InlineData("on this", true, "")]
+    [InlineData("i race add the song", true, "add the song")]
+    [InlineData("today the playlist plays", false, "")]
+    public void TrainedWakeAliasesAnswerLikeHerName(string transcript, bool expectedMatch,
+        string expectedRemainder)
+    {
+        // ASR heard "iris" as "on this" — the owner captured that mis-hearing in Settings
+        // and it became part of her name, exactly like "irys" already was by tolerance.
+        Persona persona = new();
+        persona.WakeAliases.Add("on this");
+        persona.WakeAliases.Add("i race");
+        WakePhraseMatcher matcher = new(persona);
+
+        bool matched = matcher.TryMatch(transcript, out string remainder);
+
+        Assert.Equal(expectedMatch, matched);
+        Assert.Equal(expectedRemainder, remainder);
+    }
+
+    [Fact]
+    public void SpeechPlannerDropsListSentencesButKeepsTheVerdict()
+    {
+        // From today's records: 161 characters of library read aloud costed 5.7 s synthesis
+        // plus 9.4 s playback. The verdict is one clause; the inventory belongs on screen.
+        string answer = "Sure thing boss. Here are the songs I found, Night Drive, Hollowlight, Solar Wake, " +
+                        "Neon Rain, Cold Orbit, Last Ember and Old Signal. Should I start the playlist?";
+
+        string spoken = SpeechPlanner.TrimForSpeech(answer, 240);
+
+        Assert.Equal("Sure thing boss. Should I start the playlist?", spoken);
+    }
+
+    [Theory]
+    [InlineData("Resumed.", true)]
+    [InlineData("Alright boss, playlist resumed.", true)]
+    [InlineData("Want me to play any of them?", false)]
+    [InlineData("Sure boss. Nothing is playing right now — want me to start something?", false)]
+    [InlineData("Done.", true)]
+    public void UnbackedClaimsAreCaughtButAnswersThatAdmitNothingHappenedPass(
+        string answer, bool expectedClaim)
+    {
+        Assert.Equal(expectedClaim, SpeechPlanner.LooksLikeUnbackedClaim(answer));
     }
 
     [Fact]
@@ -1805,18 +1902,18 @@ public sealed class CoreRegressionTests
     }
 
     [Fact]
-    public void PocketVoicePickerKeepsSixLocalProfilesWithoutStartingTheEngine()
+    public void PocketVoicePickerKeepsFourEnglishProfilesWithoutStartingTheEngine()
     {
         CompanionSettings settings = new();
         VoiceGallery gallery = new(settings);
 
         IReadOnlyList<VoiceCandidate> candidates = gallery.DescribeCandidates();
 
-        Assert.Equal(new[] { "alba", "anna", "eve", "mary", "vera", "estelle" },
+        Assert.Equal(new[] { "anna", "mary", "vera" },
             candidates.Select(candidate => candidate.VoiceId));
         Assert.All(candidates, candidate => Assert.Equal("pocket", candidate.Engine));
         Assert.Equal("pocket", VoiceProfile.FromSettings(settings).Engine);
-        Assert.Equal("alba", VoiceProfile.FromSettings(settings).VoiceId);
+        Assert.Equal("vera", VoiceProfile.FromSettings(settings).VoiceId);
     }
 
     [Fact]
@@ -1824,12 +1921,12 @@ public sealed class CoreRegressionTests
     {
         CompanionSettings settings = new();
         settings.Voice.Engine = "pocket";
-        settings.Voice.CandidateVoices = new() { "alba", "anna", "eve", "mary", "vera", "estelle" };
+        settings.Voice.CandidateVoices = new() { "alba", "anna", "eve", "mary", "vera", "estelle" /* eve is deliberately present: repair removes it */ };
         using VoiceGallery gallery = new(settings);
 
         IReadOnlyList<VoiceCandidate> candidates = gallery.DescribeCandidates();
 
-        Assert.Equal(settings.Voice.CandidateVoices, candidates.Select(candidate => candidate.VoiceId).ToArray());
+        Assert.Equal(new[] { "anna", "mary", "vera" }, candidates.Select(candidate => candidate.VoiceId));
         Assert.All(candidates, candidate => Assert.Equal("pocket", candidate.Engine));
         Assert.All(candidates, candidate => Assert.Equal(candidate.VoiceId, gallery.BuildProfile(candidate).VoiceId));
     }
@@ -1895,11 +1992,40 @@ public sealed class CoreRegressionTests
             CompanionSettings loaded = new SettingsStore().Load();
 
             Assert.Equal("pocket", loaded.Voice.Engine);
-            Assert.Equal("alba", loaded.Voice.VoiceId);
+            Assert.Equal("vera", loaded.Voice.VoiceId);
             Assert.False(loaded.Voice.ChosenByUser);
-            Assert.Equal(6, loaded.Voice.CandidateVoices.Count);
+            Assert.Equal(new[] { "anna", "mary", "vera" }, loaded.Voice.CandidateVoices);
             Assert.Equal(0.025, loaded.Ears.VoiceThreshold);
             Assert.Equal(2, loaded.Ears.MaxRecognitionThreads);
+        }
+        finally
+        {
+            CompanionPaths.OverrideRoot(previousRoot);
+            if (Directory.Exists(testRoot))
+            {
+                Directory.Delete(testRoot, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public void PocketSettingsRemoveAlbaAndEstelleAndKeepAnApprovedVoice()
+    {
+        string previousRoot = CompanionPaths.Root;
+        string testRoot = Path.Combine(Path.GetTempPath(), $"iris-settings-{Guid.NewGuid():N}");
+        try
+        {
+            CompanionPaths.OverrideRoot(testRoot);
+            Directory.CreateDirectory(CompanionPaths.ConfigDirectory);
+            File.WriteAllText(CompanionPaths.SettingsFile,
+                "{\"Voice\":{\"Engine\":\"pocket\",\"VoiceId\":\"vera\",\"ChosenByUser\":true," +
+                "\"CandidateVoices\":[\"alba\",\"anna\",\"eve\",\"mary\",\"vera\",\"estelle\"]}}");
+
+            CompanionSettings loaded = new SettingsStore().Load();
+
+            Assert.Equal("vera", loaded.Voice.VoiceId);
+            Assert.True(loaded.Voice.ChosenByUser);
+            Assert.Equal(new[] { "anna", "mary", "vera" }, loaded.Voice.CandidateVoices);
         }
         finally
         {
@@ -1930,7 +2056,7 @@ public sealed class CoreRegressionTests
         VoiceSettings settings = new()
         {
             Engine = "pocket",
-            VoiceId = "alba",
+            VoiceId = "vera",
             PocketEndpoint = $"http://127.0.0.1:{port}",
             PocketMaxThreads = 2,
             PocketLanguage = "english_18m_2026-10"
@@ -1941,7 +2067,7 @@ public sealed class CoreRegressionTests
         using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(60));
         Assert.True(await host.StartAsync(timeout.Token));
 
-        foreach (string voiceId in new[] { "alba", "anna", "eve", "mary", "vera", "estelle" })
+        foreach (string voiceId in new[] { "anna", "mary", "vera" })
         {
             Stopwatch stopwatch = Stopwatch.StartNew();
             SpeechAudio? audio = await synthesizer.SynthesizeAsync(
@@ -2000,6 +2126,66 @@ public sealed class CoreRegressionTests
             Assert.Null(graph.FindById(subject.Id));
             Assert.Empty(graph.SnapshotSynapses());
             Assert.NotNull(graph.FindById(target.Id));
+        }
+        finally
+        {
+            foreach (string path in new[] { databasePath, databasePath + "-wal", databasePath + "-shm" })
+            {
+                try
+                {
+                    if (File.Exists(path))
+                    {
+                        File.Delete(path);
+                    }
+                }
+                catch
+                {
+                    // The test result is already decided; cleanup is best effort.
+                }
+            }
+        }
+    }
+
+    [Fact]
+    public async Task EpisodesGainSynapsesToTheirPastAndTheirTopics()
+    {
+        string databasePath = Path.Combine(Path.GetTempPath(), $"iris-episodes-{Guid.NewGuid():N}.db");
+        try
+        {
+            await using MemoryGraph graph = new(databasePath);
+            await graph.InitializeAsync();
+            EventBus events = new();
+            SynapticMemoryEngine memory = new(graph, new SettingsStore(), events);
+
+            MemoryNode anchor = await graph.UpsertNodeAsync(
+                "hollowlight playlist", "Boss' favourite late-night music.", MemoryLayer.Semantic, "conversation");
+            RecalledMemory first = await memory.RecordEpisodeAsync(
+                "Did: play hollowlight — play music: done", "conversation",
+                title: "Did: hollowlight playlist");
+            RecalledMemory second = await memory.RecordEpisodeAsync(
+                "Did: queue hollowlight again — play music: done", "conversation",
+                title: "Did: hollowlight playlist once more");
+
+            IReadOnlyList<MemorySynapse> synapses = graph.SnapshotSynapses();
+            Assert.Equal(3, synapses.Count); // two topic anchors + one narrative chain step
+            Assert.Contains(synapses, synapse =>
+                synapse.FromNodeId == first.NodeId && synapse.ToNodeId == second.NodeId &&
+                synapse.Type == SynapseType.After);
+            Assert.Contains(synapses, synapse =>
+                synapse.FromNodeId == first.NodeId && synapse.ToNodeId == anchor.Id &&
+                synapse.Type == SynapseType.RelatedTo);
+            Assert.Contains(synapses, synapse =>
+                synapse.FromNodeId == second.NodeId && synapse.ToNodeId == anchor.Id &&
+                synapse.Type == SynapseType.RelatedTo);
+
+            // A long title is cut at a word boundary, never mid-word: a chopped title
+            // on the canvas reads like a glitch, not a diary.
+            RecalledMemory longOne = await memory.RecordEpisodeAsync(
+                "Did: something", "conversation",
+                title: "Did: " + new string('w', 70));
+            Assert.EndsWith("…", longOne.Title);
+            Assert.True(longOne.Title.Length <= 61);
+            Assert.DoesNotContain(" ", longOne.Title[^2..]);
         }
         finally
         {
@@ -2180,6 +2366,22 @@ public sealed class CoreRegressionTests
             }
             return PlayResult;
         }
+    }
+
+    [Fact]
+    public void MicrophoneCaptureChangeClassificationDistinguishesLossFromShutdown()
+    {
+        (string name, LogLevel level) = VoicePipeline.ClassifyCaptureChange(isOpen: true, intentionalClose: false);
+        Assert.Equal("microphone.capture.opened", name);
+        Assert.Equal(LogLevel.Info, level);
+
+        (name, level) = VoicePipeline.ClassifyCaptureChange(isOpen: false, intentionalClose: true);
+        Assert.Equal("microphone.capture.closed", name);
+        Assert.Equal(LogLevel.Info, level);
+
+        (name, level) = VoicePipeline.ClassifyCaptureChange(isOpen: false, intentionalClose: false);
+        Assert.Equal("microphone.capture.lost", name);
+        Assert.Equal(LogLevel.Warning, level);
     }
 
     private sealed class TestAssistantModule(string id, string name, string purpose,

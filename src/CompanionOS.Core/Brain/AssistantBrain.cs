@@ -225,7 +225,11 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
                 TurnId = turnId,
                 Text = exception.Message
             });
-            _ = SpeakReflexInBackgroundAsync("error");
+            if (_settings.Current.Voice.ReflexPhrasesEnabled)
+            {
+                _ = SpeakReflexInBackgroundAsync("error");
+            }
+
             _mind.MoveTo(MindState.Idle, "recovered");
             return string.Empty;
         }
@@ -312,6 +316,10 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
 
     /// <summary>Plain-English description of the machine.</summary>
     public string DescribeSituation() => _perception.DescribeForPrompt();
+
+    /// <summary>Controls Windows media through the current media-session sensor.</summary>
+    public Task<string> ControlMediaAsync(string action, CancellationToken cancellationToken) =>
+        _perception.ControlMediaAsync(action, cancellationToken);
 
     /// <summary>One line per installed ability.</summary>
     public string DescribeCapabilities() => _modules.DescribeCapabilities();
@@ -413,13 +421,17 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
         string intuition = _memory.RenderIntuition(activation);
         _memory.PublishRecall(turnId, activation, intuition);
 
-        // 3. Routing: only the hands this sentence needs.
+        // 3. Routing: only the hands this sentence needs. The receipt is logged in the
+        //    event stream, not trace: "she picked X because of Y" has to be answerable
+        //    from the day's records whenever her behavior felt wrong.
         IReadOnlyList<ModuleTool> routedTools = _modules.RouteTools(userText, out IReadOnlyList<IAssistantModule> selectedModules);
-        if (routedTools.Count > 0)
-        {
-            CompanionLog.Trace("Brain",
-                $"Routed {routedTools.Count} tools: {string.Join(", ", routedTools.Select(tool => tool.Name))}");
-        }
+        IrisEvent.Log("Brain", "turn.routed", LogLevel.Info,
+            data: new Dictionary<string, string?>
+            {
+                ["origin"] = origin,
+                ["modules"] = string.Join(",", selectedModules.Select(module => module.Id)),
+                ["tools"] = string.Join(",", routedTools.Select(tool => tool.Name))
+            });
 
         // 4. Prompt assembly.
         bool hasAttachedImage = !string.IsNullOrWhiteSpace(attachedImage);
@@ -445,17 +457,23 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
             DescribeMode(),
             DateTime.Now.ToString("dddd HH:mm"));
 
+        // Spoken conversation has no scrollback and no skimming: a long answer is a wall
+        // of sound. Keep heard replies short unless the user explicitly asks for detail.
+        if (origin.Equals("voice", StringComparison.OrdinalIgnoreCase))
+        {
+            systemPrompt +=
+                "\n\nSPOKEN REPLIES\n" +
+                "- The user hears this answer out loud, one sentence at a time. Answer in one to three\n" +
+                "  short sentences. Only add more when they ask for detail or clearly want to talk.\n" +
+                "- Never read out lists, changelogs, or more than one example. Confirm, and offer the rest.\n" +
+                "- If you used a tool, report the outcome in one plain sentence.";
+        }
+
         List<ChatMessage> messages = new() { ChatMessage.System(systemPrompt) };
         messages.AddRange(TakeHistoryWindow());
         messages.Add(ChatMessage.User(userText, attachedImage));
 
         PublishContextTelemetry(messages);
-
-        // The instant acknowledgement: cached audio, played before the model answers.
-        if (routedTools.Count > 0)
-        {
-            _ = SpeakReflexInBackgroundAsync("acknowledge", cancellationToken);
-        }
 
         _journal.RecordAnswerStarted(turnId);
         _events.Publish(new ConversationEvent
@@ -467,15 +485,23 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
         StringBuilder finalAnswer = new();
         bool anyToolSucceeded = false;
         bool reachedFinalAnswer = false;
+        bool answerSpokenDuringGeneration = false;
         string answerText = string.Empty;
         List<string> toolLedger = new();
         HashSet<string> uncertainTools = new(StringComparer.OrdinalIgnoreCase);
+        bool honestyRetryUsed = false;
 
         for (int round = 0; round < MaximumToolRounds; round++)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
             StringBuilder roundText = new();
+            StringBuilder speechBuffer = new();
+            bool maySpeakWhileGenerating = origin.Equals("voice", StringComparison.OrdinalIgnoreCase) &&
+                                           routedTools.Count == 0 && _settings.Current.Voice.SpeakReplies &&
+                                           !honestyRetryUsed;
+            bool streamedAnySpeech = false;
+            Task speechTail = Task.CompletedTask;
             ModelTurn turn = await _modelClient.StreamChatAsync(
                 _settings.Current.ActiveBrainProfile,
                 messages,
@@ -483,6 +509,26 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
                 async delta =>
                 {
                     roundText.Append(delta);
+                    if (maySpeakWhileGenerating)
+                    {
+                        speechBuffer.Append(delta);
+                        foreach (string sentence in TakeCompleteSpeechSentences(speechBuffer,
+                                     _settings.Current.Brain.MinimumSpokenSentenceCharacters))
+                        {
+                            // The speech-economy floor applies mid-stream too: a list-shaped
+                            // sentence is dropped before it can cost seconds of synthesis.
+                            string spoken = SpeechPlanner.TrimForSpeech(sentence,
+                                _settings.Current.Voice.SpeechBudgetCharacters);
+                            if (string.IsNullOrWhiteSpace(spoken))
+                            {
+                                continue;
+                            }
+
+                            speechTail = QueueSpeechAfterAsync(speechTail, spoken, cancellationToken);
+                            streamedAnySpeech = true;
+                        }
+                    }
+
                     _events.Publish(new ConversationEvent
                     {
                         Phase = ConversationPhase.AssistantDelta,
@@ -496,6 +542,65 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
             if (turn.ToolCalls.Count == 0)
             {
                 answerText = turn.Text.Length > 0 ? turn.Text : roundText.ToString().Trim();
+
+                // The OS checks the model, not the other way round. A draft that announces
+                // completed work with zero tool receipts behind it gets exactly one retry:
+                // the draft is echoed back with the receipt block, and the model must call
+                // the tool or say plainly that it did not run. This is the fix for the
+                // "Resumed." that played nothing.
+                if (toolLedger.Count == 0 && SpeechPlanner.LooksLikeUnbackedClaim(answerText))
+                {
+                    if (!honestyRetryUsed)
+                    {
+                        honestyRetryUsed = true;
+                        IrisEvent.Log("Brain", "turn.honesty_retry", LogLevel.Info,
+                            message: "A draft announced work with no tool receipts behind it; she is asked for the truth before it is spoken as final.",
+                            data: new Dictionary<string, string?>
+                            {
+                                ["draft_chars"] = answerText.Length.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                            });
+                        messages.Add(ChatMessage.Assistant(turn.Text));
+                        // If this turn has no hands at all, "call the tool" cannot be the fix:
+                        // asking for it again just taught the model to repeat the lie. What
+                        // we saw today: the router gave her zero music tools, she still
+                        // claimed she had resumed. So the nudge matches the hands she has.
+                        messages.Add(ChatMessage.System(routedTools.Count == 0
+                            ? "RECEIPT CHECK: no tool has run in this turn yet, and you have no tools for that " +
+                              "action this turn — \"call the tool\" cannot be the fix. There is no confirmation " +
+                              "on record that anything happened. Answer again in one short honest sentence: " +
+                              "say plainly that it has not happened, and offer to do it next."
+                            : "RECEIPT CHECK: no tool has run in this turn yet — there is no confirmation on record " +
+                              "that anything was played, paused, added, opened, saved or sent. Your draft announced an " +
+                              "action as done. Either call the tool now and act on its result, or answer again " +
+                              "honestly in one short sentence: say what has NOT happened yet, then offer to do it."));
+                        // Anything already streamed may have carried the claim; reconnect the
+                        // spoken answer so the truth is what lands last.
+                        answerSpokenDuringGeneration = false;
+                        continue;
+                    }
+
+                    IrisEvent.Log("Brain", "turn.unverified_claim", LogLevel.Warning,
+                        message: "After a receipt-check retry the answer still announces work with no tool behind it. The record keeps the mismatch.",
+                        data: new Dictionary<string, string?>
+                        {
+                            ["answer_chars"] = answerText.Length.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                        });
+                }
+
+                if (maySpeakWhileGenerating && streamedAnySpeech)
+                {
+                    string remainingSpeech = SpeechPlanner.TrimForSpeech(
+                        SpeechTextSanitizer.CleanForSpeech(speechBuffer.ToString()),
+                        _settings.Current.Voice.SpeechBudgetCharacters);
+                    if (!string.IsNullOrWhiteSpace(remainingSpeech))
+                    {
+                        speechTail = QueueSpeechAfterAsync(speechTail, remainingSpeech, cancellationToken);
+                    }
+
+                    await speechTail.ConfigureAwait(false);
+                    answerSpokenDuringGeneration = true;
+                }
+
                 reachedFinalAnswer = true;
                 break;
             }
@@ -573,10 +678,11 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
                     messages.Add(ChatMessage.User("This is the screenshot I just took.", result.ImageDataUri));
                 }
 
-                if (!string.IsNullOrWhiteSpace(result.SpokenText))
-                {
-                    await SpeakFragmentAsync(result.SpokenText!, cancellationToken).ConfigureAwait(false);
-                }
+                // result.SpokenText is deliberately not spoken here. Modules used to talk
+                // mid-turn ("Playing ..."), which bogarted the single speech path: her
+                // answer is the only voice inside a turn. The fragment still exists as
+                // module-authored copy for surfaces that show text, but speech flows
+                // through exactly one gate — the answer below.
             }
 
             _journal.RecordAnswerProgress(turnId, finalAnswer.ToString());
@@ -623,9 +729,9 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
             Detail = string.Join(",", selectedModules.Select(module => module.Id))
         });
 
-        RememberExchange(userText, answerText, anyToolSucceeded);
+        RememberExchange(userText, answerText, toolLedger, anyToolSucceeded);
 
-        if (_settings.Current.Voice.SpeakReplies)
+        if (_settings.Current.Voice.SpeakReplies && !answerSpokenDuringGeneration)
         {
             _mind.MoveTo(MindState.Speaking, "answering aloud");
             await SpeakAnswerAsync(answerText, cancellationToken).ConfigureAwait(false);
@@ -635,5 +741,41 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
         _mind.MoveTo(MindState.Idle, "turn finished");
         _lastActivity = DateTimeOffset.Now;
         return answerText;
+    }
+
+    private Task QueueSpeechAfterAsync(Task previous, string text, CancellationToken cancellationToken) =>
+        previous.ContinueWith(async _ =>
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            await _voice.SpeakAsync(text, cancellationToken).ConfigureAwait(false);
+        }, CancellationToken.None, TaskContinuationOptions.None, TaskScheduler.Default).Unwrap();
+
+    private static IReadOnlyList<string> TakeCompleteSpeechSentences(StringBuilder buffer, int minimumCharacters)
+    {
+        List<string> sentences = new();
+        int start = 0;
+        for (int index = 0; index < buffer.Length; index++)
+        {
+            if (buffer[index] is not ('.' or '!' or '?'))
+            {
+                continue;
+            }
+
+            string candidate = SpeechTextSanitizer.CleanForSpeech(buffer.ToString(start, index - start + 1));
+            if (candidate.Length < Math.Max(1, minimumCharacters))
+            {
+                continue;
+            }
+
+            sentences.Add(candidate);
+            start = index + 1;
+        }
+
+        if (start > 0)
+        {
+            buffer.Remove(0, start);
+        }
+
+        return sentences;
     }
 }

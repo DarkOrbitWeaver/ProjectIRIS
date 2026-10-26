@@ -173,7 +173,7 @@ storage budget.
    her back in about 1.5 s.
 5. **Memory time travel** — the consolidation history slider from the blueprint.
 
-Neural speech output is now Pocket TTS, a managed local CPU sidecar with six bundled
+Neural speech output is now Pocket TTS, a managed local CPU sidecar with four bundled English
 profiles. The old Qwen TTS prototype was removed; adding another speech runtime is not on the
 roadmap until it demonstrates a clear quality or latency gain without increasing the user's
 runtime and disk burden.

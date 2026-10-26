@@ -7,7 +7,7 @@
 | Windows 10 or 11 (x64) | The senses use Win32 and Windows media sessions |
 | .NET 9 SDK | `dotnet --version` should print 9.x |
 | NVIDIA driver with `nvidia-smi` | Only used for the VRAM meter |
-| ~8 GB free disk for the default full setup | Brain ~2.5 GB, projector ~0.9 GB, ears ~150 MB, llama runtime, and CPU-only Pocket TTS dependencies/model |
+| ~8 GB free disk for the default full setup | Brain ~2.5 GB, projector ~0.9 GB, ears ~690 MB (Parakeet Q5_K_M 541 MB + transcribe.cpp runtime), llama runtime, and CPU-only Pocket TTS dependencies/model |
 
 ## First run
 
@@ -37,11 +37,12 @@ model weights into memory.
 %LOCALAPPDATA%\CompanionOS\        (or COMPANIONOS_HOME)
   models\brain.gguf
   models\brain-mmproj.gguf
-  models\whisper-base.bin
+  models\parakeet-unified-en-0.6b-Q5_K_M.gguf
   models\pocket-tts-cache\hub\models--kyutai--pocket-tts-without-voice-cloning\snapshots\...
   runtimes\llama.cpp\llama-server.exe
   runtimes\pocket-tts\pocket-tts.exe
   runtimes\pocket-uv\...\uv.exe
+  runtimes\transcribe-native-windows-x86_64-cpu-vulkan\transcribe.dll
   runtimes\python\...\python.exe
   memory\brain.db
   workspace\Music\                <-- drop your songs here
@@ -67,8 +68,8 @@ supported runtime and downloads the selected model/profile set; it is not presen
 step succeeds. The English 18M model runs on CPU with a two-logical-processor ceiling and
 below-normal priority. No GPU or Windows voice fallback is used. If Hugging Face access was not
 completed, setup reports that and the app remains usable through text while voice is offline.
-The chosen voice is stored as `Voice.VoiceId`; the six bundled IDs are `alba`, `anna`, `eve`,
-`mary`, `vera`, and `estelle`.
+The chosen voice is stored as `Voice.VoiceId`; the English voice picker offers `anna`, `eve`,
+`mary`, and `vera`.
 
 An explicitly configured OpenAI-compatible server remains supported by setting
 `Voice.Engine` to `http` and `Voice.HttpEndpoint` to its `/v1` base URL. If the selected engine is
@@ -88,7 +89,7 @@ The voice used for her reflex phrases is rendered once and cached per voice sign
 |---|---|
 | "Her brain did not load" | `models/brain.gguf` exists, and `runtimes/.../llama-server.exe` runs with `-h` |
 | VRAM never drops after Rest | another instance of llama-server is still running: Task Manager → `llama-server` |
-| She cannot hear you | Settings → Ears: recogniser `whisper`, and `models/whisper-base.bin` exists |
+| She cannot hear you | Settings → Ears: recogniser `parakeet`, `models/parakeet-unified-en-0.6b-Q5_K_M.gguf` exists, and `runtimes/transcribe-native-windows-x86_64-cpu-vulkan/transcribe.dll` exists |
 | She hears but ignores you | say her name (`"Hey Iris, ..."`), or press **Ctrl+M** to open the mic |
 | No sound | Settings → Voice → Speak answers; also check Windows default output device |
 | She cannot speak | check that the Pocket runtime and model cache above exist, or verify the configured HTTP endpoint; Iris never falls back to a different voice |

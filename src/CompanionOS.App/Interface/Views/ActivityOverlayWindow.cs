@@ -17,6 +17,10 @@ internal sealed class ActivityOverlayWindow : Window
     private const double CardWidth = 326;
     private const double CardHeight = 104;
 
+    /// <summary>Transparent breathing room around the card so the drop shadow paints
+    /// inside the window instead of getting clipped into a hard rim at the edges.</summary>
+    private const double ShadowGutter = 32;
+
     private readonly TextBlock _module;
     private readonly Border _moduleIcon;
     private readonly TextBlock _step;
@@ -39,8 +43,8 @@ internal sealed class ActivityOverlayWindow : Window
         ShowActivated = false;
         CanResize = false;
         WindowStartupLocation = WindowStartupLocation.Manual;
-        Width = CardWidth;
-        Height = CardHeight;
+        Width = CardWidth + (ShadowGutter * 2);
+        Height = CardHeight + (ShadowGutter * 2);
 
         _module = Label(Palette.FontCaption, Palette.TextFaintBrush, FontWeight.SemiBold);
         _module.LetterSpacing = 0.9;
@@ -97,6 +101,7 @@ internal sealed class ActivityOverlayWindow : Window
         };
         Content = new Border
         {
+            Margin = new Thickness(ShadowGutter),
             Background = new SolidColorBrush(Palette.Elevated, 0.97),
             BorderBrush = Palette.StrokeBrush,
             BorderThickness = new Thickness(1),
@@ -177,18 +182,24 @@ internal sealed class ActivityOverlayWindow : Window
     {
         double scale = RenderScaling > 0 ? RenderScaling : 1.0;
         int width = (int)Math.Ceiling(CardWidth * scale);
-        int height = (int)Math.Ceiling(CardHeight * scale);
-        int gap = (int)Math.Ceiling(10 * scale);
+        int gutter = (int)Math.Ceiling(ShadowGutter * scale);
+        int windowWidth = width + (gutter * 2);
+        int windowHeight = (int)Math.Ceiling(CardHeight * scale) + (gutter * 2);
+        int gap = (int)Math.Ceiling(10 * scale); // window edge to pill-edge breathing room
+
+        // Coordinates are the card's horizontally, the window's vertically: the card
+        // keeps the pill's shared edge, the window rectangle extends one gutter outward
+        // so the drop shadow paints without touching the pill itself.
         int x = growsLeft ? pillPosition.X + pillWidth - width : pillPosition.X;
-        int y = pillPosition.Y - height - gap;
+        int y = pillPosition.Y - windowHeight - gap;
         if (y < workArea.Y)
         {
             y = pillPosition.Y + pillHeight + gap;
         }
 
         Position = new PixelPoint(
-            Math.Clamp(x, workArea.X, Math.Max(workArea.X, workArea.Right - width)),
-            Math.Clamp(y, workArea.Y, Math.Max(workArea.Y, workArea.Bottom - height)));
+            Math.Clamp(x - gutter, workArea.X, Math.Max(workArea.X, workArea.Right - windowWidth)),
+            Math.Clamp(y, workArea.Y, Math.Max(workArea.Y, workArea.Bottom - windowHeight)));
     }
 
     private void RenderProgress(double? fraction = null)

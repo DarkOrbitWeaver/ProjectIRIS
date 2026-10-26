@@ -31,6 +31,20 @@ public interface ISpeechSynthesizer : IDisposable
     Task<SpeechAudio?> SynthesizeAsync(string text, VoiceProfile profile, CancellationToken cancellationToken);
 }
 
+/// <summary>A stream returned by a synthesizer, keeping its HTTP response alive until playback ends.</summary>
+public sealed class SpeechAudioStream(Stream content, IDisposable owner) : IDisposable
+{
+    public Stream Content { get; } = content;
+    public void Dispose() => owner.Dispose();
+}
+
+/// <summary>A synthesizer that can deliver audio progressively instead of buffering the full clip.</summary>
+public interface IStreamingSpeechSynthesizer : ISpeechSynthesizer
+{
+    Task<SpeechAudioStream?> OpenSpeechStreamAsync(string text, VoiceProfile profile,
+        CancellationToken cancellationToken);
+}
+
 /// <summary>
 /// Speaks through a local OpenAI-compatible speech server (Kokoro, Qwen3-TTS, Piper
 /// gateways and similar). This is the recommended engine: the voice is defined by the
@@ -43,16 +57,25 @@ public sealed class HttpSpeechSynthesizer : ISpeechSynthesizer
 {
     private readonly HttpClient _httpClient;
     private readonly VoiceSettings _settings;
+    private readonly string _endpoint;
+    private readonly string _engineName;
 
-    public HttpSpeechSynthesizer(VoiceSettings settings)
+    /// <summary>
+    /// The engine name and endpoint travel together: "http" is the user-configured
+    /// server; "kokoro" is her own worker speaking the same protocol. Receipts must
+    /// never say "http" about a worker she spawned herself.
+    /// </summary>
+    public HttpSpeechSynthesizer(VoiceSettings settings, string? endpoint = null, string engineName = "http")
     {
         _settings = settings;
+        _endpoint = endpoint ?? settings.HttpEndpoint;
+        _engineName = engineName;
         _httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
     }
 
-    public string EngineName => "http";
+    public string EngineName => _engineName;
 
-    public bool IsAvailable => !string.IsNullOrWhiteSpace(_settings.HttpEndpoint);
+    public bool IsAvailable => !string.IsNullOrWhiteSpace(_endpoint);
 
     public async Task<SpeechAudio?> SynthesizeAsync(string text, VoiceProfile profile,
         CancellationToken cancellationToken)
@@ -69,7 +92,7 @@ public sealed class HttpSpeechSynthesizer : ISpeechSynthesizer
         try
         {
             using HttpRequestMessage request = new(HttpMethod.Post,
-                _settings.HttpEndpoint.TrimEnd('/') + "/audio/speech");
+                _endpoint.TrimEnd('/') + "/audio/speech");
             request.Content = new StringContent(body.ToJsonString(), Encoding.UTF8, "application/json");
             if (!string.IsNullOrWhiteSpace(_settings.ApiKey))
             {

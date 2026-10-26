@@ -19,6 +19,10 @@ internal sealed class ModuleSurfaceOverlayWindow : Window
 {
     private const double CardWidth = 368;
     private const double CardHeight = 410;
+
+    /// <summary>Transparent breathing room around the card so the drop shadow paints
+    /// inside the window instead of getting clipped into a hard rim at the edges.</summary>
+    private const double ShadowGutter = 32;
     private static readonly TimeSpan CompletedHold = TimeSpan.FromMilliseconds(1800);
 
     private readonly ModuleSurface _surface;
@@ -52,8 +56,8 @@ internal sealed class ModuleSurfaceOverlayWindow : Window
         ShowActivated = false;
         CanResize = false;
         WindowStartupLocation = WindowStartupLocation.Manual;
-        Width = CardWidth;
-        Height = CardHeight;
+        Width = CardWidth + (ShadowGutter * 2);
+        Height = CardHeight + (ShadowGutter * 2);
 
         _status = new TextBlock
         {
@@ -211,6 +215,7 @@ internal sealed class ModuleSurfaceOverlayWindow : Window
         };
         Content = new Border
         {
+            Margin = new Thickness(ShadowGutter),
             Background = new SolidColorBrush(Palette.Elevated, 0.98),
             BorderBrush = Palette.AccentSoftBrush,
             BorderThickness = new Thickness(1),
@@ -372,15 +377,27 @@ internal sealed class ModuleSurfaceOverlayWindow : Window
         }
     }
 
+    /// <summary>
+    /// Surfaces stack in the space beside the pill: first surface fixed above (or below)
+    /// the pill, later ones flow away from the nearest screen edge in window-sized steps
+    /// so their rounded cards never share pixels. All coordinates below are window
+    /// coordinates — the card floats one gutter inside it.
+    /// </summary>
     public void PlaceNear(PixelPoint pillPosition, int pillWidth, int pillHeight,
         PixelRect workArea, bool growsLeft, int stackIndex = 0)
     {
         double scale = RenderScaling > 0 ? RenderScaling : 1.0;
         int width = (int)Math.Ceiling(CardWidth * scale);
         int height = (int)Math.Ceiling(CardHeight * scale);
+        int gutter = (int)Math.Ceiling(ShadowGutter * scale);
+        int windowWidth = width + (gutter * 2);
+        int windowHeight = height + (gutter * 2);
         int gap = (int)Math.Ceiling(10 * scale);
-        int baseX = growsLeft ? pillPosition.X + pillWidth - width : pillPosition.X;
-        int baseY = pillPosition.Y - height - gap;
+        int spacing = (int)Math.Ceiling(6 * scale) + (gutter * 2); // step keeps cards apart
+
+        // Card edge aligned with the pill's shared edge; the window extends a gutter out.
+        int baseX = (growsLeft ? pillPosition.X + pillWidth - width : pillPosition.X) - gutter;
+        int baseY = pillPosition.Y - windowHeight - gap;
         bool abovePill = baseY >= workArea.Y;
         if (!abovePill)
         {
@@ -390,25 +407,25 @@ internal sealed class ModuleSurfaceOverlayWindow : Window
         int direction = growsLeft ? -1 : 1;
         int availableInDirection = direction > 0
             ? workArea.Right - baseX
-            : baseX + width - workArea.X;
-        int columns = Math.Max(1, (availableInDirection + gap) / (width + gap));
+            : baseX + windowWidth - workArea.X;
+        int columns = Math.Max(1, (availableInDirection + spacing) / (windowWidth + spacing));
         int column = stackIndex % columns;
         int row = stackIndex / columns;
-        int x = baseX + direction * column * (width + gap);
+        int x = baseX + direction * column * (windowWidth + spacing);
         int y = row == 0
             ? baseY
             : abovePill
-                ? pillPosition.Y + pillHeight + gap + (row - 1) * (height + gap)
-                : baseY - row * (height + gap);
+                ? pillPosition.Y + pillHeight + gap + (row - 1) * (windowHeight + spacing)
+                : baseY - row * (windowHeight + spacing);
 
-        if (x < workArea.X || x + width > workArea.Right)
+        if (x < workArea.X || x + windowWidth > workArea.Right)
         {
-            x = baseX - direction * column * (width + gap);
+            x = baseX - direction * column * (windowWidth + spacing);
         }
 
         Position = new PixelPoint(
-            Math.Clamp(x, workArea.X, Math.Max(workArea.X, workArea.Right - width)),
-            Math.Clamp(y, workArea.Y, Math.Max(workArea.Y, workArea.Bottom - height)));
+            Math.Clamp(x, workArea.X, Math.Max(workArea.X, workArea.Right - windowWidth)),
+            Math.Clamp(y, workArea.Y, Math.Max(workArea.Y, workArea.Bottom - windowHeight)));
     }
 
     private static string ClipDisplayText(string? message) =>

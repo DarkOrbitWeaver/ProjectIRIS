@@ -59,6 +59,16 @@ public sealed class OverlayWindow : Window
 
     private static readonly TimeSpan CollapseDelay = TimeSpan.FromMilliseconds(280);
 
+    /// <summary>Few pixels between her docked edge and the screen edge.</summary>
+    private const double DockMargin = 8;
+
+    /// <summary>Dropping her this close to a screen edge snaps her docked there.</summary>
+    private const double DockSnap = 40;
+
+    /// <summary>A remembered position counts as docked only within this of a screen edge;
+    /// anything further out is a stale coordinate from another desktop and is ignored.</summary>
+    private const double DockTolerance = 72;
+
     private readonly ShellModel _model;
     private readonly StatusOrb _orb = new() { Width = OrbSize, Height = OrbSize };
     private readonly Rectangle[] _equalizerBars;
@@ -74,6 +84,7 @@ public sealed class OverlayWindow : Window
     private readonly TimerOverlayWindow _timerOverlay;
     private readonly PermissionOverlayWindow _permissionOverlay;
     private readonly ActivityOverlayWindow _activityOverlay;
+    private readonly ModuleTaskFeedbackOverlayWindow _taskFeedbackOverlay;
     private readonly Dictionary<string, ModuleSurfaceOverlayWindow> _moduleSurfaceOverlays =
         new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, BackgroundTaskSnapshot> _backgroundTasks =
@@ -85,6 +96,7 @@ public sealed class OverlayWindow : Window
     private IDisposable? _moduleProgressSubscription;
     private IDisposable? _backgroundTaskSubscription;
     private IDisposable? _moduleSurfaceStateSubscription;
+    private IDisposable? _taskFeedbackSubscription;
     private BackgroundTaskSnapshot? _backgroundTask;
     private string _activeModuleId = string.Empty;
     private string _activeModuleTurnId = string.Empty;
@@ -111,6 +123,7 @@ public sealed class OverlayWindow : Window
         _timerOverlay = new TimerOverlayWindow(model);
         _permissionOverlay = new PermissionOverlayWindow(model);
         _activityOverlay = new ActivityOverlayWindow(showMainWindow);
+        _taskFeedbackOverlay = new ModuleTaskFeedbackOverlayWindow(model);
         _backgroundCompletionTimer = new DispatcherTimer(TimeSpan.FromMilliseconds(1800), DispatcherPriority.Background,
             (sender, _) =>
             {
@@ -288,6 +301,7 @@ public sealed class OverlayWindow : Window
             _moduleProgressSubscription?.Dispose();
             _backgroundTaskSubscription?.Dispose();
             _moduleSurfaceStateSubscription?.Dispose();
+            _taskFeedbackSubscription?.Dispose();
             if (_nowPlaying is not null)
             {
                 _nowPlaying.PropertyChanged -= OnNowPlayingChanged;
@@ -300,6 +314,7 @@ public sealed class OverlayWindow : Window
             _timerOverlay.Close();
             _permissionOverlay.Close();
             _activityOverlay.Close();
+            _taskFeedbackOverlay.Close();
             foreach (ModuleSurfaceOverlayWindow window in _moduleSurfaceOverlays.Values)
             {
                 window.Close();
@@ -329,6 +344,8 @@ public sealed class OverlayWindow : Window
             Dispatcher.UIThread.Post(() => HandleBackgroundTask(payload.Task)));
         _moduleSurfaceStateSubscription = _model.Runtime.Events.Subscribe<ModuleSurfaceStateChangedEvent>(payload =>
             Dispatcher.UIThread.Post(() => HandleModuleSurfaceState(payload)));
+        _taskFeedbackSubscription = _model.Runtime.Events.Subscribe<ModuleTaskFeedbackEvent>(payload =>
+            Dispatcher.UIThread.Post(() => _taskFeedbackOverlay.Apply(payload)));
         RebindModuleSurfaces();
     }
 
@@ -427,9 +444,11 @@ public sealed class OverlayWindow : Window
     private static double WindowWidth(PillShape shape) => FixedWidth(shape) + (AttentionAuraInset * 2);
 
     /// <summary>
-    /// Where she lives: a pixel corner remembered from dragging wins; otherwise the
-    /// configured corner of the work area, 24 px off the edges. Positions are pixels,
-    /// widths are DIPs, so every comparison converts through the window's scaling.
+    /// Where she lives: a pixel spot remembered from dragging wins — but only while it
+    /// hugs a screen edge, so a coordinate left over from an older desktop can never park
+    /// her mid-screen. Otherwise the configured corner of the work area applies, a few
+    /// pixels off the edges. Positions are pixels, widths are DIPs, so every comparison
+    /// converts through the window's scaling.
     /// </summary>
     private void ApplyPosition()
     {
@@ -441,12 +460,13 @@ public sealed class OverlayWindow : Window
 
         int pixelWidth = PixelWidth();
         int pixelHeight = PixelHeight();
+        int margin = (int)Math.Ceiling(DockMargin * Scaling);
         string remembered = _model.Runtime.Settings.Current.Interface.OverlayPositionPx;
 
-        if (!string.IsNullOrWhiteSpace(remembered) &&
-            remembered.Split(',') is { Length: 2 } parts &&
+        if (remembered.Split(',') is { Length: 2 } parts &&
             int.TryParse(parts[0], out int rememberedX) &&
-            int.TryParse(parts[1], out int rememberedY))
+            int.TryParse(parts[1], out int rememberedY) &&
+            HugsHorizontalEdge(new PixelPoint(rememberedX, rememberedY), work, pixelWidth))
         {
             SetPositionClamped(new PixelPoint(rememberedX, rememberedY), work, pixelWidth, pixelHeight);
         }
@@ -455,11 +475,11 @@ public sealed class OverlayWindow : Window
             string position = _model.Runtime.Settings.Current.Interface.OverlayPosition;
             PixelPoint corner = position switch
             {
-                "top left" => new PixelPoint(work.X + 24, work.Y + 24),
-                "top right" => new PixelPoint(work.Right - pixelWidth - 24, work.Y + 24),
-                "bottom left" => new PixelPoint(work.X + 24, work.Bottom - pixelHeight - 24),
-                _ => new PixelPoint(work.Right - pixelWidth - 24,
-                    work.Bottom - pixelHeight - 24) // bottom right, her desk default
+                "top left" => new PixelPoint(work.X + margin, work.Y + margin),
+                "top right" => new PixelPoint(work.Right - pixelWidth - margin, work.Y + margin),
+                "bottom left" => new PixelPoint(work.X + margin, work.Bottom - pixelHeight - margin),
+                _ => new PixelPoint(work.Right - pixelWidth - margin,
+                    work.Bottom - pixelHeight - margin) // bottom right, her desk default
             };
 
             SetPositionClamped(corner, work, pixelWidth, pixelHeight);
@@ -470,6 +490,15 @@ public sealed class OverlayWindow : Window
         // unfolds to the left, a pill on the left unfolds to the right. This is what keeps
         // the hovered pill under the pointer instead of moving it.
         _growsLeft = Position.X + (pixelWidth / 2.0) > work.X + (work.Width / 2.0);
+    }
+
+    /// <summary>True while her window sits within the dock tolerance of the screen's
+    /// left or right edge — the only positions worth remembering as "where she lives".</summary>
+    private bool HugsHorizontalEdge(PixelPoint point, PixelRect work, int pixelWidth)
+    {
+        double tolerance = DockTolerance * Scaling;
+        return point.X - work.X <= tolerance ||
+            work.Right - (point.X + pixelWidth) <= tolerance;
     }
 
     private void SetPositionClamped(PixelPoint point, PixelRect work, int pixelWidth, int pixelHeight)
@@ -529,6 +558,7 @@ public sealed class OverlayWindow : Window
         SyncPermissionOverlay();
         SyncModuleSurfaceOverlays();
         SyncActivityOverlay();
+        SyncTaskFeedbackOverlay();
         TimeSpan desired = state == MindState.Gaming
             ? TimeSpan.FromSeconds(1)
             : TimeSpan.FromMilliseconds(100);
@@ -637,6 +667,37 @@ public sealed class OverlayWindow : Window
         if (!_activityOverlay.IsVisible)
         {
             _activityOverlay.Show();
+        }
+    }
+
+    /// <summary>Keeps the module task-card stack alive while a module narrates its own
+    /// work. It rests right below the music card when that one is on screen, so the two
+    /// never stack over each other; otherwise it spawns top-right like the others.</summary>
+    private void SyncTaskFeedbackOverlay()
+    {
+        bool canShow = IsVisible && _taskFeedbackOverlay.HasLiveCards &&
+                       !_model.HasPendingPermission && _model.State != MindState.Gaming;
+        if (!canShow)
+        {
+            _taskFeedbackOverlay.Hide();
+            return;
+        }
+
+        PixelPoint? belowAnchor = null;
+        if (_musicOverlay.IsVisible)
+        {
+            belowAnchor = new PixelPoint(_musicOverlay.Position.X,
+                _musicOverlay.Position.Y + (int)Math.Ceiling(_musicOverlay.Height * Scaling) + 12);
+        }
+
+        if (WorkArea() is { } work)
+        {
+            _taskFeedbackOverlay.PlaceNear(Position, PixelWidth(), PixelHeight(), work, _growsLeft, belowAnchor);
+        }
+
+        if (!_taskFeedbackOverlay.IsVisible)
+        {
+            _taskFeedbackOverlay.Show();
         }
     }
 
@@ -944,20 +1005,35 @@ public sealed class OverlayWindow : Window
         ApplyShape(shape);
     }
 
-    /// <summary>Remembers where the user put her, so a restart does not move her desk-mate.</summary>
+    /// <summary>Remembers where the user put her, so a restart does not move her
+    /// desk-mate. A drop near a screen edge docks her there with the standard small
+    /// margin first, so "a few pixels off the edge" is the natural resting state.</summary>
     private void SaveDraggedPosition()
     {
         try
         {
-            _model.Runtime.Settings.Current.Interface.OverlayPositionPx =
-                $"{Position.X},{Position.Y}";
-            _model.Runtime.Settings.Save();
-
             if (WorkArea() is { } work)
             {
+                int margin = (int)Math.Ceiling(DockMargin * Scaling);
+                int snap = (int)Math.Ceiling(DockSnap * Scaling);
+                int pixelWidth = PixelWidth();
+                int fromLeft = Position.X - work.X;
+                int fromRight = work.Right - (Position.X + pixelWidth);
+                if (fromRight >= 0 && fromRight <= snap)
+                {
+                    Position = new PixelPoint(work.Right - pixelWidth - margin, Position.Y);
+                }
+                else if (fromLeft >= 0 && fromLeft <= snap)
+                {
+                    Position = new PixelPoint(work.X + margin, Position.Y);
+                }
+
                 _growsLeft = Position.X + (PixelWidth() / 2.0) > work.X + (work.Width / 2.0);
             }
 
+            _model.Runtime.Settings.Current.Interface.OverlayPositionPx =
+                $"{Position.X},{Position.Y}";
+            _model.Runtime.Settings.Save();
             _model.Runtime.Events.Publish(new SettingsChangedEvent());
         }
         catch (Exception exception)

@@ -28,6 +28,7 @@ public sealed class CompanionRuntime : IAsyncDisposable
     private readonly IDisposable _modeSubscription;
     private readonly SemaphoreSlim _externalModuleRefreshGate = new(1, 1);
     private Timer? _telemetryTimer;
+    private WakeHotKey? _wakeHotKey;
     private double _lastVramTotalMegabytes;
     private bool _isDisposed;
 
@@ -183,9 +184,46 @@ public sealed class CompanionRuntime : IAsyncDisposable
         Perception.Start();
         IrisEvent.Log("Senses", "senses.started", LogLevel.Info);
         await Voice.StartAsync(cancellationToken).ConfigureAwait(false);
+
+        // The system-wide invoke switch, Siri-style: her name is now the second door,
+        // not the only one.
+        _wakeHotKey = WakeHotKey.Create(Settings.Current.Voice, () => _ = InvokeWakeSwitchAsync());
+        if (_wakeHotKey is null)
+        {
+            CompanionLog.Info("Voice", "The invoke switch is off (Voice:WakeHotkey is empty).");
+        }
+        else if (!_wakeHotKey.IsRegistered)
+        {
+            Events.PublishNotice(
+                "The invoke hotkey could not be registered. Her wake phrase still works; " +
+                "set Voice:WakeHotkey in her settings to a free combo to try again.",
+                NoticeSeverity.Warning);
+        }
+
         await Brain.InitializeAsync(cancellationToken).ConfigureAwait(false);
+
+        // Her brain gets its facts straight before the first turn: episodes that stated
+        // an action without an outcome are removed (idempotent — none remain after the
+        // first repair).
+        int repairedEpisodes = await Memory.ForgetUnverifiedRequestEpisodesAsync(cancellationToken)
+            .ConfigureAwait(false);
+        if (repairedEpisodes > 0)
+        {
+            CompanionLog.Info("Memory", $"Brain repair removed {repairedEpisodes} unverified episodes at boot.");
+        }
+        // The count is a receipt even at zero: "she checks her memories at boot and
+        // found nothing fictional this time" has to be visible in the day's records.
+        IrisEvent.Log("Memory", "boot.memory_repair", LogLevel.Info,
+            data: new Dictionary<string, string?>
+            {
+                ["removed"] = repairedEpisodes.ToString(),
+                ["checked"] = "request episodes without outcomes"
+            });
         ReportComponentTruth();
         IrisEvent.Log("Runtime", "boot.done", LogLevel.Info);
+        // The one signal the shell gates typed input on: until this lands, sending a
+        // message would only hit the cortex while it is still loading.
+        Events.Publish(new RuntimeReadyEvent());
     }
 
     /// <summary>Re-reads external module folders and replaces their router registrations.</summary>
@@ -253,10 +291,18 @@ public sealed class CompanionRuntime : IAsyncDisposable
             parts.Add("cortex: down — the model did not start this session");
         }
 
-        string voiceEndpoint = Settings.Current.Voice.Engine.Equals("pocket", StringComparison.OrdinalIgnoreCase)
-            ? Settings.Current.Voice.PocketEndpoint
-            : Settings.Current.Voice.HttpEndpoint;
-        parts.Add($"voice: probing the local neural engine at {voiceEndpoint}");
+        VoiceSettings voice = Settings.Current.Voice;
+        string voiceEndpoint = voice.Engine.Equals("pocket", StringComparison.OrdinalIgnoreCase)
+            ? voice.PocketEndpoint
+            : voice.Engine.Equals("kokoro", StringComparison.OrdinalIgnoreCase)
+                ? voice.KokoroEndpoint
+                : voice.HttpEndpoint;
+        string voiceName = voice.Engine.Equals("kokoro", StringComparison.OrdinalIgnoreCase)
+            ? $" (kokoro, voice {(string.IsNullOrWhiteSpace(voice.VoiceId) ? "af_heart" : voice.VoiceId)})"
+            : voice.Engine.Equals("pocket", StringComparison.OrdinalIgnoreCase)
+                ? $" (pocket, voice {voice.VoiceId})"
+                : string.Empty;
+        parts.Add($"voice: probing the local neural engine at {voiceEndpoint}{voiceName}");
 
         Events.PublishNotice("Booted — " + string.Join("; ", parts) + ".", NoticeSeverity.Info);
     }
@@ -322,6 +368,7 @@ public sealed class CompanionRuntime : IAsyncDisposable
         IrisEvent.Log("Runtime", "shutdown.begin", LogLevel.Info);
         _telemetryTimer?.Dispose();
         _telemetryTimer = null;
+        _wakeHotKey?.Dispose();
         _stateSubscription.Dispose();
         _modeSubscription.Dispose();
 
@@ -333,6 +380,38 @@ public sealed class CompanionRuntime : IAsyncDisposable
         ModelClient.Dispose();
         await Graph.DisposeAsync().ConfigureAwait(false);
         IrisEvent.Log("Runtime", "shutdown.done", LogLevel.Info);
+    }
+
+    /// <summary>
+    /// The invoke switch, pressed how Siri's side button is pressed: the first press
+    /// opens her ears and answers with a quick "yes" cue, the second closes them. When
+    /// she was resting or in a game, the same press wakes her first so the switch
+    /// always answers.
+    /// </summary>
+    private async Task InvokeWakeSwitchAsync()
+    {
+        try
+        {
+            if (Mind.CurrentMode != OperatingMode.Awake)
+            {
+                await Brain.SetOperatingModeAsync(OperatingMode.Awake, CancellationToken.None)
+                    .ConfigureAwait(false);
+            }
+
+            bool opening = !Voice.IsListening;
+            Voice.SetListening(opening);
+
+            IrisEvent.Log("Voice", "wake.hotkey", LogLevel.Info,
+                data: new Dictionary<string, string?>
+                {
+                    ["listening"] = opening.ToString(),
+                    ["opened"] = Voice.IsListening.ToString()
+                });
+        }
+        catch (Exception exception)
+        {
+            CompanionLog.Warning("Voice", $"The invoke switch failed: {exception.Message}");
+        }
     }
 
     private IDisposable SubscribeToMindState()

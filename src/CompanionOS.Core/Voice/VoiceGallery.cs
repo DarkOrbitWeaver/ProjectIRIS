@@ -55,7 +55,11 @@ public sealed class VoiceGallery : IDisposable
 
         if (engine == "pocket")
         {
-            foreach (string voiceId in _settings.Voice.CandidateVoices.Distinct())
+            foreach (string voiceId in _settings.Voice.CandidateVoices
+                         .Where(voiceId => !voiceId.Equals("alba", StringComparison.OrdinalIgnoreCase) &&
+                                           !voiceId.Equals("estelle", StringComparison.OrdinalIgnoreCase) &&
+                                           !voiceId.Equals("eve", StringComparison.OrdinalIgnoreCase))
+                         .Distinct(StringComparer.OrdinalIgnoreCase))
             {
                 candidates.Add(new VoiceCandidate
                 {
@@ -69,7 +73,7 @@ public sealed class VoiceGallery : IDisposable
             return candidates;
         }
 
-        if (engine is "http")
+        if (engine is "http" or "kokoro")
         {
             foreach (string voiceId in _settings.Voice.CandidateVoices.Distinct())
             {
@@ -77,8 +81,10 @@ public sealed class VoiceGallery : IDisposable
                 {
                     VoiceId = voiceId,
                     Label = DescribeNeuralVoice(voiceId),
-                    Engine = "http",
-                    Detail = "Neural voice, rendered locally."
+                    Engine = engine,
+                    Detail = engine == "kokoro"
+                        ? "Kokoro neural voice, rendered locally."
+                        : "Neural voice, rendered locally."
                 });
             }
         }
@@ -144,7 +150,7 @@ public sealed class VoiceGallery : IDisposable
         {
             Engine = candidate.Engine,
             VoiceId = string.IsNullOrWhiteSpace(candidate.VoiceId)
-                ? candidate.Engine.Equals("pocket", StringComparison.OrdinalIgnoreCase) ? "alba" : "af_heart"
+                ? candidate.Engine.Equals("pocket", StringComparison.OrdinalIgnoreCase) ? "vera" : "af_heart"
                 : candidate.VoiceId.Trim(),
             Rate = Math.Clamp(_settings.Voice.Rate, 0.5, 1.8),
             Pitch = Math.Clamp(_settings.Voice.Pitch, -0.5, 0.5),
@@ -169,6 +175,14 @@ public sealed class VoiceGallery : IDisposable
         if (_settings.Voice.Engine.Equals("pocket", StringComparison.OrdinalIgnoreCase))
         {
             return _httpSynthesizer ??= new PocketTtsSpeechSynthesizer(_settings.Voice);
+        }
+
+        if (_settings.Voice.Engine.Equals("kokoro", StringComparison.OrdinalIgnoreCase))
+        {
+            // Kokoro speaks its own OpenAI-compatible server on its own port; pointing
+            // the preview at the generic http endpoint would dial a dead port.
+            return _httpSynthesizer ??= new HttpSpeechSynthesizer(
+                _settings.Voice, endpoint: _settings.Voice.KokoroEndpoint, engineName: "kokoro");
         }
 
         return _httpSynthesizer ??= new HttpSpeechSynthesizer(_settings.Voice);

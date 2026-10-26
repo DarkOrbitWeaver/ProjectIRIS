@@ -20,7 +20,13 @@ namespace CompanionOS.Core.Modules;
 public sealed class ModuleHost : IAsyncDisposable
 {
     /// <summary>Hard cap on tools per turn. Small models do not do well above this.</summary>
-    public const int MaximumToolsPerTurn = 8;
+    /// <summary>
+    /// Turn cap for the whole tool offer. Raised from 8: a chosen module now hands the
+    /// model its complete toolset — "play hollowlight" must put play_music on the table
+    /// even when the name is one the router has never seen. Two chosen modules plus the
+    /// core four rarely reach this cap; it exists to catch catastrophic accidental picks.
+    /// </summary>
+    public const int MaximumToolsPerTurn = 24;
 
     private const string DisabledModulesFile = "modules.disabled.json";
     private const int ToolTimeoutSeconds = 45;
@@ -30,6 +36,7 @@ public sealed class ModuleHost : IAsyncDisposable
     private readonly SandboxGuard _sandbox;
     private readonly IMemoryAccess _memory;
     private readonly BackgroundTaskManager _backgroundTasks;
+    private readonly ModuleUiService _moduleUi;
     private readonly object _registryLock = new();
     private readonly Dictionary<string, IAssistantModule> _modulesById = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, IAssistantModule> _toolOwners = new(StringComparer.OrdinalIgnoreCase);
@@ -43,6 +50,7 @@ public sealed class ModuleHost : IAsyncDisposable
         _sandbox = sandbox;
         _memory = memory;
         _backgroundTasks = new BackgroundTaskManager(events);
+        _moduleUi = new ModuleUiService(events);
         LoadDisabledModules();
     }
 
@@ -113,7 +121,7 @@ public sealed class ModuleHost : IAsyncDisposable
 
         try
         {
-            await module.InitializeAsync(BuildContext(), cancellationToken).ConfigureAwait(false);
+            await module.InitializeAsync(BuildContext(module), cancellationToken).ConfigureAwait(false);
         }
         catch (Exception exception)
         {
@@ -238,12 +246,20 @@ public sealed class ModuleHost : IAsyncDisposable
         }
 
         // 2. Score the rest against the sentence and take the best two.
+        //    The score is cosine plus keyword evidence — the same two signals tool
+        //    selection uses below. Keywords have to count here too: "Uh open up
+        //    calculator" once left the launcher under the cosine floor because the
+        //    filler words washed out the embedding, so the model was never even shown
+        //    open_application and narrated instead of acting.
+        string[] words = userMessage.Split((char[]?)null,
+            StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         List<(IAssistantModule Module, double Score)> scored = new();
 
         foreach ((IAssistantModule module, float[] capabilityVector) in enabledModules
                      .Where(item => !item.Module.AlwaysAvailable))
         {
-            double score = TextVectorizer.Cosine(requestVector, capabilityVector);
+            double score = TextVectorizer.Cosine(requestVector, capabilityVector) +
+                           ModuleKeywordScore(module, words);
             scored.Add((module, score));
         }
 
@@ -256,8 +272,6 @@ public sealed class ModuleHost : IAsyncDisposable
         chosenModules.AddRange(routedModules);
 
         int remainingToolSlots = Math.Max(0, MaximumToolsPerTurn - routedTools.Count);
-        string[] words = userMessage.Split((char[]?)null,
-            StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         List<(ModuleTool Tool, double Score, int Index)> moduleTools = new();
         int toolIndex = 0;
         foreach (IAssistantModule module in routedModules)
@@ -272,9 +286,13 @@ public sealed class ModuleHost : IAsyncDisposable
             }
         }
 
-        foreach ((ModuleTool tool, _, _) in moduleTools
-                     .OrderByDescending(item => item.Score)
+        foreach ((ModuleTool tool, double score, int index) in moduleTools
+                     .Select(item => (item.Tool, item.Score, item.Index,
+                         Hits: CountKeywordHits(item.Tool, words)))
+                     .OrderByDescending(item => item.Hits > 0)
+                     .ThenByDescending(item => item.Score)
                      .ThenBy(item => item.Index)
+                     .Select(item => (item.Tool, item.Score, item.Index))
                      .Take(remainingToolSlots))
         {
             if (addedToolNames.Add(tool.Name))
@@ -313,9 +331,12 @@ public sealed class ModuleHost : IAsyncDisposable
                     TextVectorizer.Embed(tool.Name + " " + tool.Description + " " +
                                          string.Join(' ', tool.RoutingKeywords)));
                 // Stable index tie-break keeps the tool list deterministic for equal scores.
-                return (Tool: tool, Score: keywordHits * 2.0 + lexical, Index: index);
+                return (Tool: tool, Score: keywordHits * 2.0 + lexical, Index: index, Hits: keywordHits);
             })
-            .OrderByDescending(item => item.Score)
+            // Any phrase that genuinely name-drops what a hand does outranks every
+            // zero-hit filler, whatever the embedding noise on odd words agrees.
+            .OrderByDescending(item => item.Hits > 0)
+            .ThenByDescending(item => item.Score)
             .ThenBy(item => item.Index)
             .Take(coreToolBudget)
             .Select(item => item.Tool)
@@ -326,6 +347,32 @@ public sealed class ModuleHost : IAsyncDisposable
         tool.RoutingKeywords.Count(keyword =>
             words.Any(word => word.Contains(keyword, StringComparison.OrdinalIgnoreCase) ||
                               keyword.Contains(word, StringComparison.OrdinalIgnoreCase)));
+
+    /// <summary>
+    /// Lexical evidence for which modules deserve hands this turn, on the same scale
+    /// tool scoring uses (each matched keyword phrase adds like a hit does there).
+    /// This is a tie-breaker inside the router's existing judgment — the model still
+    /// sees the full sentence and decides what, if anything, to do — not a hard gate.
+    /// Words under three letters are ignored: two-letter fragments ("uh", "up") sit
+    /// inside too many phrases to mean anything, which is exactly how the original
+    /// miss happened.
+    /// </summary>
+    private static double ModuleKeywordScore(IAssistantModule module, string[] words)
+    {
+        string[] informative = words.Where(word => word.Length >= 3).ToArray();
+        if (informative.Length == 0)
+        {
+            return 0;
+        }
+
+        int hits = module.Tools.SelectMany(tool => tool.RoutingKeywords)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Count(keyword => informative.Any(word =>
+                word.Contains(keyword, StringComparison.OrdinalIgnoreCase) ||
+                keyword.Contains(word, StringComparison.OrdinalIgnoreCase)));
+        return hits * 2.0;
+    }
+
 
     private static float[] BuildModuleRoutingVector(IAssistantModule module)
     {
@@ -537,7 +584,8 @@ public sealed class ModuleHost : IAsyncDisposable
     /// </summary>
     public string DescribeCapabilities() =>
         "Relevant tools are selected for each request. Use only tools supplied for this turn, " +
-        "and never claim a capability that is not available in its tool list.";
+        "and never claim a capability that is not available in its tool list. " +
+        "Act with tools instead of narrating plans, and report what actually happened.";
 
     /// <summary>Panels contributed by modules, for the shell to host.</summary>
     public IReadOnlyList<ModuleSurface> GetSurfaces()
@@ -579,7 +627,7 @@ public sealed class ModuleHost : IAsyncDisposable
         }
     }
 
-    private ModuleContext BuildContext() => new()
+    private ModuleContext BuildContext(IAssistantModule module) => new()
     {
         Host = Host,
         Settings = _settings.Current,
@@ -592,6 +640,7 @@ public sealed class ModuleHost : IAsyncDisposable
         Memory = _memory,
         Sandbox = _sandbox,
         BackgroundTasks = _backgroundTasks,
+        Ui = _moduleUi.ForModule(module.Id, module.DisplayName, module.IconKey),
         WorkspaceDirectory = CompanionPaths.WorkspaceDirectory,
         ModelsDirectory = CompanionPaths.ModelsDirectory,
         CacheDirectory = CompanionPaths.CacheDirectory

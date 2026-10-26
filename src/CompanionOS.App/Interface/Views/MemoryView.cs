@@ -47,7 +47,9 @@ public sealed class MemoryView : UserControl
         _search.TextChanged += (_, _) => ApplySearch();
         _canvas.NodeSelected += OnNodeSelected;
 
-        _railScroller = new ScrollViewer { Content = _rail };
+        // The rail's scrollbar stays visible when content overflows — a memory detail
+        // you cannot scroll is not a detail you can read.
+        _railScroller = new ScrollViewer { Content = _rail, AllowAutoHide = false };
         ShowEmptyRail();
 
         Content = BuildLayout();

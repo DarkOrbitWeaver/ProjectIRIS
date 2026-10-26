@@ -38,6 +38,15 @@ public sealed class LlamaServerHost : IAsyncDisposable
         }
     }
 
+    private volatile bool _weightsReady;
+
+    /// <summary>
+    /// True only once the /health wait finished with the model actually loaded. A live
+    /// process that is still paging weights into VRAM answers 503 — the boot race that
+    /// 503'd the owner's first typed message. Ready and running are different truths.
+    /// </summary>
+    public bool IsReady => _weightsReady && IsRunning;
+
     /// <summary>The last lines the server printed, newest last.</summary>
     public IReadOnlyList<string> RecentOutput
     {
@@ -64,6 +73,14 @@ public sealed class LlamaServerHost : IAsyncDisposable
         }
 
         await StopAsync().ConfigureAwait(false);
+
+        // Ownership sweep: a force-killed earlier session (a crash, or the owner closing
+        // the app mid-turn) leaves its llama-server running with the whole model awake
+        // in RAM and VRAM. Iris knows no process by its handle, but the machine she
+        // runs on has exactly one brain — hers — and every leftover not started by
+        // this session is a resource thief and is culled right before the fresh spawn
+        // below.
+        DemolishUnownedServers();
 
         string executablePath = ResolveExecutablePath(profile, settings.Brain.ServerExecutablePath);
         if (!File.Exists(executablePath))
@@ -110,6 +127,10 @@ public sealed class LlamaServerHost : IAsyncDisposable
             throw new InvalidOperationException("llama-server refused to start.");
         }
 
+        // First thing the brain does is join the family that outlives nothing: if Iris
+        // exits for any reason, the operating system ends this server with her.
+        ChildProcessGuard.Adopt(process);
+
         IrisEvent.Log("Runtime", "cortex.process_started", LogLevel.Info,
             data: new Dictionary<string, string?>
             {
@@ -133,6 +154,7 @@ public sealed class LlamaServerHost : IAsyncDisposable
         {
             await WaitUntilHealthyAsync(profile, settings.Brain.StartupTimeoutSeconds, cancellationToken)
                 .ConfigureAwait(false);
+            _weightsReady = true;
             CompanionLog.Info("Runtime", "Brain is answering. Cortex is awake.");
             IrisEvent.Log("Runtime", "cortex.ready", LogLevel.Info,
                 durationMs: System.Diagnostics.Stopwatch.GetElapsedTime(bootStarted).TotalMilliseconds,
@@ -152,6 +174,7 @@ public sealed class LlamaServerHost : IAsyncDisposable
     /// <summary>Kills the server and releases the GPU. Safe to call when already stopped.</summary>
     public async Task StopAsync()
     {
+        _weightsReady = false;
         Process? process;
         lock (_stateLock)
         {
@@ -196,6 +219,33 @@ public sealed class LlamaServerHost : IAsyncDisposable
         CompanionLog.Info("Runtime", "Brain unloaded. VRAM released.");
         IrisEvent.Log("Runtime", "cortex.stopped", LogLevel.Info);
         return;
+    }
+
+    /// <summary>
+    /// Kills every llama-server.exe this session does not own, so the fresh worker
+    /// below starts without competing for VRAM and RAM. Only runs for managed brain
+    /// profiles — an external endpoint is somebody else's to keep or kill.
+    /// </summary>
+    private static void DemolishUnownedServers()
+    {
+        foreach (Process straggler in Process.GetProcessesByName("llama-server"))
+        {
+            try
+            {
+                CompanionLog.Info("Runtime",
+                    $"Removing a leftover llama-server (pid {straggler.Id}) from an earlier session.");
+                straggler.Kill(entireProcessTree: true);
+                straggler.WaitForExit(5000);
+            }
+            catch (Exception exception)
+            {
+                CompanionLog.Trace("Runtime", $"llama-server straggler shutdown: {exception.Message}");
+            }
+            finally
+            {
+                straggler.Dispose();
+            }
+        }
     }
 
     /// <summary>

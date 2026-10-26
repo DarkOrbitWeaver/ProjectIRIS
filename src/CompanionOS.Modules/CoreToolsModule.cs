@@ -87,6 +87,13 @@ public sealed class CoreToolsModule : IAssistantModule
             "situation", "what am i doing", "current app", "status", "playing"),
 
         new(
+            "control_windows_media",
+            "Pause or resume the active media player on Windows, including a browser video when Windows exposes its media session. Use this for requests to pause or resume the current video/music. This is separate from Iris's own Music Player. Report only the tool result; never claim success when Windows does not confirm it.",
+            ToolTier.Reflex,
+            """{"type":"object","properties":{"action":{"type":"string","enum":["pause","play"]}},"required":["action"]}""",
+            "pause video", "pause youtube", "pause playback", "resume video", "play video", "current video", "media player", "youtube"),
+
+        new(
             "set_operating_mode",
             "Put her to sleep (unload the model and free the GPU), wake her up, or enter gaming mode. " +
             "Use when the user asks her to rest, wake, or step aside for a game.",
@@ -175,6 +182,15 @@ public sealed class CoreToolsModule : IAssistantModule
 
             case "describe_situation":
                 return ToolResult.Ok(context.Host.DescribeSituation());
+
+            case "control_windows_media":
+            {
+                string result = await context.Host.ControlMediaAsync(
+                    invocation.GetString("action"), cancellationToken).ConfigureAwait(false);
+                return result.StartsWith("Windows confirmed", StringComparison.Ordinal)
+                    ? ToolResult.Ok(result, result)
+                    : ToolResult.Fail(result);
+            }
 
             case "set_operating_mode":
             {

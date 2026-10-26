@@ -25,7 +25,7 @@ public sealed record SpeechRecognitionResult(
 /// <summary>Anything that can turn recorded speech into text.</summary>
 public interface ISpeechRecognizer : IDisposable
 {
-    /// <summary>"whisper" or "http", used in logs and diagnostics.</summary>
+    /// <summary>"whisper", "parakeet" or "http", used in logs and diagnostics.</summary>
     string EngineName { get; }
 
     /// <summary>False when the model or server is missing.</summary>
@@ -135,6 +135,13 @@ public sealed class WhisperNetRecognizer : ISpeechRecognizer
             }
 
             string text = transcript.ToString().Trim();
+            // Whisper sometimes emits this dataset placeholder for silence. Treat it as
+            // no speech so it never becomes a fake user request in the conversation.
+            if (text.Equals("[BLANK_AUDIO]", StringComparison.OrdinalIgnoreCase))
+            {
+                return new SpeechRecognitionResult(SpeechRecognitionOutcome.NoSpeech);
+            }
+
             return string.IsNullOrWhiteSpace(text)
                 ? new SpeechRecognitionResult(SpeechRecognitionOutcome.NoSpeech)
                 : new SpeechRecognitionResult(SpeechRecognitionOutcome.Recognized, text);

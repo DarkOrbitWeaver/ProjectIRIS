@@ -1,23 +1,21 @@
 # Iris Browser module
 
-This is an optional external Iris module. The manifest is disabled by default. It
-uses a local MCP server and a Chrome extension to read the active tab and, after
-Iris asks for permission, perform browser actions.
+This is an external Iris module. It uses a local MCP server and a Chrome extension
+to read the active tab and, after Iris asks for permission, perform browser actions.
 
 ## Install
 
-1. Copy this whole folder into `%LOCALAPPDATA%\CompanionOS\modules\iris-browser`.
-   If `COMPANIONOS_HOME` is set, use `<that folder>\modules\iris-browser` instead.
-2. Open a terminal in that folder and run `npm install`.
-3. Run `install-extension.ps1`. In Chrome, enable Developer mode and choose **Load
-   unpacked**. Paste the extension folder path copied by the script.
-4. In Iris, refresh Modules, enable Browser, then ask Iris to pair. Enter the
-   one-time code in the extension popup.
+Iris installs this module into `%LOCALAPPDATA%\CompanionOS\modules\browser` and
+starts its local MCP server when the app starts. Node.js must be on `PATH`.
+When ready, choose **Set up Chrome** in Iris's setup notice. The helper copies the
+extension to `%LOCALAPPDATA%\Iris\browser-extension`, copies that path to the
+clipboard, and opens `chrome://extensions`. In Chrome, enable Developer mode and
+choose **Load unpacked**, then paste the path. Finally, ask Iris to pair and enter
+the one-time code in the extension popup. This last Chrome step is manual.
 
-The module requests access to HTTP and HTTPS tabs. Chrome's Developer Mode
-extension page shows this access during installation. Use the popup's master
-toggle to disconnect Iris from browser pages. The module remains disabled until
-you explicitly enable it in Iris.
+The extension requests access to HTTP and HTTPS tabs. Chrome's extension page
+shows this access during installation. Use the popup's master toggle to disconnect
+Iris from browser pages, or disable Browser in Iris's Modules screen.
 
 `browser_click`, `browser_type`, `browser_navigate`, and `browser_pair` require a
 fresh Iris confirmation. Password, one-time-code, and detected payment fields are

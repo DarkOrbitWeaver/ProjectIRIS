@@ -1,7 +1,9 @@
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Input;
 using Avalonia.Layout;
 using Avalonia.Media;
+using Avalonia.Platform;
 using CompanionOS.App.Interface.Controls;
 using CompanionOS.App.Interface.Theme;
 using CompanionOS.Core.Events;
@@ -20,7 +22,22 @@ internal sealed class MusicOverlayWindow : Window
     private const double CardWidth = 292;
     private const double CardHeight = 164;
 
+    /// <summary>Transparent breathing room around the card. The drop shadow (blur 24,
+    /// offset 8) must be able to paint inside the window; a window hugging the card
+    /// exactly clips it into the hard dark rim and corner blocks the screenshots show.</summary>
+    private const double ShadowGutter = 32;
+
+    /// <summary>Few pixels of margin between the docked card edge and the screen edge.</summary>
+    private const double DockMargin = 8;
+
+    /// <summary>A remembered position counts as docked only within this of the right edge.</summary>
+    private const double RightDockTolerance = 72;
+
+    /// <summary>Dropping the card this close to the right edge snaps it docked.</summary>
+    private const double RightDockSnap = 40;
+
     private readonly ShellModel _model;
+    private readonly Border _card;
     private readonly TextBlock _title;
     private readonly TextBlock _detail;
     private readonly Border _progress;
@@ -39,8 +56,8 @@ internal sealed class MusicOverlayWindow : Window
         ShowActivated = false;
         CanResize = false;
         WindowStartupLocation = WindowStartupLocation.Manual;
-        Width = CardWidth;
-        Height = CardHeight;
+        Width = CardWidth + (ShadowGutter * 2);
+        Height = CardHeight + (ShadowGutter * 2);
 
         _title = new TextBlock
         {
@@ -114,8 +131,13 @@ internal sealed class MusicOverlayWindow : Window
             Spacing = 8,
             Children = { heading, _title, _detail, _progress, transport }
         };
-        Border card = new()
+        _card = new Border
         {
+            // Gutter margin: the card floats inside the window so the box shadow keeps
+            // painting freely and the transparent corners stay truly transparent.
+            Margin = new Thickness(ShadowGutter),
+            Width = CardWidth,
+            Height = CardHeight,
             Background = new SolidColorBrush(Palette.Elevated, 0.96),
             BorderBrush = Palette.StrokeBrush,
             BorderThickness = new Thickness(1),
@@ -127,7 +149,31 @@ internal sealed class MusicOverlayWindow : Window
             }),
             Child = content
         };
-        Content = card;
+        Content = _card;
+
+        // Dragging belongs to the card body, never to one of its transport buttons.
+        _card.PointerPressed += (_, eventArgs) =>
+        {
+            if (!eventArgs.GetCurrentPoint(this).Properties.IsLeftButtonPressed ||
+                IsInsideButton(eventArgs.Source))
+            {
+                return;
+            }
+
+            try
+            {
+                BeginMoveDrag(eventArgs);
+            }
+            catch (InvalidOperationException)
+            {
+                // The platform refused the drag (the press was already released); the
+                // card simply stays where it is.
+            }
+            finally
+            {
+                SaveDraggedPosition();
+            }
+        };
     }
 
     public void Bind(NowPlayingModel? nowPlaying)
@@ -136,26 +182,59 @@ internal sealed class MusicOverlayWindow : Window
         Render();
     }
 
-    /// <summary>Anchors the card just above the pill when possible, otherwise below it.
-    /// The card aligns with the screen edge the pill grows away from, so neither surface
-    /// jumps inward on a multi-monitor desktop.</summary>
+    /// <summary>
+    /// Anchors the card to the screen edge the pill shares, max right with a few pixels
+    /// of margin, and spawns it about a fifth of the work area down from the top — above
+    /// her pill, which lives in the bottom corner. Where the card was dragged and let
+    /// docked again, that remembered spot wins. The card keeps tracking the pill's edge
+    /// horizontally so the two never drift across the desktop.
+    /// </summary>
     public void PlaceNear(PixelPoint pillPosition, int pillWidth, int pillHeight, PixelRect workArea,
         bool growsLeft)
     {
         double scale = RenderScaling > 0 ? RenderScaling : 1.0;
-        int width = (int)Math.Ceiling(CardWidth * scale);
-        int height = (int)Math.Ceiling(CardHeight * scale);
-        int gap = (int)Math.Ceiling(10 * scale);
-        int x = growsLeft ? pillPosition.X + pillWidth - width : pillPosition.X;
-        int y = pillPosition.Y - height - gap;
-        if (y < workArea.Y)
+        int cardWidth = (int)Math.Ceiling(CardWidth * scale);
+        int cardHeight = (int)Math.Ceiling(CardHeight * scale);
+        int gutter = (int)Math.Ceiling(ShadowGutter * scale);
+        int margin = (int)Math.Ceiling(DockMargin * scale);
+        int tolerance = (int)Math.Ceiling(RightDockTolerance * scale);
+        int windowWidth = cardWidth + (gutter * 2);
+        int windowHeight = cardHeight + (gutter * 2);
+
+        // A remembered docked spot wins. Mid-screen leftovers (e.g. after a resolution
+        // change) are ignored, so the card always wakes up docked.
+        string remembered = _model.Runtime.Settings.Current.Interface.MusicOverlayPositionPx;
+        if (remembered.Split(',') is { Length: 2 } parts &&
+            int.TryParse(parts[0], out int rememberedX) &&
+            int.TryParse(parts[1], out int rememberedY) &&
+            Math.Abs((rememberedX + windowWidth) - (workArea.Right - margin)) <= tolerance)
         {
-            y = pillPosition.Y + pillHeight + gap;
+            Position = new PixelPoint(
+                Math.Clamp(rememberedX, workArea.X, Math.Max(workArea.X, workArea.Right - windowWidth)),
+                Math.Clamp(rememberedY, workArea.Y, Math.Max(workArea.Y, workArea.Bottom - windowHeight)));
+            return;
+        }
+
+        // Default: max right, mirroring the pill's edge, top-right ~20 % from the top.
+        int x = growsLeft
+            ? pillPosition.X + pillWidth - cardWidth - gutter
+            : pillPosition.X - gutter;
+        int y = workArea.Y + (int)(workArea.Height * 0.20);
+
+        int cardY = y + gutter;                      // where the card visual would start
+        int pillTop = pillPosition.Y;
+        int pillBottom = pillPosition.Y + pillHeight;
+        bool overlapsPill = cardY < pillBottom && cardY + cardHeight > pillTop;
+        if (overlapsPill)
+        {
+            // The pill was dragged up; slip the card just above it, window top edge
+            // sitting the usual gap over the pill's top.
+            y = pillPosition.Y - windowHeight - (int)Math.Ceiling(10 * scale);
         }
 
         Position = new PixelPoint(
-            Math.Clamp(x, workArea.X, Math.Max(workArea.X, workArea.Right - width)),
-            Math.Clamp(y, workArea.Y, Math.Max(workArea.Y, workArea.Bottom - height)));
+            Math.Clamp(x, workArea.X, Math.Max(workArea.X, workArea.Right - windowWidth)),
+            Math.Clamp(y, workArea.Y, Math.Max(workArea.Y, workArea.Bottom - windowHeight)));
     }
 
     private void TogglePlayPause()
@@ -176,6 +255,58 @@ internal sealed class MusicOverlayWindow : Window
         using System.Text.Json.JsonDocument arguments = System.Text.Json.JsonDocument.Parse("{}");
         _ = _model.Runtime.Modules.ExecuteAsync(tool, arguments.RootElement.Clone(),
             Guid.NewGuid().ToString("N")[..8], CancellationToken.None);
+    }
+
+    /// <summary>Remembers a dragged spot, but only after snapping it back to the right
+    /// edge when the drop lands near it, so "docked" stays the natural resting state.</summary>
+    private void SaveDraggedPosition()
+    {
+        try
+        {
+            double scale = RenderScaling > 0 ? RenderScaling : 1.0;
+            if (WorkArea() is { } work)
+            {
+                int windowWidth = (int)Math.Ceiling((CardWidth + ShadowGutter * 2) * scale);
+                int margin = (int)Math.Ceiling(DockMargin * scale);
+                int snap = (int)Math.Ceiling(RightDockSnap * scale);
+                int dockedX = work.Right - windowWidth - margin;
+                if (dockedX - Position.X <= snap)
+                {
+                    Position = new PixelPoint(Math.Max(work.X, dockedX), Position.Y);
+                }
+            }
+
+            _model.Runtime.Settings.Current.Interface.MusicOverlayPositionPx =
+                $"{Position.X},{Position.Y}";
+            _model.Runtime.Settings.Save();
+            _model.Runtime.Events.Publish(new SettingsChangedEvent());
+        }
+        catch
+        {
+            // Losing a remembered card spot must never crash the player.
+        }
+    }
+
+    private PixelRect? WorkArea()
+    {
+        Screen? screen = Screens.ScreenFromWindow(this) ?? Screens.Primary ?? Screens.All.FirstOrDefault();
+        return screen?.WorkingArea;
+    }
+
+    private static bool IsInsideButton(object? source)
+    {
+        Visual? visual = source as Visual;
+        while (visual is not null)
+        {
+            if (visual is Button)
+            {
+                return true;
+            }
+
+            visual = visual.Parent as Visual;
+        }
+
+        return false;
     }
 
     private void Render()

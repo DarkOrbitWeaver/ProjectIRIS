@@ -177,9 +177,9 @@ public sealed class PersonaView : UserControl
 
         if (_candidates.Count == 0)
         {
-            string endpoint = _runtime.Settings.Current.Voice.Engine.Equals("pocket", StringComparison.OrdinalIgnoreCase)
-                ? _runtime.Settings.Current.Voice.PocketEndpoint
-                : _runtime.Settings.Current.Voice.HttpEndpoint;
+            // One resolver everywhere: the picker must name the port the chosen engine
+            // really speaks through, never a leftover default of another engine.
+            string endpoint = _runtime.Settings.Current.Voice.GetEffectiveEndpoint();
             Control empty = Ui.Text(
                 "No voices are available right now. The speech server at " +
                 endpoint + " is not answering, so she has nothing to pick from.",
@@ -189,7 +189,9 @@ public sealed class PersonaView : UserControl
             return;
         }
 
-        string pinned = _runtime.Settings.Current.Voice.VoiceId;
+        string pinned = _runtime.Settings.Current.Voice.ChosenByUser
+            ? _runtime.Settings.Current.Voice.VoiceId
+            : string.Empty;
         for (int index = 0; index < _candidates.Count; index++)
         {
             int row = index / 2;

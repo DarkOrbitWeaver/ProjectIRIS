@@ -135,7 +135,7 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
             "Play a track from her music library. Can take a description of what to play.",
             ToolTier.Reflex,
             """{"type":"object","properties":{"query":{"type":"string","description":"Track, mood or artist. Leave empty to resume."}},"required":[]}""",
-            "play music", "song", "track", "put on"),
+            "play music", "play", "song", "track", "put on"),
 
         new("pause_music", "Pause the currently playing music.", ToolTier.Reflex,
             """{"type":"object","properties":{},"required":[]}""", "pause"),
@@ -161,7 +161,7 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
             "volume", "louder", "quieter"),
 
         new("list_music", "List the tracks available in her music library.", ToolTier.Reflex,
-            """{"type":"object","properties":{},"required":[]}""", "what music", "library", "playlist"),
+            """{"type":"object","properties":{},"required":[]}""", "what music", "library", "playlist", "player"),
 
         new(
             "add_music_folder",
@@ -307,7 +307,40 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
                 return await RemoveMusicFolderAsync(invocation.GetString("path"), cancellationToken).ConfigureAwait(false);
             case "refresh_music_library":
             {
-                MusicLibraryScanResult scan = await RefreshLibraryAsync(force: true, cancellationToken).ConfigureAwait(false);
+                IModuleTaskHandle? card = _context?.Ui.BeginTask(new ModuleTaskSpec
+                {
+                    Title = "Indexing music library",
+                    IconKey = "music",
+                    Detail = "Looking through her music folders"
+                }, cancellationToken);
+
+                MusicLibraryScanResult scan;
+                try
+                {
+                    scan = await RefreshLibraryAsync(force: true, cancellationToken,
+                        onProgress: card is null
+                            ? null
+                            : progress => card.Step(
+                                $"{progress.TracksFound:N0} tracks in {progress.DirectoriesVisited:N0} folders"))
+                            .ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    card?.Cancel("Scan stopped; the previous library stays put");
+                    throw;
+                }
+                catch (Exception)
+                {
+                    card?.Fail("The scan did not finish; her previous index stays put");
+                    throw;
+                }
+
+                card?.Step(_library.Count == 0
+                    ? "No playable audio turned up"
+                    : $"{_library.Count:N0} tracks are ready to play");
+                card?.Complete(_library.Count == 0
+                    ? "Found nothing playable yet"
+                    : $"Indexed {_library.Count:N0} tracks");
                 return ToolResult.Ok(DescribeScan(scan),
                     spokenText: _library.Count == 0 ? "I couldn't find playable music there yet." : ScanSpokenSummary(scan));
             }
@@ -922,12 +955,13 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
             return ToolResult.Fail($"There is no playlist called '{name}'.");
         }
 
-        List<string> tracks = LoadPlaylist(safeName).Where(File.Exists).ToList();
+        List<string> tracks = RecoverPlaylistTracks(LoadPlaylist(safeName));
         if (tracks.Count == 0)
         {
             return ToolResult.Fail($"'{name}' has no playable tracks left on disk.");
         }
 
+        // The healed list is written back, so the rescue only ever has to happen once.
         SavePlaylist(safeName, tracks);
         _queue.Clear();
         _queue.AddRange(tracks);
@@ -941,6 +975,63 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
         string first = Path.GetFileNameWithoutExtension(_queue[0]);
         return ToolResult.Ok($"Playing playlist '{name}': {tracks.Count} track(s), starting with {first}.",
             spokenText: $"Playing playlist {name}.");
+    }
+
+    /// <summary>
+    /// Playlist files store absolute paths, which die when a folder moves or the
+    /// workspace changes underneath them — that is exactly what killed 'hollowlight'
+    /// ("no playable tracks left on disk"). Recovery walks every dead entry through
+    /// three chances: the moved workspace location, then the same file name against
+    /// the current library index. Only tracks that survive nowhere are truly gone.
+    /// </summary>
+    private List<string> RecoverPlaylistTracks(List<string> stored)
+    {
+        List<string> recovered = new(stored.Count);
+        HashSet<string> seen = new(StringComparer.OrdinalIgnoreCase);
+
+        foreach (string entry in stored)
+        {
+            string? resolved = null;
+            if (File.Exists(entry))
+            {
+                resolved = entry;
+            }
+            else
+            {
+                string directory = _context?.WorkspaceDirectory ?? string.Empty;
+                if (!string.IsNullOrWhiteSpace(directory))
+                {
+                    // A recorded path that slid deeper into the workspace, e.g. after the
+                    // workspace root was moved: re-find it from this tree.
+                    string anchored = Path.IsPathRooted(entry)
+                        ? entry
+                        : Path.Combine(directory, entry);
+                    if (File.Exists(anchored))
+                    {
+                        resolved = anchored;
+                    }
+                    else
+                    {
+                        string fileName = Path.GetFileName(entry);
+                        if (fileName.Length > 0 && File.Exists(Path.Combine(directory, fileName)))
+                        {
+                            resolved = Path.Combine(directory, fileName);
+                        }
+                    }
+                }
+
+                // Last chance: the same song under the same name somewhere in today's index.
+                resolved ??= ResolveQuery(Path.GetFileNameWithoutExtension(entry)).FirstOrDefault();
+            }
+
+            if (resolved is not null && !seen.Contains(resolved))
+            {
+                seen.Add(resolved);
+                recovered.Add(resolved);
+            }
+        }
+
+        return recovered;
     }
 
     private IReadOnlyList<string> PlaylistNames()
@@ -1103,7 +1194,8 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
 
     private async Task<MusicLibraryScanResult> RefreshLibraryAsync(
         bool force = false, CancellationToken cancellationToken = default,
-        IReadOnlyCollection<string>? excludedRoots = null, string? preferredRoot = null)
+        IReadOnlyCollection<string>? excludedRoots = null, string? preferredRoot = null,
+        Action<MusicLibraryScanProgress>? onProgress = null)
     {
         using CancellationTokenSource linkedCancellation = CancellationTokenSource.CreateLinkedTokenSource(
             cancellationToken, _moduleLifetime.Token);
@@ -1122,6 +1214,7 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
             Action<MusicLibraryScanProgress> reportProgress = progress =>
             {
                 _nowPlaying.LibraryStatus = $"Scanning: {progress.TracksFound:N0} tracks in {progress.DirectoriesVisited:N0} folders";
+                onProgress?.Invoke(progress);
             };
             List<string> roots = LibraryDirectories();
             if (!string.IsNullOrWhiteSpace(preferredRoot))

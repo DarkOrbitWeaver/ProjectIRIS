@@ -16,6 +16,10 @@ internal sealed class TimerOverlayWindow : Window
     private const double CardWidth = 248;
     private const double CardHeight = 144;
 
+    /// <summary>Transparent breathing room around the card so the drop shadow paints
+    /// inside the window instead of getting clipped into a hard rim at the edges.</summary>
+    private const double ShadowGutter = 32;
+
     private readonly ShellModel _model;
     private readonly TextBlock _label;
     private readonly TextBlock _remaining;
@@ -32,8 +36,8 @@ internal sealed class TimerOverlayWindow : Window
         ShowActivated = false;
         CanResize = false;
         WindowStartupLocation = WindowStartupLocation.Manual;
-        Width = CardWidth;
-        Height = CardHeight;
+        Width = CardWidth + (ShadowGutter * 2);
+        Height = CardHeight + (ShadowGutter * 2);
 
         _label = new TextBlock
         {
@@ -77,6 +81,7 @@ internal sealed class TimerOverlayWindow : Window
         StackPanel stack = new() { Spacing = 8, Children = { heading, _label, _remaining, transport } };
         Content = new Border
         {
+            Margin = new Thickness(ShadowGutter),
             Background = new SolidColorBrush(Palette.Elevated, 0.96),
             BorderBrush = Palette.StrokeBrush,
             BorderThickness = new Thickness(1),
@@ -97,24 +102,28 @@ internal sealed class TimerOverlayWindow : Window
     }
 
     /// <summary>Timers live below the pill. Music occupies the available space above it,
-    /// so two contextual cards never overlap.</summary>
+    /// so two contextual cards never overlap. Coordinates here are the card's; the window
+    /// is one shadow-gutter larger on every side, so its rectangle ends further out.</summary>
     public void PlaceNear(PixelPoint pillPosition, int pillWidth, int pillHeight, PixelRect workArea,
         bool growsLeft)
     {
         double scale = RenderScaling > 0 ? RenderScaling : 1.0;
         int width = (int)Math.Ceiling(CardWidth * scale);
         int height = (int)Math.Ceiling(CardHeight * scale);
-        int gap = (int)Math.Ceiling(10 * scale);
+        int gutter = (int)Math.Ceiling(ShadowGutter * scale);
+        // Ten pixels between the window rectangle and the pill; with the gutter that is
+        // the visual breathing room between pill and card.
+        int gap = (int)Math.Ceiling(10 * scale) + gutter;
         int x = growsLeft ? pillPosition.X + pillWidth - width : pillPosition.X;
-        int y = pillPosition.Y + pillHeight + gap;
-        if (y + height > workArea.Bottom)
+        int y = pillPosition.Y - height - gap;
+        if (y < workArea.Y)
         {
-            y = pillPosition.Y - height - gap;
+            y = pillPosition.Y + pillHeight + gap;
         }
 
         Position = new PixelPoint(
-            Math.Clamp(x, workArea.X, Math.Max(workArea.X, workArea.Right - width)),
-            Math.Clamp(y, workArea.Y, Math.Max(workArea.Y, workArea.Bottom - height)));
+            Math.Clamp(x - gutter, workArea.X, Math.Max(workArea.X, workArea.Right - width - (gutter * 2))),
+            Math.Clamp(y - gutter, workArea.Y, Math.Max(workArea.Y, workArea.Bottom - height - (gutter * 2))));
     }
 
     private void HideForNow()

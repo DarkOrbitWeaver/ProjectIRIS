@@ -88,10 +88,11 @@ public sealed class SettingsStore
     {
         VoiceSettings voice = Current.Voice;
         voice.Engine ??= "pocket";
-        voice.VoiceId ??= "alba";
-        voice.CandidateVoices ??= new() { "alba", "anna", "eve", "mary", "vera", "estelle" };
+        voice.VoiceId ??= "vera";
+        voice.CandidateVoices ??= new() { "anna", "mary", "vera" };
         voice.HttpEndpoint ??= "http://127.0.0.1:8880/v1";
         voice.PocketEndpoint ??= "http://127.0.0.1:18765";
+        voice.KokoroEndpoint ??= "http://127.0.0.1:18766";
         if (voice.Engine.Equals("http", StringComparison.OrdinalIgnoreCase) &&
             voice.HttpEndpoint.TrimEnd('/').Equals("http://127.0.0.1:8880/v1", StringComparison.OrdinalIgnoreCase))
         {
@@ -99,12 +100,12 @@ public sealed class SettingsStore
             // Kokoro ids to the new local engine and ask the user to confirm the voice again.
             Dictionary<string, string> oldVoiceMap = new(StringComparer.OrdinalIgnoreCase)
             {
-                ["af_heart"] = "alba",
+                ["af_heart"] = "vera",
                 ["af_bella"] = "anna",
-                ["af_nicole"] = "eve",
+                ["af_nicole"] = "vera",
                 ["af_aoede"] = "vera",
                 ["bf_emma"] = "mary",
-                ["bf_isabella"] = "estelle"
+                ["bf_isabella"] = "vera"
             };
             if (oldVoiceMap.TryGetValue(voice.VoiceId, out string? mappedVoice))
             {
@@ -112,22 +113,43 @@ public sealed class SettingsStore
             }
             else
             {
-                voice.VoiceId = "alba";
+                voice.VoiceId = "vera";
             }
 
             voice.Engine = "pocket";
-            voice.CandidateVoices = new() { "alba", "anna", "eve", "mary", "vera", "estelle" };
+            voice.CandidateVoices = new() { "anna", "mary", "vera" };
             voice.ChosenByUser = false;
             CompanionLog.Info("Settings", "Migrated the former default speech server to local Pocket TTS.");
             IrisEvent.Log("Settings", "settings.migrated", LogLevel.Info,
                 message: "Default speech engine migrated to Pocket TTS; voice confirmation is required.");
         }
+        else if (voice.Engine.Equals("kokoro", StringComparison.OrdinalIgnoreCase))
+        {
+            // A recognized engine: her own names are hers. Only fill values the user
+            // never expressed, never rewrite what they chose.
+            if (string.IsNullOrWhiteSpace(voice.VoiceId) || voice.VoiceId.Equals("vera", StringComparison.OrdinalIgnoreCase))
+            {
+                voice.VoiceId = voice.KokoroDefaultVoice;
+            }
+            if (voice.CandidateVoices.Count == 0)
+            {
+                voice.CandidateVoices = new() { "af_heart", "af_bella" };
+            }
+        }
         else if (!voice.Engine.Equals("http", StringComparison.OrdinalIgnoreCase) &&
                  !voice.Engine.Equals("pocket", StringComparison.OrdinalIgnoreCase))
         {
+            // An unrecognized engine string: previously this reset silently, which made
+            // a user question ("why is she speaking pocket?") unanswerable. Now it is a
+            // receipted migration.
+            CompanionLog.Warning("Settings",
+                $"Engine '{voice.Engine}' is not one of pocket/kokoro/http; moving her to pocket TTS.");
+            IrisEvent.Log("Settings", "settings.engine_migrated", LogLevel.Warning,
+                message: "Unrecognized voice engine migrated to Pocket TTS.",
+                data: new Dictionary<string, string?> { ["from"] = voice.Engine });
             voice.Engine = "pocket";
-            voice.VoiceId = "alba";
-            voice.CandidateVoices = new() { "alba", "anna", "eve", "mary", "vera", "estelle" };
+            voice.VoiceId = "vera";
+            voice.CandidateVoices = new() { "anna", "mary", "vera" };
             voice.ChosenByUser = false;
         }
 
@@ -135,7 +157,7 @@ public sealed class SettingsStore
             (voice.VoiceId.StartsWith("af_", StringComparison.OrdinalIgnoreCase) ||
              voice.VoiceId.StartsWith("bf_", StringComparison.OrdinalIgnoreCase)))
         {
-            voice.VoiceId = "alba";
+            voice.VoiceId = "vera";
             voice.ChosenByUser = false;
         }
 
@@ -143,7 +165,33 @@ public sealed class SettingsStore
             voice.CandidateVoices.Any(candidate => candidate.StartsWith("af_", StringComparison.OrdinalIgnoreCase) ||
                                                    candidate.StartsWith("bf_", StringComparison.OrdinalIgnoreCase)))
         {
-            voice.CandidateVoices = new() { "alba", "anna", "eve", "mary", "vera", "estelle" };
+            voice.CandidateVoices = new() { "anna", "mary", "vera" };
+        }
+
+        if (voice.Engine.Equals("pocket", StringComparison.OrdinalIgnoreCase))
+        {
+            // Alba sounded male on the target setup, Estelle is the French preset paired
+            // with an English model, and Eve mangles English sentences. Keep the picker
+            // to the tested English set the owner actually liked.
+            voice.CandidateVoices = voice.CandidateVoices
+                .Where(candidate => !candidate.Equals("alba", StringComparison.OrdinalIgnoreCase) &&
+                                    !candidate.Equals("estelle", StringComparison.OrdinalIgnoreCase) &&
+                                    !candidate.Equals("eve", StringComparison.OrdinalIgnoreCase))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (voice.CandidateVoices.Count == 0)
+            {
+                voice.CandidateVoices = new() { "anna", "mary", "vera" };
+            }
+
+            if (voice.VoiceId.Equals("alba", StringComparison.OrdinalIgnoreCase) ||
+                voice.VoiceId.Equals("estelle", StringComparison.OrdinalIgnoreCase) ||
+                voice.VoiceId.Equals("eve", StringComparison.OrdinalIgnoreCase))
+            {
+                // Eve is gone; anyone parked on her moves to Vera, the tested default.
+                voice.VoiceId = "vera";
+                voice.ChosenByUser = false;
+            }
         }
 
         voice.PocketMaxThreads = Math.Clamp(voice.PocketMaxThreads, 1, 2);

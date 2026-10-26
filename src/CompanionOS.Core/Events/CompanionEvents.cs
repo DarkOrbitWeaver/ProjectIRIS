@@ -222,6 +222,57 @@ public sealed class BackgroundTaskChangedEvent : CompanionEvent
     public required BackgroundTaskSnapshot Task { get; init; }
 }
 
+/// <summary>What one module feedback card is doing. Written by ModuleUi scripting.</summary>
+public enum ModuleFeedbackKind
+{
+    /// <summary>The card shows itself with a spinner and begins its story.</summary>
+    TaskStarted,
+
+    /// <summary>A real step landed; the card's line updates so the user can follow.</summary>
+    TaskRunning,
+
+    /// <summary>Green check: worked, with its summary line; then the card fades.</summary>
+    TaskCompleted,
+
+    /// <summary>Red alert: did not work, with the reason; the history keeps it all.</summary>
+    TaskFailed,
+
+    /// <summary>Stopped by cancellation, stated rather than passed off as done.</summary>
+    TaskCancelled,
+
+    /// <summary>A single finished notice with no spinner; it fades out on its own.</summary>
+    Note
+}
+
+/// <summary>
+/// One module-authored floating feedback card — the "downloading song … ✓ saved" bar
+/// of agentic work. Everything a card shows comes from these events, and every event
+/// lands in her log, so a dismissed card is never a lost truth.
+/// </summary>
+public sealed class ModuleTaskFeedbackEvent : CompanionEvent
+{
+    public required string TaskId { get; init; }
+    public required string ModuleId { get; init; }
+    public required string ModuleName { get; init; }
+    public string IconKey { get; init; } = "body";
+    public required ModuleFeedbackKind Kind { get; init; }
+    public required string Title { get; init; }
+    public string Detail { get; init; } = string.Empty;
+
+    /// <summary>Determinate progress when the module can honestly estimate it.</summary>
+    public double? Progress { get; init; }
+    public double? Total { get; init; }
+
+    /// <summary>The completion/failure line replacing the detail while the card fades.</summary>
+    public string? Summary { get; init; }
+
+    /// <summary>How long a finished card stays on screen before fading, in ms.</summary>
+    public double HoldMilliseconds { get; init; }
+
+    /// <summary>For Note cards: the tone the module states for itself.</summary>
+    public ModuleNoteKind NoteKind { get; init; } = ModuleNoteKind.Info;
+}
+
 /// <summary>A validated state patch for one element in a module's declared surface.</summary>
 public sealed class ModuleSurfaceStateChangedEvent : CompanionEvent
 {
@@ -250,5 +301,14 @@ public sealed class TelemetryEvent : CompanionEvent
 
 /// <summary>Settings were saved; live screens should re-read them.</summary>
 public sealed class SettingsChangedEvent : CompanionEvent
+{
+}
+
+/// <summary>
+/// The runtime finished booting (brain ready, memory repaired, boot.done logged). The
+/// shell gates typed input on this: before it lands, a message would only 503 against a
+/// half-loaded cortex.
+/// </summary>
+public sealed class RuntimeReadyEvent : CompanionEvent
 {
 }

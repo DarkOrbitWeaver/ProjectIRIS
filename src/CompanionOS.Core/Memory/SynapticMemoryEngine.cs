@@ -36,6 +36,16 @@ public sealed class SynapticMemoryEngine : IMemoryAccess
     private readonly SettingsStore _settings;
     private readonly EventBus _events;
 
+    /// <summary>Serializes episode recording, so two turns never race for the "previous
+    /// episode" cursor and the narrative chain stays a real chain.</summary>
+    private readonly SemaphoreSlim _episodeGate = new(1, 1);
+
+    /// <summary>The newest episode she recorded; each new episode links back to it so
+    /// the day grows links exactly as memory does — one moment hanging off the last.
+    /// Restored lazily at the first recording, which is also the first link over a boot.</summary>
+    private string? _lastEpisodeNodeId;
+    private bool _episodeCursorLoaded;
+
     public SynapticMemoryEngine(MemoryGraph graph, SettingsStore settings, EventBus events)
     {
         _graph = graph;
@@ -368,23 +378,135 @@ public sealed class SynapticMemoryEngine : IMemoryAccess
         return new MemoryForgetResult { Succeeded = true, Message = $"Forgot '{node.Title}'." };
     }
 
-    /// <summary>Records something that happened, so she can refer to it later.</summary>
+    /// <summary>
+    /// Records something that happened, so she can refer to it later — and links it the
+    /// way real memory does: back to the previous episode (the day's narrative chain)
+    /// and to the existing memories this one is genuinely about (topic anchors). Titles
+    /// read like a diary line; the raw request wording lives in the episode detail.
+    /// </summary>
     public async Task<RecalledMemory> RecordEpisodeAsync(string summary, string provenance = "conversation",
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default, string? title = null)
     {
-        string title = summary.Length > 60 ? summary[..60].TrimEnd() + "..." : summary;
-        MemoryNode node = await _graph
-            .UpsertNodeAsync(title, summary, MemoryLayer.Episodic, provenance, cancellationToken: cancellationToken)
-            .ConfigureAwait(false);
-        _events.Publish(new MemoryChangedEvent { NodeId = node.Id, Title = node.Title, Change = "created" });
-        IrisEvent.Log("Memory", "memory.episode", LogLevel.Trace,
-            data: new Dictionary<string, string?>
+        await _episodeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (!_episodeCursorLoaded)
             {
-                ["title"] = node.Title,
-                ["chars"] = summary.Length.ToString(),
-                ["provenance"] = provenance
-            });
-        return ToRecalled(node);
+                _episodeCursorLoaded = true;
+                _lastEpisodeNodeId = _graph.SnapshotNodes()
+                    .Where(node => node.Layer == MemoryLayer.Episodic)
+                    .OrderByDescending(node => node.CreatedAt)
+                    .Select(node => node.Id)
+                    .FirstOrDefault();
+            }
+
+            string episodeTitle = string.IsNullOrWhiteSpace(title) ? summary : title;
+            MemoryNode node = await _graph
+                .UpsertNodeAsync(CutTitle(episodeTitle), summary, MemoryLayer.Episodic, provenance,
+                    cancellationToken: cancellationToken)
+                .ConfigureAwait(false);
+
+            // Topic anchors: memories this episode is actually about. Facts and core
+            // nodes pair with it; an episode never dangles on another arbitrary episode,
+            // the narrative chain is the only episode-to-episode line.
+            IReadOnlyList<(MemoryNode Node, double Score)> anchors = _graph.SearchNodes(episodeTitle, 5);
+            int anchored = 0;
+            foreach ((MemoryNode anchor, double score) in anchors)
+            {
+                if (anchored >= 3 || score < 0.45 ||
+                    anchor.Id == node.Id ||
+                    string.Equals(anchor.Id, _lastEpisodeNodeId, StringComparison.Ordinal) ||
+                    anchor.Layer == MemoryLayer.Episodic)
+                {
+                    continue;
+                }
+
+                await _graph.LinkAsync(node.Id, anchor.Id, SynapseType.RelatedTo, 0.4, provenance,
+                    cancellationToken).ConfigureAwait(false);
+                anchored++;
+            }
+
+            // The chain: yesterday's moment to today's moment.
+            if (!string.IsNullOrEmpty(_lastEpisodeNodeId) &&
+                !string.Equals(_lastEpisodeNodeId, node.Id, StringComparison.Ordinal))
+            {
+                await _graph.LinkAsync(_lastEpisodeNodeId, node.Id, SynapseType.After, 0.35, provenance,
+                    cancellationToken).ConfigureAwait(false);
+            }
+
+            _lastEpisodeNodeId = node.Id;
+            _events.Publish(new MemoryChangedEvent { NodeId = node.Id, Title = node.Title, Change = "created" });
+            IrisEvent.Log("Memory", "memory.episode", LogLevel.Trace,
+                data: new Dictionary<string, string?>
+                {
+                    ["title"] = node.Title,
+                    ["chars"] = summary.Length.ToString(),
+                    ["provenance"] = provenance,
+                    ["anchors"] = anchored.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    ["chained"] = "true"
+                });
+            return ToRecalled(node);
+        }
+        finally
+        {
+            _episodeGate.Release();
+        }
+    }
+
+    /// <summary>Trims a diary line to a clean sixty characters without cutting mid-word —
+    /// a title chopped through the middle of a word reads like a glitch, not a memory.</summary>
+    private static string CutTitle(string title)
+    {
+        if (title.Length <= 60)
+        {
+            return title;
+        }
+
+        string cut = title[..60];
+        int lastSpace = cut.LastIndexOf(' ');
+        return (lastSpace > 40 ? cut[..lastSpace] : cut).TrimEnd() + "…";
+    }
+
+    /// <summary>
+    /// One-time brain repair, run at boot and idempotent: earlier versions recorded
+    /// every tool turn as "Requested: …", which quietly turned a launch she failed to
+    /// execute into a standing memory of an intention — exactly the record that later
+    /// steered her into inventing results. An entry that states an action without its
+    /// outcome says nothing true enough to keep, so those are removed. New episodes
+    /// record what happened instead.
+    /// </summary>
+    public async Task<int> ForgetUnverifiedRequestEpisodesAsync(CancellationToken cancellationToken = default)
+    {
+        // Two historic formats told stories without truth: "Requested: …" (an intention
+        // recorded as a fact) and "Heard: …" (raw transcript debris, often ASR junk like
+        // "Heard: - Where is?" — not something said, just something the ears caught).
+        bool IsStoryWithoutTruth(MemoryNode node) =>
+            node.Provenance == "conversation" &&
+            (node.Content.StartsWith("Requested: ", StringComparison.OrdinalIgnoreCase) ||
+             node.Content.StartsWith("Heard: ", StringComparison.OrdinalIgnoreCase));
+
+        List<MemoryNode> unverified = _graph.SnapshotNodes()
+            .Where(IsStoryWithoutTruth)
+            .ToList();
+
+        foreach (MemoryNode node in unverified)
+        {
+            await _graph.ForgetNodeAsync(node.Id, cancellationToken).ConfigureAwait(false);
+            IrisEvent.Log("Memory", "memory.repaired", LogLevel.Info,
+                data: new Dictionary<string, string?>
+                {
+                    ["removed_title"] = node.Title,
+                    ["removed_chars"] = node.Content.Length.ToString()
+                });
+        }
+
+        if (unverified.Count > 0)
+        {
+            CompanionLog.Info("Memory",
+                $"Removed {unverified.Count} unverified 'Requested:'/'Heard:' episodes from the brain.");
+        }
+
+        return unverified.Count;
     }
 
     /// <summary>Publishes the recall report that becomes the memory chips in the chat.</summary>

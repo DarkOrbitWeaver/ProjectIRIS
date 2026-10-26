@@ -23,6 +23,7 @@ public sealed class WakePhraseMatcher
 {
     private string _wakeName;
     private HashSet<string> _greetingWords;
+    private List<string> _wakeAliases;
 
     public WakePhraseMatcher(Persona persona)
     {
@@ -31,11 +32,12 @@ public sealed class WakePhraseMatcher
             .Select(Normalize)
             .Where(word => word.Length > 0)
             .ToHashSet(StringComparer.Ordinal);
+        _wakeAliases = NormalizePhrases(persona.WakeAliases);
     }
 
     /// <summary>
-    /// Re-reads her name and greetings. Called when the persona changes at runtime,
-    /// so a renamed assistant starts answering to the new name immediately.
+    /// Re-reads her name, greetings and aliases. Called when the persona changes at
+    /// runtime, so a renamed assistant starts answering to the new name immediately.
     /// </summary>
     public void Refresh(Persona persona)
     {
@@ -44,10 +46,25 @@ public sealed class WakePhraseMatcher
             .Select(Normalize)
             .Where(word => word.Length > 0)
             .ToHashSet(StringComparer.Ordinal);
+        _wakeAliases = NormalizePhrases(persona.WakeAliases);
     }
 
     /// <summary>The name she listens for, lower case.</summary>
     public string WakeName => _wakeName;
+
+    /// <summary>The trained extra spellings of her name, lower case.</summary>
+    public IReadOnlyList<string> WakeAliases => _wakeAliases;
+
+    private static List<string> NormalizePhrases(IEnumerable<string?> phrases) => phrases
+        .Where(phrase => !string.IsNullOrWhiteSpace(phrase))
+        .Select(phrase => string.Join(' ', phrase!.Split(' ',
+            StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(Normalize)
+            .Where(word => word.Length > 0)))
+        .Where(phrase => phrase.Length > 0 && phrase.Length >= 3)
+        .Distinct(StringComparer.Ordinal)
+        .Take(24)
+        .ToList();
 
     /// <summary>
     /// Returns true when the transcript addresses her.
@@ -89,25 +106,74 @@ public sealed class WakePhraseMatcher
 
         for (int index = 0; index < searchWindow; index++)
         {
-            if (!IsNameMatch(words[index]))
+            // First the name, then one-word and two-word trained aliases: engines hear
+            // "Iris" as anything from "I race" to "on this", and some of those
+            // mishearings span two words. Everything after the matched phrase is the
+            // request, and a bare call ("Iris?") is a complete wake.
+            if (IsNameMatch(words[index]))
             {
-                continue;
+                remainder = JoinSpoken(spokenWords, index + 1);
+                if (remainder.Length > 0 && IsGreetingOnly(remainder))
+                {
+                    remainder = string.Empty;
+                }
+
+                return true;
             }
 
-            // Everything after the name is the request. The raw words keep the casing the
-            // user spoke, so proper nouns survive the trip to the model.
-            remainder = string.Join(" ", spokenWords.Skip(index + 1)).Trim();
-
-            if (remainder.Length > 0 && IsGreetingOnly(remainder))
+            for (int span = 1; span <= 2; span++)
             {
-                remainder = string.Empty;
-            }
+                if (span == 2 && index + 1 >= words.Count)
+                {
+                    break;
+                }
 
-            return true;
+                string phrase = span == 1 ? words[index] : $"{words[index]} {words[index + 1]}";
+                if (!IsWakePhraseMatch(phrase))
+                {
+                    continue;
+                }
+
+                remainder = JoinSpoken(spokenWords, index + span);
+                if (remainder.Length > 0 && IsGreetingOnly(remainder))
+                {
+                    remainder = string.Empty;
+                }
+
+                return true;
+            }
         }
 
         // No name found: she stays quiet. A greeting alone is not enough, because
         // people say "hey" to each other all day long.
+        return false;
+    }
+
+    private static string JoinSpoken(IReadOnlyList<string> spokenWords, int fromIndex) =>
+        string.Join(" ", spokenWords.Skip(fromIndex)).Trim();
+
+    /// <summary>True when the (possibly two-word) phrase is her name or a trained alias.</summary>
+    private bool IsWakePhraseMatch(string phrase)
+    {
+        if (IsNameMatch(phrase))
+        {
+            return true;
+        }
+
+        foreach (string alias in _wakeAliases)
+        {
+            if (phrase == alias)
+            {
+                return true;
+            }
+
+            int distance = LevenshteinDistance(phrase, alias);
+            if (distance <= (alias.Length >= 8 ? 2 : 1))
+            {
+                return true;
+            }
+        }
+
         return false;
     }
 

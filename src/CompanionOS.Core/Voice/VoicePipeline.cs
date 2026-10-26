@@ -24,11 +24,21 @@ public sealed class VoicePipeline : IAsyncDisposable
     private readonly EventBus _events;
     private readonly PersonaStore _personaStore;
     private readonly MicrophoneCapture _microphone = new();
+    private int _bargeInEnergyFrames;
+
+    // Dead-capture watchdog state. Capture frames are 30 ms, so the counter below
+    // reaches its threshold after ~10 seconds of pure digital silence.
+    private int _silentCaptureFrames;
+    private int _captureRestartAttempts;
+    private bool _silentCaptureNoticeFired;
     private readonly SpeechAudioPlayer _player = new();
     private readonly WakePhraseMatcher _wakeMatcher;
     private readonly PocketTtsServerHost _pocketHost;
+    private readonly KokoroTtsServerHost _kokoroHost;
     private readonly IDisposable _settingsChangedSubscription;
     private readonly SpeechOutputArbiter _speechOutputArbiter = new();
+    private readonly object _wakeSampleLock = new();
+    private TaskCompletionSource<string>? _wakeSampleCapture;
     private readonly SemaphoreSlim _reflexPreparationGate = new(1, 1);
     private readonly CancellationTokenSource _voiceLifetime = new();
     private readonly object _segmentLock = new();
@@ -60,6 +70,7 @@ public sealed class VoicePipeline : IAsyncDisposable
         _personaStore = personaStore;
         _wakeMatcher = new WakePhraseMatcher(personaStore.Current);
         _pocketHost = new PocketTtsServerHost(settings.Current.Voice);
+        _kokoroHost = new KokoroTtsServerHost(settings.Current.Voice);
 
         Profile = VoiceProfile.FromSettings(settings.Current);
         Synthesizer = SpeechSynthesizerFactory.Create(settings.Current.Voice);
@@ -79,10 +90,8 @@ public sealed class VoicePipeline : IAsyncDisposable
             bool intentionalClose = Volatile.Read(ref _microphoneStopRequested) != 0;
             using IDisposable correlationScope = IrisEvent.BeginCorrelationScope(_microphoneSessionId);
             IsListening = isCapturing;
-            IrisEvent.Log("Voice", isCapturing
-                    ? "microphone.capture.opened"
-                    : intentionalClose ? "microphone.capture.closed" : "microphone.capture.lost",
-                isCapturing || intentionalClose ? LogLevel.Info : LogLevel.Warning,
+            (string captureEvent, LogLevel captureLevel) = ClassifyCaptureChange(isCapturing, intentionalClose);
+            IrisEvent.Log("Voice", captureEvent, captureLevel,
                 data: new Dictionary<string, string?>
                 {
                     ["capture_open"] = isCapturing.ToString(),
@@ -142,6 +151,10 @@ public sealed class VoicePipeline : IAsyncDisposable
     /// <summary>True when the user opened the microphone explicitly, so no wake word is needed.</summary>
     public bool IsConversationOpen => DateTimeOffset.Now < _conversationOpenUntil;
 
+    /// <summary>Re-reads her wake name and trained aliases from the persona file, so a
+    /// phrase taught in Settings is answered to on the very next utterance.</summary>
+    public void RefreshEarTraining() => _wakeMatcher.Refresh(_personaStore.Current);
+
     /// <summary>Returns the state of the whole audio chain without waking any expensive
     /// component. This is for diagnostics and first-run guidance, not a pretend test.</summary>
     public VoiceReadiness GetReadiness()
@@ -176,6 +189,38 @@ public sealed class VoicePipeline : IAsyncDisposable
             IsOutputConfigured = outputConfigured,
             OutputDetail = outputDetail
         };
+    }
+
+    /// <summary>
+    /// One training capture for her ears: the next finished utterance is transcribed and
+    /// handed back verbatim, and she deliberately does not wake, reply or act on it. The
+    /// caller owns cancelling; a sample that never arrives simply times out quietly.
+    /// </summary>
+    public async Task<string?> CaptureWakeSampleAsync(CancellationToken cancellationToken)
+    {
+        TaskCompletionSource<string> capture = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        lock (_wakeSampleLock)
+        {
+            // A stale armed capture (the previous attempt never heard anything) is
+            // cancelled rather than left dangling forever.
+            _wakeSampleCapture?.TrySetCanceled();
+            _wakeSampleCapture = capture;
+        }
+
+        try
+        {
+            return await capture.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            lock (_wakeSampleLock)
+            {
+                if (ReferenceEquals(_wakeSampleCapture, capture))
+                {
+                    _wakeSampleCapture = null;
+                }
+            }
+        }
     }
 
     /// <summary>
@@ -360,6 +405,7 @@ public sealed class VoicePipeline : IAsyncDisposable
 
         using IDisposable correlationScope = IrisEvent.BeginCorrelationScope();
         _microphoneSessionId = IrisEvent.CurrentCorrelationId;
+        _silentCaptureFrames = 0;
         int deviceNumber = _settings.Current.Ears.InputDeviceNumber;
         bool opened = _microphone.Start(deviceNumber);
         if (!opened)
@@ -377,6 +423,21 @@ public sealed class VoicePipeline : IAsyncDisposable
         return opened;
     }
 
+    /// <summary>
+    /// Names a capture-state change. A close we did not request means the device went
+    /// away underneath her, so it stays a warning; a close during shutdown is labelled
+    /// deliberate instead of being logged as if her ears had died.
+    /// </summary>
+    internal static (string Name, LogLevel Level) ClassifyCaptureChange(bool isOpen, bool intentionalClose)
+    {
+        return (isOpen, intentionalClose) switch
+        {
+            (true, _) => ("microphone.capture.opened", LogLevel.Info),
+            (false, true) => ("microphone.capture.closed", LogLevel.Info),
+            (false, false) => ("microphone.capture.lost", LogLevel.Warning)
+        };
+    }
+
     private void StopMicrophone()
     {
         using IDisposable correlationScope = IrisEvent.BeginCorrelationScope(_microphoneSessionId);
@@ -392,6 +453,35 @@ public sealed class VoicePipeline : IAsyncDisposable
             {
                 _microphoneSessionId = null;
             }
+        }
+    }
+
+    /// <summary>
+    /// Reopens a capture stream that only ever produced digital silence.
+    /// NAudio must not be stopped from inside its own data callback, so this runs on a
+    /// worker thread with a settle pause between stop and start.
+    /// </summary>
+    private void ReopenDeadCapture()
+    {
+        StopMicrophone();
+        Thread.Sleep(400);
+        bool reopened = StartMicrophone();
+        IsListening = reopened;
+        IrisEvent.Log("Voice", "microphone.capture.restart", reopened ? LogLevel.Info : LogLevel.Warning,
+            message: "The capture stream carried only digital silence; reopened it to repair a stuck headset.",
+            data: new Dictionary<string, string?>
+            {
+                ["attempt"] = _captureRestartAttempts.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                ["reopened"] = reopened.ToString()
+            });
+
+        if (!reopened && _captureRestartAttempts >= 2 && !_silentCaptureNoticeFired)
+        {
+            _silentCaptureNoticeFired = true;
+            _events.PublishNotice(
+                "Her microphone could not be reopened after a silent stream. Check Windows microphone privacy " +
+                "settings, and the device chosen in Settings → Ears.",
+                NoticeSeverity.Warning);
         }
     }
 
@@ -757,7 +847,7 @@ public sealed class VoicePipeline : IAsyncDisposable
     /// Keeps the conversation open for a while after she is addressed, so a follow-up
     /// ("and make it louder") does not need her name again. This is how people talk.
     /// </summary>
-    public void OpenConversationWindow(int seconds = 25) =>
+    public void OpenConversationWindow(int seconds = 45) =>
         _conversationOpenUntil = DateTimeOffset.Now.AddSeconds(seconds);
 
     /// <summary>Requires her name again for the next request.</summary>
@@ -817,6 +907,15 @@ public sealed class VoicePipeline : IAsyncDisposable
             return;
         }
 
+        // Answer-speed economics: one receipt per spoken answer, so any day's record can
+        // answer "how long did she take, and where did the seconds go?"
+        int spokenCharacters = 0;
+        int spokenSentences = 0;
+        double synthesisTotalMs = 0;
+        double playbackTotalMs = 0;
+        long speakingStarted = System.Diagnostics.Stopwatch.GetTimestamp();
+        bool wasInterrupted = false;
+
         string turnId = IrisEvent.CurrentCorrelationId ?? string.Empty;
         _events.Publish(new SpeechEvent { IsSpeaking = true, Text = text, TurnId = turnId });
 
@@ -826,9 +925,70 @@ public sealed class VoicePipeline : IAsyncDisposable
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
+                if (Synthesizer is IStreamingSpeechSynthesizer streamingSynthesizer)
+                {
+                    long streamingStarted = System.Diagnostics.Stopwatch.GetTimestamp();
+                    using SpeechAudioStream? audioStream = await streamingSynthesizer
+                        .OpenSpeechStreamAsync(sentence, Profile, cancellationToken).ConfigureAwait(false);
+                    if (audioStream is null)
+                    {
+                        IrisEvent.Log("Voice", "synth.failed", LogLevel.Warning,
+                            data: new Dictionary<string, string?>
+                            {
+                                ["chars"] = sentence.Length.ToString(),
+                                ["engine"] = Synthesizer.EngineName
+                            });
+                        NotifySpeechUnavailable();
+                        continue;
+                    }
+
+                    double streamOpenMs = System.Diagnostics.Stopwatch.GetElapsedTime(streamingStarted).TotalMilliseconds;
+                    StreamingPlaybackResult streamingPlayback = await _player
+                        .PlayStreamingWavAsync(audioStream.Content, Profile.Volume, cancellationToken)
+                        .ConfigureAwait(false);
+                    IrisEvent.Log("Voice", "synth.stream.done", LogLevel.Debug,
+                        durationMs: System.Diagnostics.Stopwatch.GetElapsedTime(streamingStarted).TotalMilliseconds,
+                        data: new Dictionary<string, string?>
+                        {
+                            ["chars"] = sentence.Length.ToString(),
+                            ["pcm_bytes"] = streamingPlayback.PcmBytes.ToString(),
+                            ["first_audio_ms"] = (streamOpenMs + streamingPlayback.FirstAudioMilliseconds).ToString("0.0",
+                                System.Globalization.CultureInfo.InvariantCulture)
+                        });
+
+                    if (!streamingPlayback.Accepted)
+                    {
+                        IrisEvent.Log("Voice", "speech.playback_failed", LogLevel.Warning,
+                            data: new Dictionary<string, string?>
+                            {
+                                ["pcm_bytes"] = streamingPlayback.PcmBytes.ToString(),
+                                ["output_device"] = _settings.Current.Voice.OutputDeviceNumber.ToString(
+                                    System.Globalization.CultureInfo.InvariantCulture)
+                            });
+                        NotifySpeechUnavailable();
+                        break;
+                    }
+
+                    _nextSpeechFailureNotice = DateTimeOffset.MinValue;
+                    IrisEvent.Log("Voice", "speech.playback_accepted", LogLevel.Trace,
+                        durationMs: streamingPlayback.TotalMilliseconds,
+                        data: new Dictionary<string, string?>
+                        {
+                            ["pcm_bytes"] = streamingPlayback.PcmBytes.ToString(),
+                            ["streaming"] = "true"
+                        });
+                    spokenCharacters += sentence.Length;
+                    spokenSentences++;
+                    synthesisTotalMs += streamOpenMs;
+                    playbackTotalMs += streamingPlayback.TotalMilliseconds;
+                    continue;
+                }
+
+                long synthesisStarted = System.Diagnostics.Stopwatch.GetTimestamp();
                 SpeechAudio? audio = await Synthesizer
                     .SynthesizeAsync(sentence, Profile, cancellationToken)
                     .ConfigureAwait(false);
+                double synthesisMs = System.Diagnostics.Stopwatch.GetElapsedTime(synthesisStarted).TotalMilliseconds;
 
                 if (audio is null)
                 {
@@ -845,13 +1005,16 @@ public sealed class VoicePipeline : IAsyncDisposable
                 }
 
                 IrisEvent.Log("Voice", "synth.done", LogLevel.Debug,
+                    durationMs: synthesisMs,
                     data: new Dictionary<string, string?>
                     {
                         ["chars"] = sentence.Length.ToString(),
                         ["bytes"] = audio.Bytes.Length.ToString(),
                         ["format"] = audio.Format
                     });
+                synthesisTotalMs += synthesisMs;
 
+                long playbackStarted = System.Diagnostics.Stopwatch.GetTimestamp();
                 bool outputAccepted = await _player.PlayAsync(audio, Profile.Volume, cancellationToken)
                     .ConfigureAwait(false);
                 if (!outputAccepted)
@@ -869,11 +1032,16 @@ public sealed class VoicePipeline : IAsyncDisposable
 
                 _nextSpeechFailureNotice = DateTimeOffset.MinValue;
                 IrisEvent.Log("Voice", "speech.playback_accepted", LogLevel.Trace,
+                    durationMs: System.Diagnostics.Stopwatch.GetElapsedTime(playbackStarted).TotalMilliseconds,
                     data: new Dictionary<string, string?> { ["bytes"] = audio.Bytes.Length.ToString() });
+                spokenCharacters += sentence.Length;
+                spokenSentences++;
+                playbackTotalMs += System.Diagnostics.Stopwatch.GetElapsedTime(playbackStarted).TotalMilliseconds;
             }
         }
         catch (OperationCanceledException)
         {
+            wasInterrupted = true;
             // Interrupted on purpose; the caller already knows.
         }
         catch (Exception exception)
@@ -888,6 +1056,17 @@ public sealed class VoicePipeline : IAsyncDisposable
         }
         finally
         {
+            IrisEvent.Log("Voice", "speech.turn_timing", LogLevel.Trace,
+                durationMs: System.Diagnostics.Stopwatch.GetElapsedTime(speakingStarted).TotalMilliseconds,
+                data: new Dictionary<string, string?>
+                {
+                    ["chars"] = spokenCharacters.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    ["sentences"] = spokenSentences.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    ["synth_ms"] = synthesisTotalMs.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture),
+                    ["playback_ms"] = playbackTotalMs.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture),
+                    ["engine"] = Synthesizer.EngineName,
+                    ["interrupted"] = wasInterrupted.ToString()
+                });
             _events.Publish(new SpeechEvent { IsSpeaking = false, Text = text, TurnId = turnId });
         }
     }
@@ -1002,6 +1181,10 @@ public sealed class VoicePipeline : IAsyncDisposable
         _microphone.SamplesAvailable -= OnMicrophoneSamples;
         _microphone.LevelChanged -= OnMicrophoneLevel;
         _player.AmplitudeChanged -= OnSpokenAmplitude;
+        // Disposing directly would close the capture handle without setting the
+        // deliberate-stop flag, and every clean shutdown would be logged as a lost
+        // microphone. Route the close through the intentional stop first.
+        StopMicrophone();
         _microphone.Dispose();
         _player.Dispose();
         WakeGate.Dispose();
@@ -1009,6 +1192,7 @@ public sealed class VoicePipeline : IAsyncDisposable
         Recognizer.Dispose();
         _recognitionGate.Dispose();
         await _pocketHost.DisposeAsync().ConfigureAwait(false);
+        await _kokoroHost.DisposeAsync().ConfigureAwait(false);
         await Task.CompletedTask.ConfigureAwait(false);
     }
 
@@ -1056,12 +1240,75 @@ public sealed class VoicePipeline : IAsyncDisposable
             return;
         }
 
-        // Barge-in: if she is talking and the user starts speaking, she stops at once.
-        if (_player.IsPlaying && _settings.Current.Voice.BargeInEnabled && level > CurrentThreshold() * 1.4)
+        // Dead-capture watchdog. A wireless headset can hand Windows a capture stream
+        // that opens cleanly and then carries pure digital silence forever — she would
+        // "listen" without ever hearing and look like she ignores her name. A fresh
+        // capture stream repairs it. Two tries per session are free; beyond that the
+        // device or its Windows gain is the problem, and she says so exactly once
+        // instead of restarting forever.
+        if (level <= 0.000001)
         {
-            StopSpeaking();
-            UserInterrupted?.Invoke();
-            OpenConversationWindow();
+            _silentCaptureFrames++;
+            if (_silentCaptureFrames >= 330)
+            {
+                _silentCaptureFrames = 0;
+                if (_captureRestartAttempts < 2)
+                {
+                    _captureRestartAttempts++;
+                    // Reopening must not happen on NAudio's callback thread; hop to a worker.
+                    _ = Task.Run(ReopenDeadCapture);
+                    return;
+                }
+
+                if (!_silentCaptureNoticeFired)
+                {
+                    _silentCaptureNoticeFired = true;
+                    _events.PublishNotice(
+                        "Your microphone streams only silence. Two fresh streams stayed dead — check the Windows " +
+                        "input level for this device, or its on-mic mute switch.",
+                        NoticeSeverity.Warning);
+                }
+            }
+        }
+        else
+        {
+            _silentCaptureFrames = 0;
+        }
+
+        // Barge-in: if she is talking and the user starts speaking, she stops at once.
+        // Two above-threshold frames in a row confirm it, so a little of her own voice
+        // leaking into the microphone cannot chop her sentences into pieces. The bar
+        // follows the room's noise floor, so a quiet headset can still interrupt her.
+        if (_player.IsPlaying && _settings.Current.Voice.BargeInEnabled)
+        {
+            double bargeInLevel = Math.Max(CurrentThreshold() * 1.2, _noiseFloor * 3.0);
+            if (level > bargeInLevel)
+            {
+                _bargeInEnergyFrames++;
+            }
+            else
+            {
+                _bargeInEnergyFrames = 0;
+            }
+
+            if (_bargeInEnergyFrames >= 2)
+            {
+                _bargeInEnergyFrames = 0;
+                IrisEvent.Log("Voice", "speech.barge_in", LogLevel.Info,
+                    message: "User speech overrode her voice mid-sentence.",
+                    data: new Dictionary<string, string?>
+                    {
+                        ["level"] = level.ToString("0.000", System.Globalization.CultureInfo.InvariantCulture),
+                        ["threshold"] = bargeInLevel.ToString("0.000", System.Globalization.CultureInfo.InvariantCulture)
+                    });
+                StopSpeaking();
+                UserInterrupted?.Invoke();
+                OpenConversationWindow();
+            }
+        }
+        else
+        {
+            _bargeInEnergyFrames = 0;
         }
 
         if (!_microphone.IsCapturing)
@@ -1148,6 +1395,11 @@ public sealed class VoicePipeline : IAsyncDisposable
             EarsSettings ears = _settings.Current.Ears;
             bool conversationWasOpen = IsConversationOpen;
             bool wakeGateAvailable = WakeGate.IsAvailable;
+            bool capturingForTraining;
+            lock (_wakeSampleLock)
+            {
+                capturingForTraining = _wakeSampleCapture is not null;
+            }
             if (!Recognizer.IsAvailable)
             {
                 LogSegmentDecision("recognizer_unavailable", "preflight", ears.RequireWakePhrase,
@@ -1162,7 +1414,7 @@ public sealed class VoicePipeline : IAsyncDisposable
                 return;
             }
 
-            bool expectsAnswer = !ears.RequireWakePhrase || conversationWasOpen;
+            bool expectsAnswer = !ears.RequireWakePhrase || conversationWasOpen || capturingForTraining;
             if (!expectsAnswer && wakeGateAvailable &&
                 WakeGate.Check(segment, CancellationToken.None) == WakeGateVerdict.Skip)
             {
@@ -1199,6 +1451,27 @@ public sealed class VoicePipeline : IAsyncDisposable
 
             _nextRecognitionFailureNotice = DateTimeOffset.MinValue;
             recognizedCharacters = transcript.Length;
+            _captureRestartAttempts = 0;
+            _silentCaptureNoticeFired = false;
+
+            // Ear training: this segment was captured for the settings screens, so its
+            // words go to the trainer verbatim and she pointedly does not react.
+            TaskCompletionSource<string>? sampleCapture;
+            lock (_wakeSampleLock)
+            {
+                sampleCapture = _wakeSampleCapture;
+                if (sampleCapture is not null)
+                {
+                    _wakeSampleCapture = null;
+                }
+            }
+            if (sampleCapture is not null)
+            {
+                sampleCapture.TrySetResult(transcript);
+                LogSegmentDecision("wake_training_sample", stage, ears.RequireWakePhrase,
+                    conversationWasOpen, wakeGateAvailable, recognizedCharacters, transcribeDurationMs);
+                return;
+            }
 
             stage = "addressing";
             VoiceAddressingDecision addressing = VoiceAddressingPolicy.Decide(
@@ -1359,7 +1632,9 @@ public sealed class VoicePipeline : IAsyncDisposable
             }
         }
 
-        string endpoint = settings.HttpEndpoint;
+        string endpoint = settings.Engine.Equals("kokoro", StringComparison.OrdinalIgnoreCase)
+            ? settings.KokoroEndpoint
+            : settings.HttpEndpoint;
         if (string.IsNullOrWhiteSpace(endpoint))
         {
             return false;
@@ -1423,14 +1698,16 @@ public sealed class VoicePipeline : IAsyncDisposable
         {
             return false;
         }
+        if (voice.Engine.Equals("kokoro", StringComparison.OrdinalIgnoreCase) &&
+            !await _kokoroHost.StartAsync(cancellationToken).ConfigureAwait(false))
+        {
+            return false;
+        }
 
         return await ProbeSpeechServerAsync(voice, cancellationToken).ConfigureAwait(false);
     }
 
-    private static string VoiceEndpoint(VoiceSettings settings) =>
-        settings.Engine.Equals("pocket", StringComparison.OrdinalIgnoreCase)
-            ? settings.PocketEndpoint
-            : settings.HttpEndpoint;
+    private static string VoiceEndpoint(VoiceSettings settings) => settings.GetEffectiveEndpoint();
 
     /// <summary>
     /// Builds the gate that sits between voice activity detection and transcription.
@@ -1445,39 +1722,63 @@ public sealed class VoicePipeline : IAsyncDisposable
     private static ISpeechRecognizer CreateRecognizer(CompanionSettings settings)
     {
         EarsSettings ears = settings.Ears;
+        ParakeetRecognizer parakeet = new(ears);
         WhisperNetRecognizer whisper = new(CompanionPaths.Model(ears.WhisperModelFile), ears.Language,
             ears.MaxRecognitionThreads);
         HttpSpeechRecognizer http = new(ears);
 
+        // Explicit choices leave no doubt about which engine runs.
         if (ears.Recognizer.Equals("whisper", StringComparison.OrdinalIgnoreCase))
         {
             http.Dispose();
+            parakeet.Dispose();
             return whisper;
+        }
+
+        if (ears.Recognizer.Equals("parakeet", StringComparison.OrdinalIgnoreCase))
+        {
+            http.Dispose();
+            whisper.Dispose();
+            return parakeet;
         }
 
         if (ears.Recognizer.Equals("http", StringComparison.OrdinalIgnoreCase))
         {
             whisper.Dispose();
+            parakeet.Dispose();
             return http;
         }
 
-        // "auto": a local model file is more reliable than an endpoint that may not run.
-        // The runner-up is always disposed, so no client outlives the choice.
+        // "auto": Parakeet is the production ears and wins whenever its model and the
+        // transcribe.cpp runtime are installed. A local whisper model is the fallback
+        // for machines without them, and the HTTP endpoint is last because it depends
+        // on someone having started a server. The runner-ups are always disposed, so
+        // no client outlives the choice.
+        if (parakeet.IsAvailable)
+        {
+            http.Dispose();
+            whisper.Dispose();
+            return parakeet;
+        }
+
         if (whisper.IsAvailable)
         {
             http.Dispose();
+            parakeet.Dispose();
             return whisper;
         }
 
         if (http.IsAvailable)
         {
             whisper.Dispose();
+            parakeet.Dispose();
             return http;
         }
 
         // Neither is available: keep the whisper shape so callers still get honest empty
         // transcripts, and release the HTTP client that would otherwise live forever.
         http.Dispose();
+        parakeet.Dispose();
         return whisper;
     }
 }

@@ -7,6 +7,7 @@ using CompanionOS.App.Interface.Controls;
 using CompanionOS.App.Interface.Theme;
 using CompanionOS.Core.Brain;
 using CompanionOS.Core.Configuration;
+using CompanionOS.Core.Diagnostics;
 using CompanionOS.Core.Events;
 using CompanionOS.Core.Mind;
 using CompanionOS.Core.Modules;
@@ -84,7 +85,7 @@ public sealed class SettingsView : UserControl
         Grid cards = new()
         {
             ColumnDefinitions = new ColumnDefinitions("*,16,*"),
-            RowDefinitions = new RowDefinitions("Auto,Auto,Auto,Auto")
+            RowDefinitions = new RowDefinitions("Auto,Auto,Auto,Auto,Auto")
         };
         Place(cards, BuildAudioCard(), 0, 0);
         Place(cards, BuildStartupCard(), 0, 2);
@@ -101,10 +102,17 @@ public sealed class SettingsView : UserControl
         Grid.SetColumn(permissions, 0);
         Grid.SetColumnSpan(permissions, 3);
         cards.Children.Add(permissions);
+        Control earTraining = BuildEarTrainingCard();
+        earTraining.Margin = new Thickness(0, 16, 0, 0);
+        Grid.SetRow(earTraining, 4);
+        Grid.SetColumn(earTraining, 0);
+        Grid.SetColumnSpan(earTraining, 3);
+        cards.Children.Add(earTraining);
 
         // Board scroll: 32 px top/bottom, 48 px sides, 24 px between header and grid.
         return new ScrollViewer
         {
+            AllowAutoHide = false,
             Content = new StackPanel
             {
                 Margin = new Thickness(48, 32),
@@ -268,6 +276,123 @@ public sealed class SettingsView : UserControl
         // the honest, instant rebind — no restart, no lying settings screen.
         _runtime.Brain.SetMicrophoneOpen(false);
         _runtime.Brain.SetMicrophoneOpen(true);
+    }
+
+    // ---------------------------------------------------------- ears training
+
+    /// <summary>
+    /// Her ears are trained, not reprogrammed. Whisper mis-hears her name ("iris" as
+    /// "on this" or "i race") the same way for every speaker, because the model cannot
+    /// adapt to a voice mid-flight — so the owner captures what her ears actually heard,
+    /// corrects it, and teaches the sound-alike. Saved in the persona file; she answers
+    /// to it from the very next sentence, no restart.
+    /// </summary>
+    private Control BuildEarTrainingCard()
+    {
+        TextBlock intro = Ui.Text(
+            "Speech models hear \"iris\" as \"on this\" or \"i race\". Say her name, correct what shows up below, " +
+            "and she answers to it from the next sentence on.",
+            Palette.FontCaption, Palette.TextSecondaryBrush, FontWeight.Medium, wrap: true);
+
+        TextBlock earStatus = Ui.Text(DescribeEarAliases(), Palette.FontCaption,
+            Palette.TextSecondaryBrush, FontWeight.Medium, wrap: true);
+        TextBox heard = new()
+        {
+            Watermark = "What her ears heard goes here — fix it if wrong",
+            Width = 300,
+            Height = 32
+        };
+        Button listen = Ui.GhostButton("Listen for her name", () => _ = CaptureEarSampleAsync(heard, earStatus));
+        Button teach = Ui.GhostButton("Teach her", () => SaveEarAlias(heard, earStatus));
+
+        return Card("Her ears", new Control?[]
+        {
+            intro,
+            earStatus,
+            Row("Say her name once", listen,
+                "Opens a nine-second capture. Her ears transcribe it, her voice stays silent, and she acts on nothing."),
+            Row("She heard", heard),
+            Row("Teach her", teach,
+                "Saves the corrected phrase as a second way her name can sound.")
+        });
+    }
+
+    private async Task CaptureEarSampleAsync(TextBox heard, TextBlock status)
+    {
+        if (!_runtime.Voice.IsListening)
+        {
+            status.Text = "Her ears are muted right now — unmute (and leave Gaming) and try again.";
+            return;
+        }
+
+        using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(9));
+        status.Text = "Listening — say her name now.";
+        try
+        {
+            string? transcript = await _runtime.Voice.CaptureWakeSampleAsync(timeout.Token);
+            transcript = transcript?.Trim();
+            if (!string.IsNullOrWhiteSpace(transcript))
+            {
+                heard.Text = transcript;
+                status.Text = $"Heard \"{transcript}\". Correct it above if she mis-heard, then press Teach her.";
+                IrisEvent.Log("Voice", "ear_training.sample", LogLevel.Info,
+                    data: new Dictionary<string, string?> { ["heard"] = transcript });
+            }
+            else
+            {
+                status.Text = "Nothing legible arrived — speak a little clearer and press Listen again.";
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            status.Text = "Timed out — nothing reached her ears while they were open.";
+            IrisEvent.Log("Voice", "ear_training.sample_missed", LogLevel.Info);
+        }
+    }
+
+    private void SaveEarAlias(TextBox source, TextBlock status)
+    {
+        string alias = (source.Text ?? string.Empty).Trim().Trim('\'', '"', '.', ',', '!', '?');
+        if (alias.Length < 2)
+        {
+            status.Text = "Write the phrase her ears will answer to — two characters at least.";
+            return;
+        }
+
+        if (alias.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length > 3)
+        {
+            status.Text = "Three words at most — she learns sound-alikes, not sentences.";
+            return;
+        }
+
+        Persona persona = _runtime.Persona.Current;
+        if (persona.WakeAliases.Any(candidate => candidate.Equals(alias, StringComparison.OrdinalIgnoreCase)))
+        {
+            status.Text = $"\"{alias}\" is already in her ears.";
+            return;
+        }
+
+        persona.WakeAliases.Add(alias);
+        while (persona.WakeAliases.Count > 24)
+        {
+            persona.WakeAliases.RemoveAt(0);
+        }
+
+        _runtime.Persona.Save();
+        _runtime.Voice.RefreshEarTraining();
+        status.Text = DescribeEarAliases() + $" From now on, \"{alias}\" is her name too.";
+        source.Text = string.Empty;
+        IrisEvent.Log("Voice", "ear_training.alias_added", LogLevel.Info,
+            data: new Dictionary<string, string?> { ["alias"] = alias });
+        _runtime.Events.Publish(new SettingsChangedEvent());
+    }
+
+    private string DescribeEarAliases()
+    {
+        IReadOnlyList<string> aliases = _runtime.Persona.Current.WakeAliases;
+        return aliases.Count == 0
+            ? "No sound-alikes taught yet — press Listen and say her name."
+            : "She also answers to " + string.Join(", ", aliases) + ".";
     }
 
     // ---------------------------------------------------------- first-run truth

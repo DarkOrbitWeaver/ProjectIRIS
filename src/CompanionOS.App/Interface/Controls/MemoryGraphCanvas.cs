@@ -3,6 +3,7 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Media;
+using Avalonia.Rendering;
 using CompanionOS.App.Interface.Theme;
 using CompanionOS.Core.Memory;
 
@@ -20,10 +21,13 @@ namespace CompanionOS.App.Interface.Controls;
 ///   * red dashed links are the inhibitory ones, the "never do this" connections;
 ///   * zoomed far out you see clusters, zoomed in you see titles.
 ///
+/// Navigation: mouse wheel zooms towards the cursor (0.15×–6×), right or middle drag
+/// pans, left click selects a node, and left drag on empty space pans.
+///
 /// The layout is deterministic — concentric layer rings with a short spring relaxation —
 /// so the picture does not jump around between sessions and you can learn where things are.
 /// </summary>
-public sealed class MemoryGraphCanvas : Control
+public sealed class MemoryGraphCanvas : Control, ICustomHitTest
 {
     private readonly List<GraphNode> _nodes = new();
     private readonly List<GraphEdge> _edges = new();
@@ -39,6 +43,15 @@ public sealed class MemoryGraphCanvas : Control
         Focusable = true;
         ClipToBounds = true;
     }
+
+    /// <summary>
+    /// The whole surface takes the pointer. A custom-rendered control is only
+    /// hit-tested where it painted something, and a map with gaps between nodes is
+    /// almost everywhere un-painted — swallow-pans and dead zooms were the symptom.
+    /// Admitting every pixel keeps left-drag panning on empty space, right/middle
+    /// drag anywhere, and wheel zoom working over the whole map.
+    /// </summary>
+    bool ICustomHitTest.HitTest(Point point) => true;
 
     /// <summary>Raised when the user clicks a node (or null to clear the selection).</summary>
     public event Action<string?>? NodeSelected;
@@ -149,11 +162,37 @@ public sealed class MemoryGraphCanvas : Control
             center.X + (node.X * _scale) + _pan.X,
             center.Y + (node.Y * _scale) + _pan.Y);
 
+        int selectedIndex = -1;
+        if (_selectedNodeId is not null)
+        {
+            for (int index = 0; index < _nodes.Count; index++)
+            {
+                if (_nodes[index].Id == _selectedNodeId)
+                {
+                    selectedIndex = index;
+                    break;
+                }
+            }
+        }
+
         // 1. Edges first so nodes always sit on top.
         foreach (GraphEdge edge in _edges)
         {
             Point from = ToScreen(_nodes[edge.FromIndex]);
             Point to = ToScreen(_nodes[edge.ToIndex]);
+
+            // The focused memory shows its wiring: every synapse touching it lights up
+            // in her voice colour, at any zoom, exactly as the Memory board draws it.
+            if (edge.FromIndex == selectedIndex || edge.ToIndex == selectedIndex)
+            {
+                context.DrawLine(new Pen(new SolidColorBrush(Palette.Speech, 0.85), 1.5), from, to);
+                continue;
+            }
+
+            if (_scale < 0.45)
+            {
+                continue;
+            }
 
             Color edgeColor = edge.Polarity switch
             {
@@ -165,11 +204,6 @@ public sealed class MemoryGraphCanvas : Control
 
             double opacity = 0.12 + edge.Strength * 0.35;
             IPen edgePen = new Pen(new SolidColorBrush(edgeColor, opacity), 1);
-
-            if (_scale < 0.45)
-            {
-                continue;
-            }
 
             if (edge.Polarity == SynapsePolarity.Inhibitory)
             {
@@ -204,13 +238,14 @@ public sealed class MemoryGraphCanvas : Control
 
             if (node.Id == _selectedNodeId)
             {
-                context.DrawEllipse(null, new Pen(Palette.TextPrimaryBrush, 1.6), position,
+                context.DrawEllipse(null, new Pen(new SolidColorBrush(Palette.Speech, 0.95), 1.6), position,
                     radius + 4, radius + 4);
             }
 
             // Labels appear only when there is room for them, which is what keeps the
-            // far view readable as clusters rather than a wall of text.
-            if (_scale >= 0.75 && node.Strength > 0.35)
+            // far view readable as clusters rather than a wall of text — except the
+            // selected memory, whose name is the reason it was clicked.
+            if ((node.Id == _selectedNodeId || (_scale >= 0.75 && node.Strength > 0.35)) && _scale >= 0.3)
             {
                 FormattedText label = new(node.Title, CultureInfo.CurrentCulture, FlowDirection.LeftToRight,
                     new Typeface(Palette.UiFont), 12, new SolidColorBrush(Palette.TextPrimary, 0.88));
@@ -222,7 +257,22 @@ public sealed class MemoryGraphCanvas : Control
     protected override void OnPointerWheelChanged(PointerWheelEventArgs eventArgs)
     {
         base.OnPointerWheelChanged(eventArgs);
-        ZoomBy(eventArgs.Delta.Y > 0 ? 1.12 : 0.89);
+
+        // Zoom towards the cursor: the world point under the pointer stays under it,
+        // which is how map navigation is supposed to feel. Screen s = center + p*scale
+        // + pan, so p*scale is readable from the cursor and pan is solved for the new
+        // scale without knowing p.
+        double newScale = Math.Clamp(_scale * (eventArgs.Delta.Y > 0 ? 1.12 : 1 / 1.12), 0.15, 6.0);
+        Point cursor = eventArgs.GetPosition(this);
+        Point center = new(Bounds.Width / 2, Bounds.Height / 2);
+        double offsetX = cursor.X - center.X - _pan.X;
+        double offsetY = cursor.Y - center.Y - _pan.Y;
+        double ratio = newScale / _scale;
+        _pan = new Point(
+            cursor.X - center.X - offsetX * ratio,
+            cursor.Y - center.Y - offsetY * ratio);
+        _scale = newScale;
+        InvalidateVisual();
         eventArgs.Handled = true;
     }
 
@@ -230,20 +280,28 @@ public sealed class MemoryGraphCanvas : Control
     {
         base.OnPointerPressed(eventArgs);
 
-        Point position = eventArgs.GetPosition(this);
-        GraphNode? hit = HitTest(position);
+        PointerPoint point = eventArgs.GetCurrentPoint(this);
+        bool panGesture = point.Properties.IsRightButtonPressed || point.Properties.IsMiddleButtonPressed;
+        Point position = point.Position;
 
-        if (hit is not null)
+        if (!panGesture)
         {
-            SelectedNodeId = hit.Id;
-            NodeSelected?.Invoke(hit.Id);
-            return;
+            GraphNode? hit = HitTest(position);
+            if (hit is not null)
+            {
+                SelectedNodeId = hit.Id;
+                NodeSelected?.Invoke(hit.Id);
+                return;
+            }
+
+            NodeSelected?.Invoke(null);
+            SelectedNodeId = null;
         }
 
+        // Right or middle drag pans from anywhere — even when the drag starts on a
+        // node, which would otherwise select it again mid-pan.
         _dragOrigin = position;
         _dragStartPan = _pan;
-        NodeSelected?.Invoke(null);
-        SelectedNodeId = null;
     }
 
     protected override void OnPointerMoved(PointerEventArgs eventArgs)

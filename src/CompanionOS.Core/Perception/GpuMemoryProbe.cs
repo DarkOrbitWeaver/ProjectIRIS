@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using CompanionOS.Core.Diagnostics;
 
 namespace CompanionOS.Core.Perception;
@@ -11,9 +12,24 @@ namespace CompanionOS.Core.Perception;
 /// zero and the interface shows a dash instead of inventing a number. Honest telemetry
 /// matters here: the whole point of the meter is knowing whether her brain actually
 /// left the GPU.
+///
+/// One safety rail learned from a real occurrence: every few thousand launches,
+/// Windows can hand nvidia-smi a failed initialisation (status 0xC0000142) instead of
+/// a reading. The probe treats that as "no reading this cycle" — the next probe a few
+/// seconds later tries again — and the hard-error dialog Windows otherwise draws for
+/// a failed child process is suppressed while we fork, so a telemetry glitch never
+/// becomes an owner-visible "nvidia-smi.exe — Application Error" window.
 /// </summary>
 public sealed class GpuMemoryProbe
 {
+    /// <summary>kernel32!SetErrorMode flags: keep DLL-init, fault and legacy-file dialogs silent.</summary>
+    private const int SemFailCriticalErrors = 0x0001;
+    private const int SemNoGpFaultErrorBox = 0x0002;
+    private const int SemNoOpenFileErrorBox = 0x8000;
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern int SetErrorMode(int newMode);
+
     private readonly object _probeLock = new();
     private DateTimeOffset _lastProbe = DateTimeOffset.MinValue;
     private (double UsedMegabytes, double TotalMegabytes) _cachedReading;
@@ -42,6 +58,23 @@ public sealed class GpuMemoryProbe
     }
 
     private static (double UsedMegabytes, double TotalMegabytes) Probe()
+    {
+        // The error mode is inherited by the child process, so setting it before the
+        // fork — and restoring the machine's own choice after — keeps a dying
+        // nvidia-smi from painting a dialog on the owner's screen.
+        int previousErrorMode = SetErrorMode(
+            SemFailCriticalErrors | SemNoGpFaultErrorBox | SemNoOpenFileErrorBox);
+        try
+        {
+            return RunProbe();
+        }
+        finally
+        {
+            SetErrorMode(previousErrorMode);
+        }
+    }
+
+    private static (double UsedMegabytes, double TotalMegabytes) RunProbe()
     {
         try
         {

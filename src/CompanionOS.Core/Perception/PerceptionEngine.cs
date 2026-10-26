@@ -347,6 +347,36 @@ public sealed class PerceptionEngine : IDisposable
         }
     }
 
+    /// <summary>Controls the active Windows media session and returns only confirmed outcomes.</summary>
+    public async Task<string> ControlMediaAsync(string action, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        string normalized = action.Trim().ToLowerInvariant();
+        bool succeeded = normalized switch
+        {
+            "pause" => await _mediaSensor.TryPauseAsync().ConfigureAwait(false),
+            "play" or "resume" => await _mediaSensor.TryPlayAsync().ConfigureAwait(false),
+            _ => false
+        };
+
+        IrisEvent.Log("Senses", succeeded ? "media.command_succeeded" : "media.command_unconfirmed",
+            succeeded ? LogLevel.Info : LogLevel.Warning,
+            data: new Dictionary<string, string?> { ["action"] = normalized });
+
+        if (succeeded)
+        {
+            string verb = normalized switch
+            {
+                "pause" => "paused",
+                "play" or "resume" => "resumed",
+                _ => "controlled"
+            };
+            return $"Windows confirmed that media {verb}.";
+        }
+
+        return "Windows did not confirm this media action. There may be no active controllable Windows media session.";
+    }
+
     /// <summary>Returns only media Iris paused for the current voice interaction.</summary>
     public async Task<bool> ResumeMediaAfterVoiceAsync(CancellationToken cancellationToken = default)
     {

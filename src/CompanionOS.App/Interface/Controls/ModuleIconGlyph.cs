@@ -23,6 +23,10 @@ internal static class ModuleIconGlyph
         "send" or "telegram" => IconGlyph.Send,
         "settings" => IconGlyph.Settings,
         "timer" => IconGlyph.Clock14,
+        "youtube" or "yt" or "video" => IconGlyph.PlayCircle,
+        "download" or "downloader" => IconGlyph.Download,
+        "sandbox" or "box" or "package" => IconGlyph.Package,
+        "shield" => IconGlyph.Shield,
         _ => IconGlyph.Body
     };
 

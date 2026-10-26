@@ -180,7 +180,8 @@ public sealed class MusicRailPanel : Border
             Height = primary ? 36 : 28,
             CornerRadius = new CornerRadius(primary ? 18 : 14),
             HorizontalContentAlignment = HorizontalAlignment.Center,
-            VerticalContentAlignment = VerticalAlignment.Center
+            VerticalContentAlignment = VerticalAlignment.Center,
+            UseLayoutRounding = true
         };
         ToolTip.SetTip(button, label);
         button.Click += (_, _) => onClick();

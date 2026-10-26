@@ -174,6 +174,25 @@ neural engine is not up, she does not speak, one notice says so exactly, and a p
 minute at most lets her recover mid-session when the engine starts.
 **Cost:** an offline engine means silence, not a degraded voice. That is the point.
 
+### 23b. The ears are NVIDIA Parakeet Unified EN 0.6B through transcribe.cpp
+**Rejected:** bigger Whisper sizes (small/medium/large), cloud transcription endpoints, and
+ONNX engine stacks (sherpa-onnx, NeMo) — every one of them cost accuracy, privacy or a new
+dependency the machine does not need.
+**Why:** the owner chose it after comparing published CPU benchmarks: on LibriSpeech
+test-other Parakeet Unified EN 0.6B scores 3.2% word error rate against whisper-base's 11.6%
+and small.en's 7.8%, in a 541 MB Q5_K_M file that runs faster than real time on the two CPU
+threads the ears budget allows. The engine is the official prebuilt `transcribe-native-0.4.1`
+C library, invoked through its versioned C ABI: the backend registry is pinned to the CPU
+mask so the shipped Vulkan DLLs are never initialized and the GPU stays untouched, the model
+is memory-mapped, and the path is fully offline. `Ears.Recognizer = "parakeet"` is the
+production setting; "auto" prefers it too. The NVIDIA Open Model License was reviewed and
+accepted by the owner when he picked the model — this entry is that acceptance on record.
+**Cost:** Parakeet exposes no word confidences or no-speech probability, so junk rejection
+lives with the segment layer, not the engine; and per the owner's call the old
+`whisper-base.bin` was deleted from the machine and from the download manifest so nothing
+can fall back to the weaker ears by accident. The `whisper` recogniser remains a code-level
+option for someone who supplies their own model file.
+
 ---
 
 ## Process

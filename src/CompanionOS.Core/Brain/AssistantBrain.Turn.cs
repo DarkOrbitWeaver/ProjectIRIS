@@ -125,7 +125,22 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
 
         if (_serverHost.IsRunning)
         {
-            return true;
+            if (_serverHost.IsReady)
+            {
+                return true;
+            }
+
+            // The child is alive but the weights are still loading — the exact window
+            // that 503'd the owner's first typed message. Wait bounded, then answer
+            // honestly; never stream into a half-loaded brain.
+            DateTime deadline = DateTime.UtcNow.AddSeconds(15);
+            while (!_serverHost.IsReady && DateTime.UtcNow < deadline &&
+                   !cancellationToken.IsCancellationRequested)
+            {
+                await Task.Delay(200, cancellationToken).ConfigureAwait(false);
+            }
+
+            return _serverHost.IsReady;
         }
 
         await SetOperatingModeAsync(OperatingMode.Awake, cancellationToken).ConfigureAwait(false);
@@ -228,8 +243,13 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
 
         _journal.RecordState(_mind.CurrentState, reason);
 
-        await _voice.SpeakReflexAsync(mode == OperatingMode.Gaming ? "gaming" : "sleep", cancellationToken)
-            .ConfigureAwait(false);
+        // Mode announcements live behind the reflex switch: they are her saying
+        // something nobody asked for, and the switch owns exactly that.
+        if (_settings.Current.Voice.ReflexPhrasesEnabled)
+        {
+            await _voice.SpeakReflexAsync(mode == OperatingMode.Gaming ? "gaming" : "sleep", cancellationToken)
+                .ConfigureAwait(false);
+        }
     }
 
     private async Task SpeakAnswerAsync(string answerText, CancellationToken cancellationToken)
@@ -239,7 +259,11 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
 
         try
         {
-            await _voice.SpeakAsync(SpeechTextSanitizer.StripControlTags(answerText), _speechSource.Token)
+            // The written answer stays whole on screen; the voice carries the verdict.
+            string spoken = SpeechPlanner.TrimForSpeech(
+                SpeechTextSanitizer.StripControlTags(answerText),
+                _settings.Current.Voice.SpeechBudgetCharacters);
+            await _voice.SpeakAsync(spoken, _speechSource.Token)
                 .ConfigureAwait(false);
         }
         catch (OperationCanceledException)
@@ -248,19 +272,9 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
         }
     }
 
-    private async Task SpeakFragmentAsync(string text, CancellationToken cancellationToken)
-    {
-        if (!_settings.Current.Voice.SpeakReplies)
-        {
-            return;
-        }
-
-        await _voice.SpeakAsync(SpeechTextSanitizer.StripControlTags(text), cancellationToken)
-            .ConfigureAwait(false);
-    }
-
     /// <summary>Keeps the sliding conversation window and writes episodes worth keeping.</summary>
-    private void RememberExchange(string userText, string answerText, bool usedTools)
+    private void RememberExchange(string userText, string answerText, IReadOnlyList<string> toolLedger,
+        bool toolsSucceeded)
     {
         lock (_historyLock)
         {
@@ -274,16 +288,57 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
             }
         }
 
-        if (!usedTools)
+        if (toolLedger.Count == 0)
         {
             return;
         }
 
-        // Only turns where she actually did something become episodes; otherwise the
-        // graph fills with small talk and recall gets noisier every day.
-        string summary = userText.Length > 90 ? userText[..90] + "…" : userText;
-        _ = _memory.RecordEpisodeAsync($"Requested: {summary}", "conversation")
+        // Episodes record what happened, never what was asked. The old wording
+        // ("Requested: open chrome") turned a launch she failed to run into a standing
+        // memory of an intention, and that false memory steered later replies. The
+        // ledger is the honest record: which hand ran, whether it went through.
+        //
+        // Transcription debris ("a", "uh", "play") is not an event; a fragment this thin
+        // becomes a node of noise. Follow-up garbage stays noise — no memory.
+        if (!IsRememberWorthyRequest(userText))
+        {
+            return;
+        }
+
+        string request = userText.Length > 90 ? userText[..90] + "…" : userText;
+        string outcomes = string.Join("; ", toolLedger.Take(3));
+        string summary = toolsSucceeded
+            ? $"Did: {request} — {outcomes}"
+            : $"Tried: {request} — it did not go through ({outcomes})";
+        string labels = string.Join(", ", toolLedger.Take(2).Select(LabelOfLedgerEntry));
+        string headline = toolsSucceeded ? $"Did: {labels}" : $"Tried: {labels}";
+        _ = _memory.RecordEpisodeAsync(summary, "conversation", title: headline)
             .ContinueWith(_ => { }, TaskScheduler.Default);
+    }
+
+    /// <summary>Turns "play music: done" into "play music" — the action she ran.</summary>
+    private static string LabelOfLedgerEntry(string entry)
+    {
+        int statusCut = entry.LastIndexOf(':');
+        return (statusCut >= 0 ? entry[..statusCut] : entry).Trim();
+    }
+
+    /// <summary>
+    /// The ears catch all kinds of fragments; only the ones carrying some readable
+    /// train of words are events worth remembering. A single word or a few stray
+    /// letters ("play", "huh?") say nothing true about the day, so they are skipped
+    /// before they become noise nodes.
+    /// </summary>
+    private static bool IsRememberWorthyRequest(string userText)
+    {
+        string[] words = userText.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        if (words.Length < 2)
+        {
+            return false;
+        }
+
+        int letters = userText.Count(char.IsLetter);
+        return letters >= 8;
     }
 
     private IReadOnlyList<ChatMessage> TakeHistoryWindow()
@@ -364,13 +419,20 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
         }
         finally
         {
+            // Start the follow-up window after the reply finishes, not when recognition
+            // starts. Long model and speech turns must not consume the whole window.
+            _voice.OpenConversationWindow(45);
             await _perception.ResumeMediaAfterVoiceAsync().ConfigureAwait(false);
         }
     }
 
     private async Task PlayGreetingAsync()
     {
-        await _voice.SpeakReflexAsync("greeting").ConfigureAwait(false);
+        if (_settings.Current.Voice.ReflexPhrasesEnabled)
+        {
+            await _voice.SpeakReflexAsync("greeting").ConfigureAwait(false);
+        }
+
         _mind.MoveTo(MindState.Idle, "greeting finished");
     }
 
@@ -407,7 +469,10 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
         else if (shouldLeaveGaming)
         {
             _ = SetOperatingModeAsync(OperatingMode.Awake, CancellationToken.None);
-            _ = SpeakReflexInBackgroundAsync("gamingEnd");
+            if (_settings.Current.Voice.ReflexPhrasesEnabled)
+            {
+                _ = SpeakReflexInBackgroundAsync("gamingEnd");
+            }
         }
 
         _ = snapshot;

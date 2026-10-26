@@ -46,7 +46,7 @@ public sealed class VoiceProfile
         {
             Engine = voice.Engine,
             VoiceId = string.IsNullOrWhiteSpace(voice.VoiceId)
-                ? voice.Engine.Equals("pocket", StringComparison.OrdinalIgnoreCase) ? "alba" : "af_heart"
+                ? voice.Engine.Equals("pocket", StringComparison.OrdinalIgnoreCase) ? "vera" : "af_heart"
                 : voice.VoiceId.Trim(),
             Rate = Math.Clamp(voice.Rate, 0.5, 1.8),
             Pitch = Math.Clamp(voice.Pitch, -0.5, 0.5),

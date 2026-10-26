@@ -17,7 +17,7 @@ open product features and verification gaps are tracked in `docs/ROADMAP.md` and
 | | |
 |---|---|
 | **Blueprint** | Kokoro-82M through KokoroSharp, in-process, `af_heart`, 0 VRAM |
-| **Shipped** | Managed Pocket TTS CPU worker with six fixed voices (`alba`, `anna`, `eve`, `mary`, `vera`, `estelle`); optional OpenAI-compatible HTTP server remains available |
+| **Shipped** | Managed Pocket TTS CPU worker with four English voices (`anna`, `eve`, `mary`, `vera`); optional OpenAI-compatible HTTP server remains available |
 | **Why** | A fixed speaker embedding gives a consistent timbre without loading another GPU model or relying on Windows voices. The managed worker starts and stops with Iris |
 | **Cost** | One standalone local runtime and a model cache; CPU use is capped at two threads and BelowNormal priority. Voice quality and timbre still need a subjective listening pass |
 | **Memory / VRAM** | CPU only; the roughly 106.6 MiB core model and voice assets stay on disk/RAM, with no VRAM allocation |
@@ -31,12 +31,13 @@ Setting: `Voice.Engine` = `pocket` or explicitly configured `http`.
 | | |
 |---|---|
 | **Blueprint** | SenseVoice-small through sherpa-onnx (also detects emotion and audio events) |
-| **Shipped** | `WhisperNetRecognizer` (whisper.cpp, ggml-base model, CPU) and `HttpSpeechRecognizer` (any `/v1/audio/transcriptions` endpoint) |
-| **Why** | A managed, restorable, cross-checkable package beats a native-only binding we cannot test here. Whisper base is ~150 MB and 5–10× faster than real time on a mid-range CPU |
-| **Cost** | No emotion or event tags from the audio; language must be given or guessed |
-| **Upgrade path** | Add `SenseVoiceRecognizer : ISpeechRecognizer` next to the existing two. The pipeline only needs `RecognizeAsync(pcm) → text` |
+| **Shipped** | `ParakeetRecognizer` — NVIDIA Parakeet Unified EN 0.6B Q5_K_M (541 MB) through the transcribe.cpp 0.4.1 C API, strict CPU backend, memory-mapped, English-only; and `HttpSpeechRecognizer` (any `/v1/audio/transcriptions` endpoint) |
+| **Why** | The owner picked Parakeet after comparing CPU benchmarks: 3.2% WER on LibriSpeech test-other versus whisper-base's 11.6%, on the two-thread ears budget, with no new framework — just one DLL package and one GGUF file |
+| **Cost** | No emotion or event tags from the audio; no word-level confidence, so junk rejection belongs to the segment layer, not the engine |
+| **Upgrade path** | Add `SenseVoiceRecognizer : ISpeechRecognizer` next to the existing ones. The pipeline only needs `RecognizeAsync(pcm) → text` |
 
-Where it lives: `Core/Voice/SpeechRecognition.cs`. Setting: `Ears.Recognizer`.
+Where it lives: `Core/Voice/ParakeetRecognizer.cs`, `Core/Voice/SpeechRecognition.cs`.
+Setting: `Ears.Recognizer` = `parakeet` (production), `auto`, `whisper` or `http`.
 
 ## 3. Voice activity detection: adaptive energy, not Silero
 

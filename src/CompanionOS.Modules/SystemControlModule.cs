@@ -74,10 +74,11 @@ public sealed class SystemControlModule : IAssistantModule, IModuleSurfaceProvid
 
         new(
             "open_application",
-            "Launch an application by name or path. This always asks the user first.",
-            ToolTier.SystemCritical,
-            """{"type":"object","properties":{"name":{"type":"string","description":"Executable name or full path"}},"required":["name"]}""",
-            "open app", "launch", "start program"),
+            "Launch an application by name from the allowed set: calculator, notepad, paint, " +
+            "chrome, edge, explorer, task manager, terminal, cmd. Use the app's name, not a path.",
+            ToolTier.Scoped,
+            """{"type":"object","properties":{"name":{"type":"string","description":"Application name, e.g. calculator"}},"required":["name"]}""",
+            "open app", "launch", "start program", "open calculator", "open the calculator"),
 
         new(
             "system_status",
@@ -494,6 +495,36 @@ public sealed class SystemControlModule : IAssistantModule, IModuleSurfaceProvid
         }
     }
 
+    /// <summary>
+    /// Names the shell resolves to real applications, so "calculator" opens Calculator
+    /// instead of failing on an all-numeric command name. The lower-case keys are also
+    /// how the tool description advertises itself, keeping the model and the launcher
+    /// in agreement about what is openable.
+    /// </summary>
+    private static readonly Dictionary<string, string> AppAliases =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["calculator"] = "calc.exe",
+            ["calc"] = "calc.exe",
+            ["notepad"] = "notepad.exe",
+            ["paint"] = "mspaint.exe",
+            ["mspaint"] = "mspaint.exe",
+            ["chrome"] = "chrome",
+            ["edge"] = "msedge",
+            ["explorer"] = "explorer.exe",
+            ["files"] = "explorer.exe",
+            ["task manager"] = "taskmgr.exe",
+            ["taskmanager"] = "taskmgr.exe",
+            ["terminal"] = "wt.exe",
+            ["cmd"] = "cmd.exe"
+        };
+
+    /// <summary>
+    /// Launches only what the allow-list names. Per the design the owner set: opening an
+    /// app is harmless and reversible, so it runs on his word alone — but launching an
+    /// arbitrary path would let a misread sentence run anything, so anything the list
+    /// does not cover is refused honestly.
+    /// </summary>
     private ToolResult OpenApplication(ToolInvocation invocation)
     {
         string name = invocation.GetString("name").Trim();
@@ -502,14 +533,22 @@ public sealed class SystemControlModule : IAssistantModule, IModuleSurfaceProvid
             return ToolResult.Fail("Which application should I open?");
         }
 
+        if (!AppAliases.TryGetValue(name, out string? executable))
+        {
+            return ToolResult.Fail(
+                $"I can only open applications from my allowed set: {string.Join(", ",
+                    AppAliases.Keys.OrderBy(k => k, StringComparer.OrdinalIgnoreCase))}. " +
+                $"I did not open anything.");
+        }
+
         try
         {
-            Process.Start(new ProcessStartInfo(name) { UseShellExecute = true });
+            Process.Start(new ProcessStartInfo(executable) { UseShellExecute = true });
             return ToolResult.Ok($"Opened {name}.", $"Opening {name}.");
         }
         catch (Exception exception)
         {
-            CompanionLog.Warning("System", $"Could not launch '{name}': {exception.Message}");
+            CompanionLog.Warning("System", $"Could not launch '{name}' ({executable}): {exception.Message}");
             return ToolResult.Fail($"I could not open {name}.");
         }
     }

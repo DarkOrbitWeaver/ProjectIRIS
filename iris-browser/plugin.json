@@ -8,7 +8,7 @@
   "transport": "mcp",
   "command": ["node", "server.js"],
   "workingDirectory": ".",
-  "disabled": true,
+  "disabled": false,
   "discoverTools": true,
   "asksPermission": ["browser.read", "browser.act"],
   "tools": [

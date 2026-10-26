@@ -46,6 +46,17 @@ public sealed class PocketTtsServerHost : IAsyncDisposable
             _process?.Dispose();
             _process = null;
 
+            // Ownership rule: the only voice worker allowed on Iris's port is the one
+            // she spawned. A worker orphaned by a crashed or force-stopped earlier
+            // session can still answer /health while breaking every synthesis request,
+            // so a healthy ping proves nothing about speech — replace the straggler
+            // instead of negotiating with it. Skipped when the user points the endpoint
+            // at an explicitly configured worker they manage themselves.
+            if (string.IsNullOrWhiteSpace(_settings.PocketExecutablePath))
+            {
+                DemolishUnownedWorkers();
+            }
+
             string executable = string.IsNullOrWhiteSpace(_settings.PocketExecutablePath)
                 ? CompanionPaths.Runtime(Path.Combine("pocket-tts", "pocket-tts.exe"))
                 : _settings.PocketExecutablePath;
@@ -81,7 +92,7 @@ public sealed class PocketTtsServerHost : IAsyncDisposable
             startInfo.ArgumentList.Add("--language");
             startInfo.ArgumentList.Add(_settings.PocketLanguage);
             startInfo.ArgumentList.Add("--default-voice");
-            startInfo.ArgumentList.Add(string.IsNullOrWhiteSpace(_settings.VoiceId) ? "alba" : _settings.VoiceId);
+            startInfo.ArgumentList.Add(string.IsNullOrWhiteSpace(_settings.VoiceId) ? "vera" : _settings.VoiceId);
             startInfo.Environment["HF_HOME"] = cacheDirectory;
             startInfo.Environment["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "1";
             startInfo.Environment["RAYON_NUM_THREADS"] = Math.Clamp(_settings.PocketMaxThreads, 1, 2).ToString();
@@ -109,6 +120,10 @@ public sealed class PocketTtsServerHost : IAsyncDisposable
                     process.Dispose();
                     return false;
                 }
+
+                // Same family contract as the brain and plugins: no voice worker
+                // outlives Iris's process.
+                ChildProcessGuard.Adopt(process);
 
                 _process = process;
                 process.BeginOutputReadLine();
@@ -155,6 +170,32 @@ public sealed class PocketTtsServerHost : IAsyncDisposable
         finally
         {
             _gate.Release();
+        }
+    }
+
+    /// <summary>
+    /// Kills any pocket-tts.exe Iris does not own, so the fresh worker below can claim
+    /// the port. Only called when Iris manages the worker path herself.
+    /// </summary>
+    private static void DemolishUnownedWorkers()
+    {
+        foreach (Process straggler in Process.GetProcessesByName("pocket-tts"))
+        {
+            try
+            {
+                CompanionLog.Info("Voice",
+                    $"Pocket TTS: replacing a leftover worker (pid {straggler.Id}) from an earlier session.");
+                straggler.Kill(entireProcessTree: true);
+                straggler.WaitForExit(5000);
+            }
+            catch (Exception exception)
+            {
+                CompanionLog.Trace("Voice", $"Pocket TTS straggler shutdown: {exception.Message}");
+            }
+            finally
+            {
+                straggler.Dispose();
+            }
         }
     }
 
@@ -242,7 +283,7 @@ public sealed class PocketTtsServerHost : IAsyncDisposable
 }
 
 /// <summary>HTTP adapter for Pocket's local multipart /tts endpoint.</summary>
-public sealed class PocketTtsSpeechSynthesizer : ISpeechSynthesizer
+public sealed class PocketTtsSpeechSynthesizer : IStreamingSpeechSynthesizer
 {
     private readonly VoiceSettings _settings;
     private readonly HttpClient _client = new() { Timeout = TimeSpan.FromSeconds(45) };
@@ -252,6 +293,40 @@ public sealed class PocketTtsSpeechSynthesizer : ISpeechSynthesizer
     public string EngineName => "pocket";
     public bool IsAvailable => Uri.TryCreate(_settings.PocketEndpoint, UriKind.Absolute, out Uri? endpoint) &&
                                endpoint.IsLoopback;
+
+    public async Task<SpeechAudioStream?> OpenSpeechStreamAsync(string text, VoiceProfile profile,
+        CancellationToken cancellationToken)
+    {
+        using MultipartFormDataContent form = new();
+        form.Add(new StringContent(text, Encoding.UTF8), "text");
+        form.Add(new StringContent(profile.VoiceId, Encoding.UTF8), "voice_url");
+
+        try
+        {
+            using HttpRequestMessage request = new(HttpMethod.Post,
+                _settings.PocketEndpoint.TrimEnd('/') + "/tts") { Content = form };
+            HttpResponseMessage response = await _client.SendAsync(request,
+                HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode)
+            {
+                CompanionLog.Warning("Voice", $"Pocket TTS answered {(int)response.StatusCode}.");
+                response.Dispose();
+                return null;
+            }
+
+            Stream content = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+            return new SpeechAudioStream(content, response);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            CompanionLog.Warning("Voice", $"Pocket TTS stream request failed ({exception.GetType().Name}).");
+            return null;
+        }
+    }
 
     public async Task<SpeechAudio?> SynthesizeAsync(string text, VoiceProfile profile,
         CancellationToken cancellationToken)
@@ -291,8 +366,18 @@ public sealed class PocketTtsSpeechSynthesizer : ISpeechSynthesizer
 
 public static class SpeechSynthesizerFactory
 {
-    public static ISpeechSynthesizer Create(VoiceSettings settings) =>
-        settings.Engine.Equals("pocket", StringComparison.OrdinalIgnoreCase)
-            ? new PocketTtsSpeechSynthesizer(settings)
-            : new HttpSpeechSynthesizer(settings);
+    public static ISpeechSynthesizer Create(VoiceSettings settings)
+    {
+        if (settings.Engine.Equals("pocket", StringComparison.OrdinalIgnoreCase))
+        {
+            return new PocketTtsSpeechSynthesizer(settings);
+        }
+
+        if (settings.Engine.Equals("kokoro", StringComparison.OrdinalIgnoreCase))
+        {
+            return new HttpSpeechSynthesizer(settings, settings.KokoroEndpoint, "kokoro");
+        }
+
+        return new HttpSpeechSynthesizer(settings);
+    }
 }

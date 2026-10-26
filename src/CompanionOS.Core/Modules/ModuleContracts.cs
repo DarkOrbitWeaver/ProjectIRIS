@@ -80,6 +80,13 @@ public sealed class ModuleContext
     public required SandboxGuard Sandbox { get; init; }
     public required IBackgroundTaskAccess BackgroundTasks { get; init; }
 
+    /// <summary>
+    /// The module's own scripting surface for her screen: floating feedback cards and
+    /// finished notices. Cards narrate real work in her visual language and every
+    /// transition also lands in her log, so a faded card never loses its history.
+    /// </summary>
+    public required IModuleUi Ui { get; init; }
+
     /// <summary>Her writable folder. Modules should keep everything here.</summary>
     public required string WorkspaceDirectory { get; init; }
 
@@ -120,6 +127,9 @@ public interface IAssistantHostServices
 
     /// <summary>Plain-English description of what the machine is doing.</summary>
     string DescribeSituation();
+
+    /// <summary>Controls the currently active Windows media session, if one is available.</summary>
+    Task<string> ControlMediaAsync(string action, CancellationToken cancellationToken);
 
     /// <summary>Short list of installed abilities, one per line.</summary>
     string DescribeCapabilities();

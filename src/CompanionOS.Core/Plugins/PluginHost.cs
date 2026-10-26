@@ -1132,6 +1132,11 @@ internal sealed class McpConnection : IDisposable
                 Failed = "the MCP server refused to start";
                 return;
             }
+
+            // Same family contract as the brain and the voice worker: the plugin's MCP
+            // server joins the job that ends with her process, so a crashed or
+            // force-killed Iris cannot leave a dotnet worker holding a gigabyte.
+            ChildProcessGuard.Adopt(_process);
             _process.BeginOutputReadLine();
             _process.BeginErrorReadLine();
 

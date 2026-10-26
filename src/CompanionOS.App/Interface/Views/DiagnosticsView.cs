@@ -123,17 +123,22 @@ public sealed class DiagnosticsView : UserControl
         TabItem systemTab = new() { Header = "OS watch", Content = WrapList(_systemRows) };
         TabControl tabs = new() { Items = { sensingTab, eventsTab, logTab, systemTab } };
 
-        StackPanel stack = new() { Spacing = Palette.SpaceMd, Margin = new Thickness(Palette.SpaceLg) };
-        stack.Children.Add(header);
-        stack.Children.Add(tabs);
+        // Page geometry: the tab panel stretches to the window's remaining height and
+        // every tab scrolls inside its own box, so long content never grows the page
+        // past the status bar. The outer frame is square: the corners belong to the
+        // cards on the page, not to the container.
+        Grid page = new() { RowDefinitions = new RowDefinitions("Auto,*") };
+        page.Children.Add(header);
+        page.Children.Add(tabs);
+        Grid.SetRow(tabs, 1);
 
         Content = new Border
         {
-            CornerRadius = new CornerRadius(Palette.RadiusCard),
             Background = Palette.BackgroundBrush,
             BorderBrush = Palette.StrokeBrush,
             BorderThickness = new Thickness(1),
-            Child = stack
+            Padding = new Thickness(Palette.SpaceLg),
+            Child = page
         };
 
         foreach (EventRecord record in IrisEvent.Recent(MaximumRows).Reverse()) _eventEntries.Add(DiagnosticsEntry.ForEvent(record));
@@ -162,7 +167,8 @@ public sealed class DiagnosticsView : UserControl
             Child = new ScrollViewer
             {
                 Content = content,
-                HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled
+                HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+                AllowAutoHide = false
             }
         };
     }
@@ -258,7 +264,8 @@ public sealed class DiagnosticsView : UserControl
         ScrollViewer scroll = new()
         {
             Content = rows,
-            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            AllowAutoHide = false
         };
         return new Border
         {
@@ -267,7 +274,9 @@ public sealed class DiagnosticsView : UserControl
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(Palette.RadiusControl),
             Padding = new Thickness(Palette.SpaceMd, 0),
-            MinHeight = 520,
+            // The box must never be taller than short windows can give it, or the page
+            // overflows again instead of scrolling.
+            MinHeight = 300,
             Child = scroll
         };
     }

@@ -5,9 +5,11 @@ using Avalonia.Media;
 using CompanionOS.App.Interface.Controls;
 using CompanionOS.App.Interface.Theme;
 using CompanionOS.Core.Brain;
+using CompanionOS.Core.Diagnostics;
 using CompanionOS.Core.Events;
 using CompanionOS.Core.Modules;
 using CompanionOS.Core.Plugins;
+using System.Diagnostics;
 using System.IO;
 
 namespace CompanionOS.App.Interface.Views;
@@ -171,6 +173,7 @@ public sealed class ModulesView : UserControl
         // The board scroll: 32 top/bottom, 48 sides, 24 between header and grid.
         return new ScrollViewer
         {
+            AllowAutoHide = false,
             Content = new StackPanel
             {
                 Margin = new Thickness(48, 32),
@@ -299,6 +302,33 @@ public sealed class ModulesView : UserControl
                 : "Stop routing to this plugin and close its active server now");
             launchToggle.Click += async (_, _) => await SetPluginLaunchEnabledAsync(plugin, enable);
 
+            // Permanent setup actions live on the card, not in a one-time toast that is
+            // easy to miss. The browser plugin needs its Chrome extension loaded once.
+            StackPanel actions = new() { Orientation = Orientation.Horizontal, Spacing = 8 };
+            actions.Children.Add(launchToggle);
+            if (plugin.Id.Equals("browser", StringComparison.OrdinalIgnoreCase))
+            {
+                string extensionInstaller = Path.Combine(plugin.Folder, "install-extension.ps1");
+                if (File.Exists(extensionInstaller))
+                {
+                    Button extensionSetup = new()
+                    {
+                        Content = Ui.Text("Set up Chrome", Palette.FontCaption, Palette.SuccessBrush,
+                            FontWeight.Medium, wrap: false),
+                        Background = Brushes.Transparent,
+                        BorderBrush = Palette.StrokeBrush,
+                        BorderThickness = new Thickness(1),
+                        CornerRadius = new CornerRadius(8),
+                        Padding = new Thickness(10, 5),
+                        HorizontalAlignment = HorizontalAlignment.Left
+                    };
+                    ToolTip.SetTip(extensionSetup,
+                        "Copy the Iris extension into place and open Chrome to load it once, then pair");
+                    extensionSetup.Click += (_, _) => StartBrowserExtensionSetup(extensionInstaller);
+                    actions.Children.Add(extensionSetup);
+                }
+            }
+
             StackPanel body = new() { Spacing = 6 };
             if (!string.IsNullOrWhiteSpace(plugin.Description))
             {
@@ -338,7 +368,7 @@ public sealed class ModulesView : UserControl
                 BorderThickness = new Thickness(1),
                 CornerRadius = new CornerRadius(Palette.RadiusPanel),
                 Padding = new Thickness(20),
-                Child = new StackPanel { Spacing = 10, Children = { headerRow, body, launchToggle } }
+                Child = new StackPanel { Spacing = 10, Children = { headerRow, body, actions } }
             };
             Grid.SetRow(card, row);
             Grid.SetColumn(card, column);
@@ -491,6 +521,45 @@ public sealed class ModulesView : UserControl
         else
         {
             _runtime.Events.PublishNotice($"{plugin.Name}: {message}", NoticeSeverity.Danger);
+        }
+    }
+
+    /// <summary>
+    /// Runs the plugin's own extension installer in a hidden PowerShell window, then
+    /// says exactly what Chrome will — and will not — do for you. Same contract as
+    /// the one-time toast action: a failure is logged, never a crash.
+    /// </summary>
+    private void StartBrowserExtensionSetup(string installer)
+    {
+        try
+        {
+            ProcessStartInfo start = new("powershell.exe")
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                WorkingDirectory = Path.GetDirectoryName(installer) ?? Environment.CurrentDirectory
+            };
+            start.ArgumentList.Add("-NoProfile");
+            start.ArgumentList.Add("-ExecutionPolicy");
+            start.ArgumentList.Add("Bypass");
+            start.ArgumentList.Add("-File");
+            start.ArgumentList.Add(installer);
+            Process.Start(start);
+            CompanionLog.Info("Interface", $"Browser extension installer started: {installer}");
+            _runtime.Events.PublishNotice(
+                "The extension is copied and its folder is on your clipboard. Chrome is open at its " +
+                "extensions page: turn on Developer mode (top right), click \"Load unpacked\" and paste " +
+                "the folder, then pair the browser with Iris once.",
+                NoticeSeverity.Info);
+        }
+        catch (Exception exception)
+        {
+            CompanionLog.Warning("Interface",
+                $"Could not start the browser extension installer ({exception.Message}).");
+            _runtime.Events.PublishNotice(
+                "The extension installer could not start. Check the log, or run " +
+                "install-extension.ps1 in her browser module by hand.",
+                NoticeSeverity.Warning);
         }
     }
 }

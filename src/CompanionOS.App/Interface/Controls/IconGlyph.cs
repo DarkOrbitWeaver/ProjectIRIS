@@ -75,6 +75,15 @@ public static class IconGlyph
     private const string Circle24 = "M21 12a9 9 0 1 1-18 0a9 9 0 0 1 18 0Z";
     public const string CheckCircle = Circle24 + " M9.2 12.2l2.5 2.5 3.6-3.8";
     public const string AlertCircle = Circle24 + " M12 8v4M12 16h.01";
+    public const string InfoCircle = Circle24 + " M12 11v5 M12 8h.01";
+
+    // Task feedback cards: what the floating cards show while a module narrates work.
+    public const string Download =
+        "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4 M7 10l5 5 5-5 M12 15V3";
+    public const string Package =
+        "M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4" +
+        "a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z M3.3 7l8.7 5 8.7-5 M12 22V12";
+    public const string PlayCircle = Circle24 + " M10 8.5l6 3.5-6 3.5Z";
 
     // Body board: module identity icons.
     public const string Monitor = "M2 3h20v14H2Z M8 21h8M12 17v4";

@@ -61,6 +61,8 @@ public sealed class NoticeItem
 {
     public required string Message { get; init; }
     public required NoticeSeverity Severity { get; init; }
+    public string? ActionLabel { get; init; }
+    public Action? Action { get; init; }
     public DateTimeOffset CreatedAt { get; init; } = DateTimeOffset.Now;
 }
 
@@ -111,6 +113,7 @@ public sealed partial class ShellModel : ObservableObject
     private IReadOnlyList<RecalledMemory> _pendingRecall = Array.Empty<RecalledMemory>();
     private string _pendingRecallTurnId = string.Empty;
     private string _pendingUserDetail = string.Empty;
+    private bool _isRuntimeReady;
     private readonly DispatcherTimer _permissionTimer;
 
     public ShellModel(CompanionRuntime runtime)
@@ -147,6 +150,17 @@ public sealed partial class ShellModel : ObservableObject
     public ObservableCollection<NoticeItem> Notices { get; } = new();
 
     public CompanionRuntime Runtime => _runtime;
+
+    /// <summary>
+    /// False until the runtime's boot.done lands. The shell refuses typed input until
+    /// then — her first seconds are for paging the brain into VRAM, not for catching a
+    /// 503 the owner can see.
+    /// </summary>
+    public bool IsRuntimeReady
+    {
+        get => _isRuntimeReady;
+        private set => SetProperty(ref _isRuntimeReady, value);
+    }
 
     public MindState State
     {
@@ -351,6 +365,15 @@ public sealed partial class ShellModel : ObservableObject
     /// <summary>Sends one typed or attached message.</summary>
     public async Task SendAsync(string text, string? attachedImageDataUri = null)
     {
+        // Inputs open the moment boot.done lands, never earlier: racing the loader is
+        // how the owner's first "hey" became a visible 503.
+        if (!IsRuntimeReady)
+        {
+            _runtime.Events.PublishNotice("She is still waking up — her brain is loading. Give her a moment.",
+                NoticeSeverity.Info);
+            return;
+        }
+
         if (_isSurfaceActionInProgress)
         {
             _runtime.Events.PublishNotice("Iris is finishing the current module action.", NoticeSeverity.Info);

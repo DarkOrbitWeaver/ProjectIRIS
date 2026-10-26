@@ -61,6 +61,51 @@ if (-not (Test-Path $manifestPath)) {
 $manifest = Get-Content $manifestPath -Raw | ConvertFrom-Json
 
 # Resolves the real file name inside a Hugging Face repository for a wildcard pattern.
+function Provision-KokoroVoice {
+    param([string]$DataRoot, [switch]$Force, [bool]$VerifyOnly)
+
+    $kokoroRuntimeDir = Join-Path $DataRoot 'runtimes\kokoro-tts'
+    $kokoroModelDir = Join-Path $DataRoot 'models\kokoro-cache'
+    $kokoroPython = Join-Path $kokoroRuntimeDir 'venv\Scripts\python.exe'
+    $kokoroScript = Join-Path $kokoroRuntimeDir 'kokoro-server.py'
+    $modelPresent = (Test-Path (Join-Path $kokoroModelDir 'kokoro-v1.0.onnx')) -and
+                    (Test-Path (Join-Path $kokoroModelDir 'voices-v1.0.bin'))
+
+    if ($VerifyOnly) {
+        $script:results += [pscustomobject]@{ Artifact = 'kokoro-runtime'; Status = if ((Test-Path $kokoroPython) -and (Test-Path $kokoroScript)) { 'present' } else { 'missing' } }
+        $script:results += [pscustomobject]@{ Artifact = 'kokoro-model'; Status = if ($modelPresent) { 'present' } else { 'missing' } }
+        return
+    }
+
+    try {
+        New-Item -ItemType Directory -Force -Path $kokoroRuntimeDir, $kokoroModelDir | Out-Null
+
+        if ((-not (Test-Path $kokoroPython)) -or (-not (Test-Path $kokoroScript)) -or $Force) {
+            $version = & python --version 2>&1
+            if ($LASTEXITCODE -ne 0 -or $version -notmatch '3\.(1[0-3])') {
+                throw "Kokoro needs Python 3.10-3.13 on the system PATH; found: $version"
+            }
+            Write-Host '  creating the Kokoro runtime environment (kokoro-onnx 0.6.1, no CUDA packages)' -ForegroundColor Cyan
+            python -m venv $kokoroRuntimeDir\venv
+            if ($LASTEXITCODE -ne 0) { throw 'Could not create the Kokoro python environment.' }
+            & $kokoroPython -m pip install --quiet kokoro-onnx==0.6.1 misaki soundfile
+            if ($LASTEXITCODE -ne 0) { throw 'kokoro-onnx installation failed.' }
+            Copy-Item (Join-Path $PSScriptRoot 'kokoro-server.py') $kokoroScript -Force
+        } else {
+            Write-Host '  present: Kokoro runtime; keeping the existing environment' -ForegroundColor DarkGray
+        }
+
+        Write-Host '  verifying Kokoro artifacts (pinned, SHA-256 checked)' -ForegroundColor Cyan
+        & $kokoroPython (Join-Path $PSScriptRoot 'prepare-kokoro.py') $kokoroModelDir
+        if ($LASTEXITCODE -ne 0) { throw 'Kokoro model download failed. Check network access and rerun.' }
+        $script:results += [pscustomobject]@{ Artifact = 'kokoro-voice'; Status = 'downloads verified' }
+    }
+    catch {
+        Write-Host "  failed: Kokoro setup — $($_.Exception.Message)" -ForegroundColor Red
+        $script:results += [pscustomobject]@{ Artifact = 'kokoro-voice'; Status = 'failed' }
+    }
+}
+
 function Resolve-HuggingFaceFile {
     param([string]$Repo, [string]$Pattern, [string]$ExcludePattern)
 
@@ -136,7 +181,7 @@ foreach ($artifact in $manifest.artifacts) {
     # Component filter: each component owns a short list of artifact ids.
     $componentArtifacts = @{
         brain   = @('brain', 'brain-vision')
-        ears    = @('ears')
+        ears    = @('ears-parakeet', 'ears-transcribe-runtime')
         runtime = @('runtime', 'runtime-cuda')
         voice   = @('pocket-uv')
     }
@@ -193,7 +238,8 @@ foreach ($artifact in $manifest.artifacts) {
             }
 
             'url' {
-                Save-Download -Url $artifact.url -Destination $targetPath -Label $artifact.targetName
+                Save-Download -Url $artifact.url -Destination $targetPath -Label $artifact.targetName `
+                    -Sha256 $artifact.sha256
             }
 
             'github-release' {
@@ -209,7 +255,13 @@ foreach ($artifact in $manifest.artifacts) {
                     if (Test-Path $extractPath) { Remove-Item $extractPath -Recurse -Force }
                 }
                 New-Item -ItemType Directory -Force -Path $extractPath | Out-Null
-                Expand-Archive -Path $zipPath -DestinationPath $extractPath -Force
+                if ($releaseAsset.Name -like '*.tar.gz' -or $releaseAsset.Name -like '*.tgz') {
+                    # tar ships with Windows 10+; the transcribe.cpp runtime arrives as a .tar.gz.
+                    tar -xzf $zipPath -C $extractPath
+                    if ($LASTEXITCODE -ne 0) { throw "tar extraction failed for $releaseAsset.Name." }
+                } else {
+                    Expand-Archive -Path $zipPath -DestinationPath $extractPath -Force
+                }
                 Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
 
                 Write-Host "  unpacked to $extractPath" -ForegroundColor Green
@@ -287,6 +339,12 @@ if ($voiceRequested) {
             $results += [pscustomobject]@{ Artifact = 'pocket-tts-runtime'; Status = 'failed' }
         }
     }
+}
+
+# Kokoro shares the voice component: her second local engine, provisioned the
+# same honest way (pinned runtime, pinned artifacts, hash-verified downloads).
+if ($voiceRequested) {
+    Provision-KokoroVoice -DataRoot $dataRoot -Force:$Force -VerifyOnly:([bool]$VerifyOnly.IsPresent)
 }
 
 Write-Host ''

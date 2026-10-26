@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.Diagnostics;
+using System.IO;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Shapes;
@@ -18,6 +19,7 @@ using CompanionOS.Core.Brain;
 using CompanionOS.Core.Events;
 using CompanionOS.Core.Mind;
 using CompanionOS.Core.Modules;
+using IOPath = System.IO.Path;
 
 namespace CompanionOS.App.Interface;
 
@@ -39,6 +41,13 @@ public sealed partial class MainWindow : Window
 {
     private const double WindowSide = 1180;
     private const double WindowOther = 760;
+
+    /// <summary>The window title keeps a single name when her persona is named Iris —
+    /// "Iris — Iris" reads like a station that lost its signal.</summary>
+    private static string PersonasOwnName(string personaName) =>
+        string.Equals(personaName, "Iris", StringComparison.OrdinalIgnoreCase)
+            ? "Iris"
+            : $"Iris — {personaName}";
 
     private readonly CompanionRuntime _runtime;
     private readonly ShellModel _model;
@@ -98,11 +107,13 @@ public sealed partial class MainWindow : Window
 
         // The board draws her whole chrome, including the window buttons, inside a
         // rounded 1180×760 panel — so the system decorations are extended away.
-        Title = $"Iris — {_model.PersonaName}";
+        // The title stays a single name when her persona is also named Iris, instead
+        // of reading "Iris — Iris" on the dock chip.
+        Title = PersonasOwnName(_model.PersonaName);
 
         // A rename on the Persona screen re-syncs the title instantly, no restart.
         _runtime.Events.Subscribe<CompanionOS.Core.Events.SettingsChangedEvent>(_ =>
-            Dispatcher.UIThread.Post(() => Title = $"Iris — {_model.PersonaName}"));
+            Dispatcher.UIThread.Post(() => Title = PersonasOwnName(_model.PersonaName)));
         // The board is drawn at 1180×760, but a desktop window must be able to breathe:
         // a fixed size at 125–150 % Windows scaling is taller than a 1080p work area and
         // cannot be resized back, which made the whole app unusable on a scaled display.
@@ -172,6 +183,70 @@ public sealed partial class MainWindow : Window
         if (!_runtime.Settings.Current.Voice.ChosenByUser)
         {
             Dispatcher.UIThread.Post(ShowPersona);
+        }
+
+        OfferBrowserExtensionSetup();
+    }
+
+    private void OfferBrowserExtensionSetup()
+    {
+        CompanionOS.Core.Plugins.PluginManifest? browser = _runtime.Plugins.Loaded.FirstOrDefault(plugin =>
+            plugin.Id.Equals("browser", StringComparison.OrdinalIgnoreCase));
+        if (browser is null)
+        {
+            return;
+        }
+
+        string noticeMarker = IOPath.Combine(
+            CompanionOS.Core.Configuration.CompanionPaths.ConfigDirectory,
+            "browser-extension-setup-notice-shown");
+        if (File.Exists(noticeMarker))
+        {
+            return;
+        }
+
+        string message = browser.Tools.Count > 0
+            ? "Browser is ready. Set up its Chrome extension; Iris will copy the files and open Chrome. You will load the folder and pair it once."
+            : "Browser files are installed, but Iris could not start its tools. Check that Node.js is on PATH, then refresh Modules.";
+        string installer = IOPath.Combine(browser.Folder, "install-extension.ps1");
+
+        _runtime.Events.PublishNotice(message,
+            browser.Tools.Count > 0 ? NoticeSeverity.Info : NoticeSeverity.Warning,
+            browser.Tools.Count > 0 && File.Exists(installer) ? "Set up Chrome" : null,
+            browser.Tools.Count > 0 && File.Exists(installer)
+                ? () => StartBrowserExtensionSetup(installer, noticeMarker)
+                : null);
+    }
+
+    private static void StartBrowserExtensionSetup(string installer, string noticeMarker)
+    {
+        ProcessStartInfo start = new("powershell.exe")
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            WorkingDirectory = IOPath.GetDirectoryName(installer) ?? Environment.CurrentDirectory
+        };
+        start.ArgumentList.Add("-NoProfile");
+        start.ArgumentList.Add("-ExecutionPolicy");
+        start.ArgumentList.Add("Bypass");
+        start.ArgumentList.Add("-File");
+        start.ArgumentList.Add(installer);
+        Process.Start(start);
+
+        // Suppress the setup prompt on later launches only after the user chose it.
+        // If they dismiss the toast, it will be offered again the next time Iris starts.
+        try
+        {
+            Directory.CreateDirectory(IOPath.GetDirectoryName(noticeMarker)!);
+            File.WriteAllText(noticeMarker, DateTimeOffset.UtcNow.ToString("O"));
+        }
+        catch (IOException exception)
+        {
+            SystemWatch.Fault("browser.setup", exception, "could not save setup-notice state");
+        }
+        catch (UnauthorizedAccessException exception)
+        {
+            SystemWatch.Fault("browser.setup", exception, "could not save setup-notice state");
         }
     }
 
@@ -263,7 +338,7 @@ public sealed partial class MainWindow : Window
                 // infinite width and let one sentence paint past the card edge.
                 Grid row = new()
                 {
-                    ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto,Auto")
+                    ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto,Auto,Auto")
                 };
 
                 Control icon = IconGlyph.Make(glyph, 16, new SolidColorBrush(tint));
@@ -274,6 +349,42 @@ public sealed partial class MainWindow : Window
                 message.Margin = new Thickness(12, 0, 0, 0);
                 Grid.SetColumn(message, 1);
                 row.Children.Add(message);
+
+                if (!string.IsNullOrWhiteSpace(item.ActionLabel) && item.Action is not null)
+                {
+                    Button action = new()
+                    {
+                        BorderThickness = new Thickness(0),
+                        Background = Brushes.Transparent,
+                        Padding = new Thickness(0),
+                        Margin = new Thickness(12, 0, 0, 0),
+                        FontFamily = Palette.UiFont,
+                        FontSize = Palette.FontBody,
+                        FontWeight = FontWeight.Medium,
+                        VerticalAlignment = VerticalAlignment.Center,
+                        Foreground = new SolidColorBrush(Palette.AccentText),
+                        Content = item.ActionLabel,
+                        Cursor = new Cursor(StandardCursorType.Hand)
+                    };
+                    action.Click += (_, _) =>
+                    {
+                        try
+                        {
+                            item.Action.Invoke();
+                        }
+                        catch (Exception exception)
+                        {
+                            _runtime.Events.PublishNotice(
+                                $"Could not open the browser setup: {exception.Message}", NoticeSeverity.Danger);
+                        }
+                        finally
+                        {
+                            _model.Notices.Remove(item);
+                        }
+                    };
+                    Grid.SetColumn(action, 2);
+                    row.Children.Add(action);
+                }
 
                 if (item.Severity == NoticeSeverity.Danger)
                 {
@@ -295,7 +406,7 @@ public sealed partial class MainWindow : Window
                         _model.Notices.Remove(item);
                         ShowDiagnostics();
                     };
-                    Grid.SetColumn(details, 2);
+                    Grid.SetColumn(details, 3);
                     row.Children.Add(details);
                 }
 
@@ -318,7 +429,7 @@ public sealed partial class MainWindow : Window
                 };
                 ToolTip.SetTip(dismiss, "Dismiss");
                 dismiss.Click += (_, _) => _model.Notices.Remove(item);
-                Grid.SetColumn(dismiss, 3);
+                Grid.SetColumn(dismiss, 4);
                 row.Children.Add(dismiss);
 
                 return new Border

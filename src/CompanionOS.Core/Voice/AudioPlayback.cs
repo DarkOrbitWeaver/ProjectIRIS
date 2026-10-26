@@ -1,5 +1,6 @@
 using CompanionOS.Core.Diagnostics;
 using NAudio.Wave;
+using System.Buffers.Binary;
 
 namespace CompanionOS.Core.Voice;
 
@@ -19,6 +20,7 @@ public sealed class SpeechAudioPlayer : IDisposable
     private readonly object _playbackLock = new();
     private WaveOutEvent? _outputDevice;
     private WaveStream? _reader;
+    private BufferedWaveProvider? _bufferedProvider;
     private MemoryStream? _audioStream;
     private bool _disposed;
     private long _playbackGeneration;
@@ -111,6 +113,185 @@ public sealed class SpeechAudioPlayer : IDisposable
         }
 
         return true;
+    }
+
+    /// <summary>Starts PCM WAV playback after a short prebuffer while the rest downloads/generates.</summary>
+    public async Task<StreamingPlaybackResult> PlayStreamingWavAsync(Stream wavStream, double volume,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(wavStream);
+        long started = System.Diagnostics.Stopwatch.GetTimestamp();
+        long generation;
+        WaveOutEvent output;
+        BufferedWaveProvider provider;
+
+        byte[] header = new byte[44];
+        await wavStream.ReadExactlyAsync(header, cancellationToken).ConfigureAwait(false);
+        if (!header.AsSpan(0, 4).SequenceEqual("RIFF"u8) ||
+            !header.AsSpan(8, 4).SequenceEqual("WAVE"u8) ||
+            !header.AsSpan(12, 4).SequenceEqual("fmt "u8) ||
+            BinaryPrimitives.ReadUInt16LittleEndian(header.AsSpan(20, 2)) != 1 ||
+            BinaryPrimitives.ReadUInt16LittleEndian(header.AsSpan(34, 2)) != 16 ||
+            !header.AsSpan(36, 4).SequenceEqual("data"u8))
+        {
+            throw new InvalidDataException("The speech stream is not a 16-bit PCM WAV.");
+        }
+
+        int channels = BinaryPrimitives.ReadUInt16LittleEndian(header.AsSpan(22, 2));
+        int sampleRate = checked((int)BinaryPrimitives.ReadUInt32LittleEndian(header.AsSpan(24, 4)));
+        if (channels is < 1 or > 2 || sampleRate is < 8000 or > 96000)
+        {
+            throw new InvalidDataException("The speech stream has an unsupported WAV format.");
+        }
+
+        WaveFormat format = new(sampleRate, 16, channels);
+        provider = new BufferedWaveProvider(format)
+        {
+            BufferDuration = TimeSpan.FromSeconds(5),
+            DiscardOnBufferOverflow = false,
+            ReadFully = true
+        };
+
+        long pcmBytes = 0;
+        byte[] chunk = new byte[8192];
+        List<float> amplitudeEnvelope = new();
+        double windowEnergy = 0;
+        int windowSamples = 0;
+        bool hasCarryByte = false;
+        byte carryByte = 0;
+        int samplesPerWindow = Math.Max(1, sampleRate * channels / 20);
+
+        void TrackAmplitude(int length)
+        {
+            int index = 0;
+            if (hasCarryByte && length > 0)
+            {
+                Span<byte> firstSample = stackalloc byte[2] { carryByte, chunk[0] };
+                double sample = BinaryPrimitives.ReadInt16LittleEndian(firstSample) / 32768.0;
+                windowEnergy += sample * sample;
+                windowSamples++;
+                index = 1;
+                hasCarryByte = false;
+            }
+
+            for (; index + 1 < length; index += 2)
+            {
+                double sample = BinaryPrimitives.ReadInt16LittleEndian(chunk.AsSpan(index, 2)) / 32768.0;
+                windowEnergy += sample * sample;
+                windowSamples++;
+                if (windowSamples >= samplesPerWindow)
+                {
+                    amplitudeEnvelope.Add((float)Math.Sqrt(windowEnergy / windowSamples));
+                    windowEnergy = 0;
+                    windowSamples = 0;
+                }
+            }
+
+            if (index < length)
+            {
+                carryByte = chunk[index];
+                hasCarryByte = true;
+            }
+        }
+
+        int prebufferBytes = Math.Max(4096, format.AverageBytesPerSecond / 5);
+        bool streamFinished = false;
+        while (provider.BufferedBytes < prebufferBytes && !streamFinished)
+        {
+            int read = await wavStream.ReadAsync(chunk, cancellationToken).ConfigureAwait(false);
+            if (read == 0)
+            {
+                streamFinished = true;
+                break;
+            }
+
+            provider.AddSamples(chunk, 0, read);
+            TrackAmplitude(read);
+            pcmBytes += read;
+        }
+
+        if (pcmBytes == 0)
+        {
+            return new StreamingPlaybackResult(false, 0, 0, 0);
+        }
+
+        lock (_playbackLock)
+        {
+            StopInternal();
+            generation = ++_playbackGeneration;
+            output = DeviceNumber >= 0
+                ? new WaveOutEvent { DeviceNumber = DeviceNumber, Volume = (float)Math.Clamp(volume, 0, 1) }
+                : new WaveOutEvent { Volume = (float)Math.Clamp(volume, 0, 1) };
+            output.Init(provider);
+            _outputDevice = output;
+            _bufferedProvider = provider;
+            output.Play();
+            IsPlaying = true;
+        }
+
+        long firstAudioTimestamp = System.Diagnostics.Stopwatch.GetTimestamp();
+        try
+        {
+            int maximumBufferedBytes = format.AverageBytesPerSecond * 4;
+            while (true)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                lock (_playbackLock)
+                {
+                    if (generation != _playbackGeneration)
+                    {
+                        return new StreamingPlaybackResult(false, pcmBytes,
+                            System.Diagnostics.Stopwatch.GetElapsedTime(started, firstAudioTimestamp).TotalMilliseconds,
+                            System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds);
+                    }
+                }
+
+                if (!streamFinished && provider.BufferedBytes < maximumBufferedBytes)
+                {
+                    int read = await wavStream.ReadAsync(chunk, cancellationToken).ConfigureAwait(false);
+                    if (read == 0)
+                    {
+                        streamFinished = true;
+                    }
+                    else
+                    {
+                        provider.AddSamples(chunk, 0, read);
+                        TrackAmplitude(read);
+                        pcmBytes += read;
+                    }
+                }
+
+                long playedBytes = Math.Max(0, pcmBytes - provider.BufferedBytes);
+                int amplitudeIndex = (int)(playedBytes / Math.Max(1, format.AverageBytesPerSecond / 20));
+                if (amplitudeIndex >= 0 && amplitudeIndex < amplitudeEnvelope.Count)
+                {
+                    AmplitudeChanged?.Invoke(Math.Clamp(amplitudeEnvelope[amplitudeIndex] * 5f, 0f, 1f));
+                }
+
+                if (streamFinished && provider.BufferedBytes == 0)
+                {
+                    break;
+                }
+
+                await Task.Delay(10, cancellationToken).ConfigureAwait(false);
+            }
+
+            return new StreamingPlaybackResult(true, pcmBytes,
+                System.Diagnostics.Stopwatch.GetElapsedTime(started, firstAudioTimestamp).TotalMilliseconds,
+                System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds);
+        }
+        finally
+        {
+            lock (_playbackLock)
+            {
+                if (generation == _playbackGeneration)
+                {
+                    StopInternal();
+                }
+            }
+
+            AmplitudeChanged?.Invoke(0);
+        }
     }
 
     /// <summary>Stops immediately. Used for barge-in, where speed matters more than polish.</summary>
@@ -282,6 +463,7 @@ public sealed class SpeechAudioPlayer : IDisposable
         }
 
         _reader = null;
+        _bufferedProvider = null;
 
         try
         {
@@ -296,3 +478,6 @@ public sealed class SpeechAudioPlayer : IDisposable
         IsPlaying = false;
     }
 }
+
+public sealed record StreamingPlaybackResult(bool Accepted, long PcmBytes,
+    double FirstAudioMilliseconds, double TotalMilliseconds);

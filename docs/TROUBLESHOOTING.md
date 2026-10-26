@@ -96,7 +96,7 @@ public preset-voice checkpoint; it needs no Hugging Face account or voice-clonin
 use **Settings → Audio → Test voice**. Iris starts the CPU worker only; it is capped at two
 logical processors and does not use VRAM.
 
-The six fixed profiles are `alba`, `anna`, `eve`, `mary`, `vera`, and `estelle`. Preview one in
+The English voice profiles are `anna`, `eve`, `mary`, and `vera`. Preview one in
 **Persona → Voice**; previews render on demand. The labels identify the actual Pocket speaker;
 listen before choosing because the names alone do not guarantee a particular accent or tone.
 

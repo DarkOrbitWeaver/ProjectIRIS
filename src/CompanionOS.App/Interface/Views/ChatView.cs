@@ -3,6 +3,7 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Templates;
 using Avalonia.Input;
+using Avalonia.Interactivity;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Threading;
@@ -72,7 +73,7 @@ public sealed class ChatView : UserControl
             Background = Brushes.Transparent,
             BorderThickness = new Thickness(0),
             MinHeight = 0,
-            Padding = new Thickness(0),
+            Padding = new Thickness(8, 0),
             VerticalContentAlignment = VerticalAlignment.Center
         };
         _voiceMeter = new Border
@@ -99,7 +100,11 @@ public sealed class ChatView : UserControl
             (entry, _) => BuildBubble(entry), supportsRecycling: false);
 
         _model.Messages.CollectionChanged += OnMessagesChanged;
-        _composer.KeyDown += OnComposerKeyDown;
+        // handledEventsToo: the TextBox itself consumes Enter while AcceptsReturn is on;
+        // without this the composer only ever inserts a newline and never sends. Enter
+        // (without Shift) sends and clears; Shift+Enter stays a plain newline.
+        _composer.AddHandler(InputElement.KeyDownEvent, OnComposerKeyDown,
+            RoutingStrategies.Bubble, handledEventsToo: true);
         model.Runtime.Events.Subscribe<ModuleRegistryChangedEvent>(_ => Dispatcher.UIThread.Post(RebindMusic));
         model.Runtime.Events.Subscribe<ModuleSurfaceStateChangedEvent>(payload =>
             Dispatcher.UIThread.Post(() => ApplyModuleSurfaceState(payload)));
@@ -109,21 +114,26 @@ public sealed class ChatView : UserControl
         RefreshEmptyState();
 
         // The composer's ring and underline follow real state, not just the last click.
+        // The send disc also stays dark until boot.done lands: racing the loader is how
+        // a first "hey" became a visible 503.
         _model.PropertyChanged += (_, eventArgs) =>
         {
             if (eventArgs.PropertyName is nameof(ShellModel.IsListening)
                 or nameof(ShellModel.IsSpeaking)
                 or nameof(ShellModel.IsTurnInProgress)
                 or nameof(ShellModel.HasActiveWork)
-                or nameof(ShellModel.State))
+                or nameof(ShellModel.State)
+                or nameof(ShellModel.IsRuntimeReady))
             {
                 Dispatcher.UIThread.Post(() =>
                 {
+                    _sendButton.IsEnabled = _model.IsRuntimeReady;
                     UpdateVoiceChrome();
                     UpdateTimerCadence();
                 });
             }
         };
+        Dispatcher.UIThread.Post(() => _sendButton.IsEnabled = _model.IsRuntimeReady);
 
         // First paint must never be a blank row: read what she is looking at right now,
         // then keep it fresh.
@@ -449,6 +459,11 @@ public sealed class ChatView : UserControl
         // ScrollToEnd() ran on a control that was never on screen, so new replies could
         // land below the fold.
         _scrollViewer.Margin = new Thickness(24, 24, 24, 0);
+        // A chat with no scrollbar is a transcript you cannot trust to have older lines;
+        // the bar stays visible once content overflows instead of hiding until hover.
+        _scrollViewer.AllowAutoHide = false;
+        _scrollViewer.VerticalScrollBarVisibility =
+            Avalonia.Controls.Primitives.ScrollBarVisibility.Auto;
         _scrollViewer.Content = new Grid
         {
             RowDefinitions = new RowDefinitions("*,Auto"),
@@ -504,7 +519,10 @@ public sealed class ChatView : UserControl
     {
         _micButton = new Button
         {
-            Content = IconGlyph.Make(IconGlyph.Microphone, 18, Palette.MicBrush),
+            // 20 px glyph in the 36 px ring: at every common display scale (1.0, 1.25,
+            // 1.5) the centre lands on a whole device pixel, where an 18 px glyph could
+            // round half a pixel off and read as off-centre in its circle.
+            Content = IconGlyph.Make(IconGlyph.Microphone, 20, Palette.MicBrush),
             Width = 36,
             Height = 36,
             CornerRadius = new CornerRadius(18),
@@ -514,6 +532,7 @@ public sealed class ChatView : UserControl
             HorizontalContentAlignment = HorizontalAlignment.Center,
             VerticalContentAlignment = VerticalAlignment.Center,
             Padding = new Thickness(0),
+            UseLayoutRounding = true,
             Cursor = new Cursor(StandardCursorType.Hand)
         };
         ToolTip.SetTip(_micButton, "Open or close her ears (Ctrl+M)");
@@ -533,7 +552,8 @@ public sealed class ChatView : UserControl
             Background = Palette.IrisBrush,
             HorizontalContentAlignment = HorizontalAlignment.Center,
             VerticalContentAlignment = VerticalAlignment.Center,
-            Padding = new Thickness(0)
+            Padding = new Thickness(0),
+            UseLayoutRounding = true
         };
         ToolTip.SetTip(_sendButton, "Send");
         _sendButton.Click += (_, _) =>
@@ -608,7 +628,7 @@ public sealed class ChatView : UserControl
 
         _sendButton.Content = IconGlyph.Make(
             _model.IsTurnInProgress ? IconGlyph.Stop : IconGlyph.Send,
-            18,
+            20,
             Brushes.White);
         ToolTip.SetTip(_sendButton, _model.IsTurnInProgress ? "Stop" : "Send");
     }
