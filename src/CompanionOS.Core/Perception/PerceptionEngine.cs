@@ -72,32 +72,39 @@ public sealed class PerceptionEngine : IDisposable
         }
 
         SenseSettings settings = _settings.Current.Senses;
-        DateTimeOffset now = DateTimeOffset.Now;
+        return BuildSourceHealth(snapshot, hasAmbientObservation, lastFrame, settings, _isRunning,
+            DateTimeOffset.Now);
+    }
+
+    private static IReadOnlyList<PerceptionSourceHealth> BuildSourceHealth(SituationSnapshot snapshot,
+        bool hasAmbientObservation, ScreenFrame? lastFrame, SenseSettings settings, bool running,
+        DateTimeOffset now)
+    {
         TimeSpan staleAfter = TimeSpan.FromMilliseconds(
             Math.Clamp(settings.StatsIntervalMilliseconds, 1000, 15000) * 3L);
-        bool ambientFresh = hasAmbientObservation && _isRunning && now - snapshot.CapturedAt <= staleAfter;
+        bool ambientFresh = hasAmbientObservation && running && now - snapshot.CapturedAt <= staleAfter;
         List<PerceptionSourceHealth> sources = new(7)
         {
-            BuildAmbientSource("Foreground window", settings.WatchActiveWindow, _isRunning,
+            BuildAmbientSource("Foreground window", settings.WatchActiveWindow, running,
                 hasAmbientObservation, ambientFresh, snapshot.CapturedAt, snapshot.ForegroundAvailable,
                 snapshot.ActiveApplicationName.Length == 0 ? "No application name was returned." : snapshot.ActiveApplicationName),
-            BuildMediaSource(settings.WatchMediaSession, _isRunning, snapshot, now, staleAfter),
-            BuildAmbientSource("CPU load", settings.WatchSystemStats, _isRunning,
+            BuildMediaSource(settings.WatchMediaSession, running, snapshot, now, staleAfter),
+            BuildAmbientSource("CPU load", settings.WatchSystemStats, running,
                 hasAmbientObservation, ambientFresh, snapshot.CapturedAt, snapshot.CpuAvailable,
                 snapshot.CpuAvailable ? $"{snapshot.CpuPercent:0}%" : "CPU probe did not return a reading."),
-            BuildAmbientSource("Memory", settings.WatchSystemStats, _isRunning,
+            BuildAmbientSource("Memory", settings.WatchSystemStats, running,
                 hasAmbientObservation, ambientFresh, snapshot.CapturedAt, snapshot.MemoryAvailable,
                 snapshot.MemoryAvailable
                     ? $"{snapshot.RamUsedMegabytes / 1024:0.0} / {snapshot.RamTotalMegabytes / 1024:0.0} GB used"
                     : "Memory probe did not return a reading."),
-            BuildAmbientSource("Power", settings.WatchSystemStats, _isRunning,
+            BuildAmbientSource("Power", settings.WatchSystemStats, running,
                 hasAmbientObservation, ambientFresh, snapshot.CapturedAt, snapshot.PowerAvailable,
                 snapshot.PowerAvailable
                     ? snapshot.BatteryPercent >= 0
                         ? $"{snapshot.BatteryPercent}% battery; {PowerSourceDescription(snapshot.IsOnAcPower)}"
                         : $"{PowerSourceDescription(snapshot.IsOnAcPower)}; battery percentage unavailable"
                     : "Power probe did not return a reading."),
-            BuildAmbientSource("Idle duration", settings.WatchIdleState, _isRunning,
+            BuildAmbientSource("Idle duration", settings.WatchIdleState, running,
                 hasAmbientObservation, ambientFresh, snapshot.CapturedAt, snapshot.IdleAvailable,
                 snapshot.IdleAvailable ? $"{snapshot.IdleSeconds:0} seconds" : "Idle probe did not return a reading."),
             BuildVisionSource(settings.VisionMode, lastFrame, now)
@@ -367,26 +374,35 @@ public sealed class PerceptionEngine : IDisposable
     }
 
     /// <summary>The plain-English situation block that goes into every prompt.</summary>
-    public string DescribeForPrompt(bool userAttachedImage = false)
+    public string DescribeForPrompt(bool userAttachedImage = false) =>
+        DescribeForPrompt(userAttachedImage, out _);
+
+    /// <summary>Builds prompt context and its matching source-health snapshot atomically.</summary>
+    public string DescribeForPrompt(bool userAttachedImage,
+        out IReadOnlyList<PerceptionSourceHealth> sourceHealth)
     {
         SituationSnapshot snapshot;
         bool hasAmbientObservation;
+        ScreenFrame? lastFrame;
         lock (_snapshotLock)
         {
-            snapshot = _current;
+            snapshot = Clone(_current);
             hasAmbientObservation = _hasAmbientObservation;
+            lastFrame = _lastFrame;
         }
 
         bool sensorsRunning = _isRunning;
-        TimeSpan observationAge = DateTimeOffset.Now - snapshot.CapturedAt;
+        DateTimeOffset now = DateTimeOffset.Now;
+        SenseSettings senses = _settings.Current.Senses;
+        sourceHealth = BuildSourceHealth(snapshot, hasAmbientObservation, lastFrame, senses, sensorsRunning, now);
+        TimeSpan observationAge = now - snapshot.CapturedAt;
         if (observationAge < TimeSpan.Zero)
         {
             observationAge = TimeSpan.Zero;
         }
-        int observationIntervalMilliseconds = Math.Clamp(_settings.Current.Senses.StatsIntervalMilliseconds, 1000, 15000);
+        int observationIntervalMilliseconds = Math.Clamp(senses.StatsIntervalMilliseconds, 1000, 15000);
         TimeSpan staleAfter = TimeSpan.FromMilliseconds(observationIntervalMilliseconds * 3L);
         bool ambientIsCurrent = hasAmbientObservation && sensorsRunning && observationAge <= staleAfter;
-        SenseSettings senses = _settings.Current.Senses;
         List<string> lines = new();
 
         if (!hasAmbientObservation)

@@ -98,6 +98,26 @@ public sealed class CoreRegressionTests
     }
 
     [Fact]
+    public void PromptContextReturnsTheSourceSnapshotUsedForItsTurn()
+    {
+        SettingsStore settings = new();
+        settings.Current.Senses.WatchSystemStats = false;
+        settings.Current.Senses.WatchMediaSession = false;
+        settings.Current.Senses.WatchIdleState = false;
+        settings.Current.Senses.WatchActiveWindow = false;
+        settings.Current.Senses.VisionMode = "off";
+        using PerceptionEngine perception = new(settings, new EventBus());
+
+        string prompt = perception.DescribeForPrompt(false, out IReadOnlyList<PerceptionSourceHealth> sources);
+        IReadOnlyDictionary<string, PerceptionSourceHealth> health =
+            sources.ToDictionary(source => source.Name);
+
+        Assert.Contains("System metrics sensing is disabled", prompt);
+        Assert.Equal("Disabled", health["CPU load"].Status);
+        Assert.Equal("Disabled", health["Screen vision"].Status);
+    }
+
+    [Fact]
     public void SituationPromptStopsPresentingAmbientValuesAsCurrentAfterSensingStops()
     {
         SettingsStore settings = new();

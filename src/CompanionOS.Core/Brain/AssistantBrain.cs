@@ -342,8 +342,24 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
         }
 
         // 4. Prompt assembly.
+        bool hasAttachedImage = !string.IsNullOrWhiteSpace(attachedImage);
+        string situation = _perception.DescribeForPrompt(hasAttachedImage, out IReadOnlyList<PerceptionSourceHealth> sourceHealth);
+        string sourceStates = JsonSerializer.Serialize(sourceHealth.Select(source => new
+        {
+            source.Name,
+            source.Status,
+            source.LastObservedAt
+        }));
+        IrisEvent.Log("Perception", "turn.context", LogLevel.Debug,
+            "Captured the source states used to build this turn's ambient context.",
+            data: new Dictionary<string, string?>
+            {
+                ["image_attached"] = hasAttachedImage.ToString(),
+                ["source_states"] = sourceStates
+            });
+
         string systemPrompt = _personaStore.Current.BuildSystemPrompt(
-            _perception.DescribeForPrompt(userAttachedImage: !string.IsNullOrWhiteSpace(attachedImage)),
+            situation,
             intuition,
             _modules.DescribeCapabilities(),
             DescribeMode(),

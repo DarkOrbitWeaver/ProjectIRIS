@@ -108,8 +108,10 @@ Remaining work:
    or disabled, and hides old values when they are not current. Foreground, CPU, RAM, power, idle,
    and media sensing report unavailable states separately; failed media reads cannot leave a
    previous track looking current. Diagnostics now shows per-source configured/available/freshness
-   status without adding polling. Still correlate which evidence was available to a specific turn
-   and distinguish configured capability from something Iris observed in that turn.
+   status without adding polling. Each model turn captures matching prompt/source state and logs
+   only source names, statuses, timestamps, and image attachment under its turn ID; private window
+   and media text are omitted. Still connect voice-input confidence, memory provenance, tool
+   outcomes, speech, cancellation, and recovery into that same inspectable turn record.
 2. Connect listening, recognition confidence, wake state, media-pause ownership, tool progress,
    speech playback, cancellation, and recovery through correlated, inspectable turn/activity state.
 3. Show what memory informed a reply, with provenance and correction/forget controls; verify
