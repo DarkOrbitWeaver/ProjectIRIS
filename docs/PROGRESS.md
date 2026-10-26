@@ -34,7 +34,9 @@ behavior that has been exercised.
   reflex calls observe cancellation and a pre-cancelled audio request cannot start playback. A
   shared speech-output arbiter serializes generated replies, reflexes, and module-triggered speech;
   Stop cancels active and queued utterances without blocking later requests, and shutdown cancels
-  speech and drains the output before disposing voice resources.
+  speech and drains the output before disposing voice resources. Reflex-cache preparation is now
+  a single replaceable job: profile changes cancel and join the old render before disposing its
+  synthesizer, and shutdown waits for preparation to stop.
   Target-device voice behavior remains unverified.
 - **Awareness:** low-cost Windows foreground, media, idle, CPU/RAM, and battery observations;
   optional screen capture; game detection; and sleep/gaming resource handoff are implemented.
@@ -116,7 +118,7 @@ works on the target PC under real microphone, speaker, model, display, game, and
 
 ## Verification checkpoint
 
-The current worktree builds with zero warnings/errors and the core suite passes 81/81 tests. New
+The current worktree builds with zero warnings/errors and the core suite passes 82/82 tests. New
 regressions verify that `vision: off` blocks forced capture, that Iris does not claim passive
 screen access, that malformed or non-object tool arguments cannot reach a module, and that module
 schemas reject missing, mistyped, unlisted, and unsupported arguments before execution; a host-level
@@ -131,7 +133,7 @@ while paused, cancellation before resume, visible recovery on a failed resume, d
 associated memory recall explanations, the privacy-safe correlated recall audit, stable voice
 addressing through slow recognition, missing-Whisper-model classification, serialized speech
 output, stop cancellation with later reuse, shutdown cancellation/draining, and rejection of
-pre-cancelled playback. Voice outcome
+pre-cancelled playback and late reflex-cache writes after cancellation. Voice outcome
 instrumentation builds with the app; live microphone and wake behavior remain target-PC
 acceptance work. No model was
 loaded and the app was not launched for this

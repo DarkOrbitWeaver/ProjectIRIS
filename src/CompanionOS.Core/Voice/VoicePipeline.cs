@@ -29,6 +29,8 @@ public sealed class VoicePipeline : IAsyncDisposable
     private readonly PocketTtsServerHost _pocketHost;
     private readonly IDisposable _settingsChangedSubscription;
     private readonly SpeechOutputArbiter _speechOutputArbiter = new();
+    private readonly SemaphoreSlim _reflexPreparationGate = new(1, 1);
+    private readonly CancellationTokenSource _voiceLifetime = new();
     private readonly object _segmentLock = new();
     private readonly SemaphoreSlim _recognitionGate = new(1, 1);
 
@@ -45,6 +47,8 @@ public sealed class VoicePipeline : IAsyncDisposable
     private DateTimeOffset _lastLevelPublished = DateTimeOffset.MinValue;
     private DateTimeOffset _nextRecognitionFailureNotice = DateTimeOffset.MinValue;
     private DateTimeOffset _nextSpeechFailureNotice = DateTimeOffset.MinValue;
+    private CancellationTokenSource? _reflexPreparationCancellation;
+    private Task _reflexPreparationTask = Task.CompletedTask;
     private bool _isDisposed;
 
     public VoicePipeline(SettingsStore settings, EventBus events, PersonaStore personaStore)
@@ -425,12 +429,14 @@ public sealed class VoicePipeline : IAsyncDisposable
         // loudly, whether she has a mouth this session.
         _ = Task.Run(async () =>
         {
+            using CancellationTokenSource lifetime = CancellationTokenSource.CreateLinkedTokenSource(
+                cancellationToken, _voiceLifetime.Token);
             try
             {
-                await ProbeVoiceAsync(cancellationToken).ConfigureAwait(false);
+                await ProbeVoiceAsync(lifetime.Token).ConfigureAwait(false);
                 if (IsVoiceOnline)
                 {
-                    await ReflexBank.PrepareAsync(cancellationToken).ConfigureAwait(false);
+                    await ScheduleReflexPreparationAsync(lifetime.Token).ConfigureAwait(false);
                 }
             }
             catch (OperationCanceledException)
@@ -458,9 +464,87 @@ public sealed class VoicePipeline : IAsyncDisposable
     /// starts the speech server five minutes in, her voice recovers on the next
     /// attempt. One cheap probe per minute at most.
     /// </summary>
+    private async Task ScheduleReflexPreparationAsync(CancellationToken cancellationToken)
+    {
+        await _reflexPreparationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (_isDisposed) return;
+            await CancelReflexPreparationCoreAsync().ConfigureAwait(false);
+            StartReflexPreparationCore(cancellationToken);
+        }
+        finally
+        {
+            _reflexPreparationGate.Release();
+        }
+    }
+
+    /// <summary>Starts preparation for the current bank while holding the lifecycle gate.</summary>
+    private void StartReflexPreparationCore(CancellationToken cancellationToken)
+    {
+        if (_isDisposed) return;
+        CancellationTokenSource preparation = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken, _voiceLifetime.Token);
+        CancellationToken preparationToken = preparation.Token;
+        ReflexBank bank = ReflexBank;
+        _reflexPreparationCancellation = preparation;
+        _reflexPreparationTask = Task.Run(
+            () => PrepareReflexBankAsync(bank, preparationToken), preparationToken);
+    }
+
+    private async Task PrepareReflexBankAsync(ReflexBank bank, CancellationToken cancellationToken)
+    {
+        if (!IsVoiceOnline)
+        {
+            IrisEvent.Log("Voice", "reflex.render_deferred", LogLevel.Trace,
+                "The engine is offline; reflex phrases render when she can speak again.");
+            return;
+        }
+
+        try
+        {
+            await bank.PrepareAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // A profile replaced this bank or the voice pipeline is shutting down.
+        }
+        catch (Exception exception)
+        {
+            CompanionLog.Warning("Voice", $"Reflex render failed: {exception.Message}");
+        }
+    }
+
+    /// <summary>Stops the prior render and waits before its synthesizer can be disposed.</summary>
+    private async Task CancelReflexPreparationCoreAsync()
+    {
+        CancellationTokenSource? previous = _reflexPreparationCancellation;
+        if (previous is null) return;
+
+        previous.Cancel();
+        try
+        {
+            await _reflexPreparationTask.ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            // The cancellation is the requested replacement/shutdown path.
+        }
+        catch (Exception exception)
+        {
+            CompanionLog.Warning("Voice", $"Could not stop reflex rendering cleanly: {exception.Message}");
+        }
+        finally
+        {
+            previous.Dispose();
+            _reflexPreparationCancellation = null;
+            _reflexPreparationTask = Task.CompletedTask;
+        }
+    }
+
     private void ScheduleVoiceReprobe()
     {
-        if (DateTimeOffset.Now < _nextVoiceReprobe || IsVoiceOnline)
+        if (_isDisposed || DateTimeOffset.Now < _nextVoiceReprobe || IsVoiceOnline)
         {
             return;
         }
@@ -468,14 +552,26 @@ public sealed class VoicePipeline : IAsyncDisposable
         _nextVoiceReprobe = DateTimeOffset.Now.AddSeconds(60);
         _ = Task.Run(async () =>
         {
-            if (await EnsureVoiceEngineAsync(CancellationToken.None).ConfigureAwait(false))
+            try
             {
-                IsVoiceOnline = true;
-                _events.PublishNotice("Her voice engine came online mid-session. She can speak again.",
-                    NoticeSeverity.Success);
-                await ReflexBank.PrepareAsync(CancellationToken.None).ConfigureAwait(false);
+                if (await EnsureVoiceEngineAsync(_voiceLifetime.Token).ConfigureAwait(false))
+                {
+                    if (_isDisposed) return;
+                    IsVoiceOnline = true;
+                    _events.PublishNotice("Her voice engine came online mid-session. She can speak again.",
+                        NoticeSeverity.Success);
+                    await ScheduleReflexPreparationAsync(_voiceLifetime.Token).ConfigureAwait(false);
+                }
             }
-        });
+            catch (OperationCanceledException) when (_voiceLifetime.IsCancellationRequested)
+            {
+                // Runtime shutdown owns this cancellation.
+            }
+            catch (Exception exception)
+            {
+                CompanionLog.Warning("Voice", $"Voice recovery probe failed: {exception.Message}");
+            }
+        }, _voiceLifetime.Token);
     }
 
     /// <summary>
@@ -623,52 +719,36 @@ public sealed class VoicePipeline : IAsyncDisposable
     /// </summary>
     public async Task ApplyVoiceProfileAsync(VoiceProfile profile, CancellationToken cancellationToken = default)
     {
-        await _speechOutputArbiter.RunAsync(token =>
+        await _reflexPreparationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
         {
-            token.ThrowIfCancellationRequested();
-            ISpeechSynthesizer replacement = SpeechSynthesizerFactory.Create(_settings.Current.Voice);
-            ISpeechSynthesizer previous = Synthesizer;
+            await CancelReflexPreparationCoreAsync().ConfigureAwait(false);
+            await _speechOutputArbiter.RunAsync(token =>
+            {
+                token.ThrowIfCancellationRequested();
+                ISpeechSynthesizer replacement = SpeechSynthesizerFactory.Create(_settings.Current.Voice);
+                ISpeechSynthesizer previous = Synthesizer;
 
-            Profile = profile;
-            Synthesizer = replacement;
-            ReflexBank = new ReflexBank(_personaStore.Current, profile, replacement, CompanionPaths.CacheDirectory);
-            previous.Dispose();
-            return Task.CompletedTask;
-        }, cancellationToken).ConfigureAwait(false);
-
-        _wakeMatcher.Refresh(_personaStore.Current);
-
-        // The voice itself is live the moment the profile lands. The reflex cache, though,
-        // renders phrase by phrase through the engine — offline or slow, that used to hang
-        // the swap for minutes while the picker sat on "Swapping her voice…". So the render
-        // runs in the background exactly like boot does: straight through when she can
-        // speak, deferred until the next successful probe when she cannot — SpeakAsync
-        // guards actual speech either way, so nothing is ever faked.
-        CancellationToken renderToken = cancellationToken;
-        _ = Task.Run(async () =>
+                Profile = profile;
+                Synthesizer = replacement;
+                ReflexBank = new ReflexBank(_personaStore.Current, profile, replacement, CompanionPaths.CacheDirectory);
+                previous.Dispose();
+                return Task.CompletedTask;
+            }, cancellationToken).ConfigureAwait(false);
+            _wakeMatcher.Refresh(_personaStore.Current);
+            StartReflexPreparationCore(CancellationToken.None);
+        }
+        catch
         {
-            if (!IsVoiceOnline)
-            {
-                IrisEvent.Log("Voice", "reflex.render_deferred", LogLevel.Trace,
-                    "The engine is offline; reflex phrases render when she can speak again.");
-                return;
-            }
-
-            try
-            {
-                await ReflexBank.PrepareAsync(renderToken).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-            {
-                // Shutting down or another voice swap took over; nothing to do.
-            }
-            catch (Exception exception)
-            {
-                CompanionLog.Warning("Voice", $"Reflex render failed: {exception.Message}");
-            }
-        }, renderToken);
-
-        await Task.CompletedTask.ConfigureAwait(false);
+            // If the swap is cancelled before it commits, rebuild the current profile's
+            // cache after stopping its previous render.
+            StartReflexPreparationCore(CancellationToken.None);
+            throw;
+        }
+        finally
+        {
+            _reflexPreparationGate.Release();
+        }
     }
 
     /// <summary>
@@ -905,6 +985,16 @@ public sealed class VoicePipeline : IAsyncDisposable
         _isDisposed = true;
         _speechOutputArbiter.Cancel();
         StopSpeaking();
+        _voiceLifetime.Cancel();
+        await _reflexPreparationGate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            await CancelReflexPreparationCoreAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            _reflexPreparationGate.Release();
+        }
         await _speechOutputArbiter.DrainAsync().ConfigureAwait(false);
         _settingsChangedSubscription.Dispose();
         _microphone.SamplesAvailable -= OnMicrophoneSamples;

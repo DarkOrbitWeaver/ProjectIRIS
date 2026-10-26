@@ -62,6 +62,7 @@ public sealed class ReflexBank
                 SpeechAudio? audio = await _synthesizer
                     .SynthesizeAsync(category.Value[phraseIndex], _profile, cancellationToken)
                     .ConfigureAwait(false);
+                cancellationToken.ThrowIfCancellationRequested();
 
                 if (audio is null || audio.Format != "wav")
                 {

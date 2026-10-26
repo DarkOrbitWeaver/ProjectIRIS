@@ -1784,6 +1784,27 @@ public sealed class CoreRegressionTests
     }
 
     [Fact]
+    public async Task CancelledReflexPreparationDoesNotWriteLateAudioToTheProfileCache()
+    {
+        string cache = Path.Combine(Path.GetTempPath(), $"iris-reflex-cancel-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(cache);
+        using CancellationTokenSource cancellation = new();
+        try
+        {
+            ReflexBank bank = new(Persona.CreateDefault(), VoiceProfile.FromSettings(new CompanionSettings()),
+                new CancellingSpeechSynthesizer(cancellation), cache);
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => bank.PrepareAsync(cancellation.Token));
+
+            Assert.Empty(Directory.GetFiles(cache, "*", SearchOption.AllDirectories));
+        }
+        finally
+        {
+            Directory.Delete(cache, recursive: true);
+        }
+    }
+
+    [Fact]
     public void PocketVoicePickerKeepsSixLocalProfilesWithoutStartingTheEngine()
     {
         CompanionSettings settings = new();
@@ -2190,5 +2211,18 @@ public sealed class CoreRegressionTests
             return Task.FromResult(ToolResult.Ok("executed"));
         }
         public Task ShutdownAsync() => Task.CompletedTask;
+    }
+
+    private sealed class CancellingSpeechSynthesizer(CancellationTokenSource cancellation) : ISpeechSynthesizer
+    {
+        public string EngineName => "test";
+        public bool IsAvailable => true;
+        public Task<SpeechAudio?> SynthesizeAsync(string text, VoiceProfile profile,
+            CancellationToken cancellationToken)
+        {
+            cancellation.Cancel();
+            return Task.FromResult<SpeechAudio?>(new SpeechAudio { Bytes = [1, 2, 3], Format = "wav" });
+        }
+        public void Dispose() { }
     }
 }
