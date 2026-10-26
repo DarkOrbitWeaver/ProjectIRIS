@@ -228,6 +228,8 @@ public sealed class ModuleSurfaceStateChangedEvent : CompanionEvent
     public required string ModuleId { get; init; }
     public required string SurfaceId { get; init; }
     public required string ElementId { get; init; }
+    /// <summary>Foreground turn or background task that produced this UI update.</summary>
+    public string TurnId { get; init; } = string.Empty;
     public string? Label { get; init; }
     public string? Value { get; init; }
     public bool? IsVisible { get; init; }

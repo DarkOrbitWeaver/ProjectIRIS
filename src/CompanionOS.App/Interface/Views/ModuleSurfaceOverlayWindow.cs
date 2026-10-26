@@ -247,6 +247,8 @@ internal sealed class ModuleSurfaceOverlayWindow : Window
     {
         if (!string.Equals(update.ModuleId, ModuleId, StringComparison.OrdinalIgnoreCase) ||
             !string.Equals(update.SurfaceId, SurfaceId, StringComparison.OrdinalIgnoreCase) ||
+            (!string.IsNullOrEmpty(update.TurnId) &&
+             !string.Equals(update.TurnId, _boundTurnId, StringComparison.Ordinal)) ||
             !_elementControls.TryGetValue(update.ElementId, out Control? control))
         {
             return;

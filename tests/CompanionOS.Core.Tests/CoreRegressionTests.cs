@@ -805,6 +805,7 @@ public sealed class CoreRegressionTests
             Assert.Equal("plugin:telegram", surfaceUpdate.ModuleId);
             Assert.Equal("plugin:telegram:contacts", surfaceUpdate.SurfaceId);
             Assert.Equal("recipient", surfaceUpdate.ElementId);
+            Assert.Equal("task-123", surfaceUpdate.TurnId);
             Assert.Equal("ada", surfaceUpdate.Value);
             Assert.True(surfaceUpdate.IsVisible);
             Assert.Equal("Ada", Assert.Single(surfaceUpdate.Options!).Label);

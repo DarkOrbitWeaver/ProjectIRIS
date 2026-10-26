@@ -134,6 +134,8 @@ Remaining work:
    completed tools return the activity card to result review. Cancellation and failure close the
    associated module overlay as well as active chat/tool UI, and cancellation marks the journal
    turn intentionally cancelled so restart recovery does not mislabel it as a crash. The
+   module surface protocol now includes the originating foreground turn/background task ID, and
+   the overlay rejects delayed state patches from an older task. The
    recognizer contract currently returns text only, so recognition confidence is unavailable and
    must not be implied in UI or prompts.
 3. Chat recall chips now identify direct matches versus association-activated memories, show the

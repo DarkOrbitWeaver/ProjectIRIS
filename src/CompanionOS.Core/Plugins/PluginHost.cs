@@ -707,7 +707,7 @@ public sealed class PluginHost : IDisposable
                 {
                     if (!string.IsNullOrEmpty(turnId) && surfaceUpdateCount < MaximumSurfaceUpdatesPerCommand)
                     {
-                        TryPublishSurfaceState(root, plugin, ref surfaceUpdateCount);
+                        TryPublishSurfaceState(root, plugin, turnId, ref surfaceUpdateCount);
                     }
                     return;
                 }
@@ -725,7 +725,8 @@ public sealed class PluginHost : IDisposable
         plainText.Append(line);
     }
 
-    private void TryPublishSurfaceState(JsonElement root, PluginManifest plugin, ref int surfaceUpdateCount)
+    private void TryPublishSurfaceState(JsonElement root, PluginManifest plugin, string turnId,
+        ref int surfaceUpdateCount)
     {
         if (!TryReadBoundedString(root, "surface", 64, out string surfaceId) ||
             !TryReadBoundedString(root, "element", 64, out string elementId))
@@ -820,6 +821,7 @@ public sealed class PluginHost : IDisposable
             ModuleId = $"plugin:{plugin.Id}",
             SurfaceId = $"plugin:{plugin.Id}:{surfaceId}",
             ElementId = elementId,
+            TurnId = turnId,
             Label = label,
             Value = value,
             IsVisible = visible,

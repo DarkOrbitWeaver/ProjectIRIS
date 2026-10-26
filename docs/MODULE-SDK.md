@@ -109,8 +109,9 @@ They may also update a declared surface element using only the host's native con
 {"type":"ui","surface":"compose","element":"contacts","options":[{"value":"user-42","label":"Alex"}],"value":"user-42"}
 ```
 
-The host scopes this update to the calling plugin, validates both IDs and the element type, and
-caps successful updates at 128 per tool call. `label`, `value`, `visible`, and `enabled` can update
+The host scopes this update to the calling plugin and active turn/task, validates both IDs and the
+element type, and caps successful updates at 128 per tool call. The shell ignores a delayed overlay
+patch if a newer task has already bound that surface. `label`, `value`, `visible`, and `enabled` can update
 declared controls; `options` is accepted only for a select declared with `dynamic: true`. Modules
 cannot supply markup or executable UI code. A button action still goes through the ordinary tool
 router and permission gate.

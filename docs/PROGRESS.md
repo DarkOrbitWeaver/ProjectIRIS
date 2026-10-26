@@ -52,7 +52,9 @@ behavior that has been exercised.
   an interrupted crash-recovery turn. Tool lifecycle now publishes one start/finish pair per
   synchronous action; tool capsules are matched to their turn, finalized on cancellation/error,
   and the activity card returns to result review after each tool completes. Active module overlays
-  now hide on their correlated turn's cancellation or failure instead of remaining stuck. Media
+  now hide on their correlated turn's cancellation or failure instead of remaining stuck. Module
+  surface updates carry their foreground turn or background task ID, and stale patches cannot
+  overwrite the currently bound overlay. Media
   pause/resume ownership is serialized across voice interactions, clears when auto-resume is
   disabled or unconfirmed, and survives cancellation before a resume attempt. Pause/resume results
   are correlated in diagnostics, and an unconfirmed resume produces a user-visible recovery notice.
