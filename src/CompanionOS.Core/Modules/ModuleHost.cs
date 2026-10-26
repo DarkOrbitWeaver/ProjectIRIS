@@ -537,9 +537,9 @@ public sealed class ModuleHost : IAsyncDisposable
     }
 
     /// <summary>
-    /// The body runs only what shipped inside her. Nothing found on disk is loaded and
-    /// executed on faith: no drop-in scripts, no self-installing plugins, no opaque
-    /// DLL folders. A module system (IAssistantModule) exists for real, reviewed
-    /// integrations; growing her is a build decision, not a folderDrop.
+    /// Built-ins and process-isolated external adapters share this registry, router and
+    /// sandbox. External commands and MCP servers are registered only through the plugin
+    /// host; arbitrary DLLs are never loaded into Iris. The full install-review and module
+    /// UI SDK is still being built.
     /// </summary>
 }

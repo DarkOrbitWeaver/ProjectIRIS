@@ -72,6 +72,7 @@ public sealed class OverlayWindow : Window
     private readonly MusicOverlayWindow _musicOverlay;
     private readonly TimerOverlayWindow _timerOverlay;
     private readonly PermissionOverlayWindow _permissionOverlay;
+    private readonly ActivityOverlayWindow _activityOverlay;
     private NowPlayingModel? _nowPlaying;
     private ActiveTimerModel? _activeTimer;
     private IDisposable? _moduleRegistrySubscription;
@@ -97,6 +98,7 @@ public sealed class OverlayWindow : Window
         _musicOverlay = new MusicOverlayWindow(model);
         _timerOverlay = new TimerOverlayWindow(model);
         _permissionOverlay = new PermissionOverlayWindow(model);
+        _activityOverlay = new ActivityOverlayWindow(showMainWindow);
 
         SystemDecorations = SystemDecorations.None;
         TransparencyLevelHint = new[] { WindowTransparencyLevel.Transparent };
@@ -272,6 +274,7 @@ public sealed class OverlayWindow : Window
             _musicOverlay.Close();
             _timerOverlay.Close();
             _permissionOverlay.Close();
+            _activityOverlay.Close();
         };
 
         Opened += (_, _) => ApplyPosition();
@@ -486,6 +489,7 @@ public sealed class OverlayWindow : Window
         SyncMusicOverlay();
         SyncTimerOverlay();
         SyncPermissionOverlay();
+        SyncActivityOverlay();
         TimeSpan desired = state == MindState.Gaming
             ? TimeSpan.FromSeconds(1)
             : TimeSpan.FromMilliseconds(100);
@@ -566,6 +570,30 @@ public sealed class OverlayWindow : Window
         if (!_permissionOverlay.IsVisible)
         {
             _permissionOverlay.Show();
+        }
+    }
+
+    private void SyncActivityOverlay()
+    {
+        bool hasMeaningfulWork = _model.IsTurnInProgress &&
+                                 !string.IsNullOrWhiteSpace(_model.ActivityTurnId) &&
+                                 DateTimeOffset.Now - _model.ActivityStartedAt >= TimeSpan.FromMilliseconds(650);
+        bool canShow = IsVisible && hasMeaningfulWork && !_model.HasPendingPermission &&
+                       _model.State != MindState.Gaming && _activityOverlay.Bind(_model);
+        if (!canShow)
+        {
+            _activityOverlay.Hide();
+            return;
+        }
+
+        if (WorkArea() is { } work)
+        {
+            _activityOverlay.PlaceNear(Position, PixelWidth(), PixelHeight(), work, _growsLeft);
+        }
+
+        if (!_activityOverlay.IsVisible)
+        {
+            _activityOverlay.Show();
         }
     }
 

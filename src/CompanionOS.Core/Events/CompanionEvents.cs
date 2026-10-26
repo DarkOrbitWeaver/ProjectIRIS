@@ -184,6 +184,23 @@ public sealed class ModuleRegistryChangedEvent : CompanionEvent
     public required string Change { get; init; }
 }
 
+/// <summary>
+/// A module reported a real intermediate step while one of its tools is running.
+/// Progress is optional: many useful actions cannot estimate a percentage honestly.
+/// Consumers should treat the message as untrusted display text and the turn id as
+/// the correlation key for the current foreground task.
+/// </summary>
+public sealed class ModuleProgressEvent : CompanionEvent
+{
+    public required string ModuleId { get; init; }
+    public required string ModuleName { get; init; }
+    public required string ToolName { get; init; }
+    public required string TurnId { get; init; }
+    public required string Message { get; init; }
+    public double? Progress { get; init; }
+    public double? Total { get; init; }
+}
+
 /// <summary>Live resource numbers for the status strip.</summary>
 public sealed class TelemetryEvent : CompanionEvent
 {

@@ -85,6 +85,13 @@ public sealed partial class ShellModel : ObservableObject
     private bool _isListening;
     private bool _isSpeaking;
     private bool _isTurnInProgress;
+    private string _activityTurnId = string.Empty;
+    private string _activityMessage = string.Empty;
+    private string _activityModule = string.Empty;
+    private string _activityDetail = string.Empty;
+    private double? _activityProgress;
+    private double? _activityTotal;
+    private DateTimeOffset _activityStartedAt;
     private double _microphoneLevel;
     private double _speechLevel;
     private PermissionRequest? _pendingPermission;
@@ -205,6 +212,49 @@ public sealed partial class ShellModel : ObservableObject
     {
         get => _isTurnInProgress;
         private set => SetProperty(ref _isTurnInProgress, value);
+    }
+
+    /// <summary>Current truthful work status, shared by chat and non-activating overlays.</summary>
+    public string ActivityTurnId
+    {
+        get => _activityTurnId;
+        private set => SetProperty(ref _activityTurnId, value);
+    }
+
+    public string ActivityMessage
+    {
+        get => _activityMessage;
+        private set => SetProperty(ref _activityMessage, value);
+    }
+
+    public string ActivityModule
+    {
+        get => _activityModule;
+        private set => SetProperty(ref _activityModule, value);
+    }
+
+    public string ActivityDetail
+    {
+        get => _activityDetail;
+        private set => SetProperty(ref _activityDetail, value);
+    }
+
+    public double? ActivityProgress
+    {
+        get => _activityProgress;
+        private set => SetProperty(ref _activityProgress, value);
+    }
+
+    public double? ActivityTotal
+    {
+        get => _activityTotal;
+        private set => SetProperty(ref _activityTotal, value);
+    }
+
+    public DateTimeOffset ActivityStartedAt
+    {
+        get => _activityStartedAt;
+        private set => SetProperty(ref _activityStartedAt, value);
     }
 
     public double MicrophoneLevel

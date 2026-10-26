@@ -134,7 +134,7 @@ public sealed class PluginHost : IDisposable
     /// and speaks JSON-RPC. Never throws: errors come back as PluginResult with words.
     /// </summary>
     public async Task<PluginResult> CallAsync(PluginManifest plugin, PluginTool tool,
-        string argumentsJson, CancellationToken cancellationToken)
+        string argumentsJson, string turnId, CancellationToken cancellationToken)
     {
         if (plugin.Disabled)
         {
@@ -150,7 +150,7 @@ public sealed class PluginHost : IDisposable
 
             if (plugin.Transport == "mcp")
             {
-                return await CallMcpAsync(plugin, tool, argumentsJson, cancellationToken).ConfigureAwait(false);
+                return await CallMcpAsync(plugin, tool, argumentsJson, turnId, cancellationToken).ConfigureAwait(false);
             }
 
             return new PluginResult(false, "", $"'{plugin.Name}' is a builtin-shaped plugin; call its module instead.");
@@ -225,7 +225,7 @@ public sealed class PluginHost : IDisposable
 
     /// <summary>Talks JSON-RPC 2.0 over the plugin's stdio, MCP-style.</summary>
     private async Task<PluginResult> CallMcpAsync(PluginManifest plugin, PluginTool tool,
-        string argumentsJson, CancellationToken cancellationToken)
+        string argumentsJson, string turnId, CancellationToken cancellationToken)
     {
         McpConnection connection = await GetMcpAsync(plugin, cancellationToken).ConfigureAwait(false);
         if (connection.Failed is not null)
@@ -244,11 +244,17 @@ public sealed class PluginHost : IDisposable
             return new PluginResult(false, "", $"Arguments are not JSON: {exception.Message}");
         }
 
-        JsonElement lat = await connection.RequestAsync("tools/call", new Dictionary<string, object?>
-        {
-            ["name"] = tool.Name,
-            ["arguments"] = JsonSerializer.SerializeToElement(arguments)
-        }, cancellationToken).ConfigureAwait(false);
+        JsonElement lat = await connection.CallToolAsync(tool.Name, arguments,
+            progress => _events.Publish(new ModuleProgressEvent
+            {
+                ModuleId = $"plugin:{plugin.Id}",
+                ModuleName = plugin.Name,
+                ToolName = tool.Name,
+                TurnId = turnId,
+                Message = progress.Message ?? $"{tool.Name} is working",
+                Progress = progress.Progress,
+                Total = progress.Total
+            }), cancellationToken).ConfigureAwait(false);
 
         bool isError = lat.TryGetProperty("isError", out JsonElement errorElement) && errorElement.ValueKind == JsonValueKind.True;
         string text = ExtractText(lat);
@@ -350,6 +356,9 @@ internal sealed class McpConnection : IDisposable
     private Process? _process;
     private readonly Dictionary<int, TaskCompletionSource<JsonElement>> _pending = [];
     private readonly object _pendingLock = new();
+    private readonly object _progressLock = new();
+    private readonly Dictionary<string, Action<McpProgressUpdate>> _progressHandlers = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, long> _lastProgressTicks = new(StringComparer.Ordinal);
     private int _nextId;
 
     public McpConnection(PluginManifest plugin, string workingDirectory)
@@ -438,6 +447,11 @@ internal sealed class McpConnection : IDisposable
         try
         {
             using JsonDocument document = JsonDocument.Parse(line);
+            if (TryHandleProgress(document.RootElement))
+            {
+                return;
+            }
+
             TaskCompletionSource<JsonElement>? waiter = null;
             int responseId = 0;
             if (document.RootElement.TryGetProperty("id", out JsonElement idElement) &&
@@ -469,6 +483,95 @@ internal sealed class McpConnection : IDisposable
         catch (JsonException)
         {
             companionTrace("not json");
+        }
+    }
+
+    private bool TryHandleProgress(JsonElement message)
+    {
+        if (!message.TryGetProperty("method", out JsonElement methodElement) ||
+            methodElement.ValueKind != JsonValueKind.String ||
+            methodElement.GetString() != "notifications/progress" ||
+            !message.TryGetProperty("params", out JsonElement parameters) ||
+            parameters.ValueKind != JsonValueKind.Object ||
+            !parameters.TryGetProperty("progressToken", out JsonElement tokenElement))
+        {
+            return false;
+        }
+
+        string token = tokenElement.ValueKind switch
+        {
+            JsonValueKind.String => tokenElement.GetString() ?? string.Empty,
+            JsonValueKind.Number => tokenElement.GetRawText(),
+            _ => string.Empty
+        };
+        if (token.Length == 0 || !parameters.TryGetProperty("progress", out JsonElement progressElement) ||
+            !progressElement.TryGetDouble(out double progress) || !double.IsFinite(progress) || progress < 0)
+        {
+            companionTrace("invalid MCP progress notification");
+            return true;
+        }
+
+        double? total = parameters.TryGetProperty("total", out JsonElement totalElement) &&
+                        totalElement.TryGetDouble(out double parsedTotal) &&
+                        double.IsFinite(parsedTotal) && parsedTotal > 0
+            ? parsedTotal
+            : null;
+        string? text = parameters.TryGetProperty("message", out JsonElement messageElement) &&
+                       messageElement.ValueKind == JsonValueKind.String
+            ? messageElement.GetString()
+            : null;
+        if (text?.Length > 240)
+        {
+            text = text[..240];
+        }
+
+        Action<McpProgressUpdate>? handler;
+        lock (_progressLock)
+        {
+            if (!_progressHandlers.TryGetValue(token, out handler))
+            {
+                return true;
+            }
+
+            long now = Stopwatch.GetTimestamp();
+            if (_lastProgressTicks.TryGetValue(token, out long previous) &&
+                Stopwatch.GetElapsedTime(previous, now) < TimeSpan.FromMilliseconds(100) &&
+                (total is null || progress < total.Value))
+            {
+                return true;
+            }
+            _lastProgressTicks[token] = now;
+        }
+
+        handler(new McpProgressUpdate(progress, total, text));
+        return true;
+    }
+
+    public async Task<JsonElement> CallToolAsync(string toolName, JsonElement arguments,
+        Action<McpProgressUpdate> progressHandler, CancellationToken cancellationToken)
+    {
+        string progressToken = Guid.NewGuid().ToString("N");
+        lock (_progressLock)
+        {
+            _progressHandlers[progressToken] = progressHandler;
+        }
+
+        try
+        {
+            return await RequestAsync("tools/call", new Dictionary<string, object?>
+            {
+                ["name"] = toolName,
+                ["arguments"] = JsonSerializer.SerializeToElement(arguments),
+                ["_meta"] = new Dictionary<string, object?> { ["progressToken"] = progressToken }
+            }, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            lock (_progressLock)
+            {
+                _progressHandlers.Remove(progressToken);
+                _lastProgressTicks.Remove(progressToken);
+            }
         }
     }
 
@@ -547,3 +650,5 @@ internal sealed class McpConnection : IDisposable
         _process?.Dispose();
     }
 }
+
+internal readonly record struct McpProgressUpdate(double Progress, double? Total, string? Message);

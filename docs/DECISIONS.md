@@ -83,12 +83,15 @@ Tiers are declared with the tool, enforced centrally in `SandboxGuard`, and ever
 lands in an audit file.
 **Cost:** red tools interrupt flow — that is the point.
 
-### 12. External plugins were removed (reversing the original plan)
-**Rejected:** the original design shipped `plugin.json` drop-in modules and runtime DLL
-loading. Removed: nothing found on the user's disk is executed on faith, and a body that
-growls itself by dropping folders is a scripting system nobody approved.
-**Why now:** a companion OS must be exactly what it ships. New abilities are reviewed C#
-modules listed in `AppModules` — a build decision, visible in source control.
+### 12. External modules are process-isolated and permission-gated
+**Chosen:** folder modules may use a declared command or MCP stdio process and join the same
+tool router as built-ins. Runtime DLL loading remains unsupported. External tools currently
+ask before every call; the manifest permission labels are descriptive and are not yet a
+capability grant system.
+**Why:** the user needs an extensible platform for services such as music, web search, and
+messaging, while Iris must keep external code outside the main process and retain a central
+permission boundary. The current path is an early foundation; installation review, revocable
+scopes, UI contributions, and activity controls remain required platform work.
 
 ### 13. Built-in modules live in their own assembly
 **Why:** it keeps the Core honest. If the built-ins had privileged access, the module contract

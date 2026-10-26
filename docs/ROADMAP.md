@@ -46,9 +46,11 @@ exclusions, and a full GPU release when a game starts.
 
 ## M6 — Discovery modules · replaced
 
-The YouTube finder and the drop-in plugin loader were deleted on purpose: she will not fake
-a service she does not have an account for, and nothing found on her user's disk is executed
-as a module. Discovery belongs to real integrations built and shipped in the box.
+The YouTube finder was removed rather than pretending to control a signed-in account. The
+external module path has since been reintroduced as manifest-declared command and MCP
+processes, routed through the same module host. This is a foundation, not yet the complete
+user-facing scripting platform: external modules cannot contribute hosted UI, their tool
+schemas are duplicated in the manifest, and permission grants are still coarse.
 
 ## M7 — The body · next
 
@@ -57,16 +59,27 @@ from her control tags, lip sync from the TTS amplitude envelope already publishe
 procedural breathing and blinking on the CPU. Deliberately not inside the main process, so a
 body crash never touches her mind.
 
-## M8 — Extensible module platform · long-range
+## M8 — Extensible module platform · active foundation
 
-Build a stable, documented scripting API and module authoring kit so new capabilities are easy
-to create, install, inspect, and use. Modules should declare tools, permissions, lifecycle and
-resource needs, and may contribute declarative UI surfaces or independently controlled
-overlays. First-party modules should dogfood the same public contracts where practical. External
-scripts must run behind an explicit install/review step with bounded execution, cancellation,
-versioning, diagnostics, and revocable permissions; dropping an arbitrary file into a folder
-must never silently execute it. This is an intentional future platform investment, not a blocker
-for the current companion foundation.
+Make adding integrations a core product capability, not a list of features compiled into Iris.
+The first foundation now carries truthful MCP progress notifications into a shared,
+non-activating activity card. The platform is not complete until all stages below are shipped:
+
+1. **Stable SDK and lifecycle:** versioned manifests, dynamic MCP tool discovery, clear install,
+   enable, update, disable, and removal flows, plus a starter kit and validation diagnostics.
+2. **Permission capabilities:** declared scopes, reviewable grants, revocation, and per-action
+   approval for consequential actions such as sending messages or changing accounts.
+3. **Hosted module UI:** validated declarative panels, inputs, buttons, icons, and independently
+   controlled overlays. The shell owns rendering and focus policy; modules provide data and
+   actions rather than arbitrary in-process UI code.
+4. **Activity contract:** correlated start, step, progress, wait, result, error, and cancel states
+   shared by chat, the activity card, notifications, and diagnostics. Percentage remains optional.
+5. **Safe scale:** bounded execution, cancellation, versions, resource declarations, failure
+   isolation, audit trails, and routing that keeps irrelevant tools away from the small model.
+
+First-party integrations should dogfood the same public contracts. External code must remain
+process-isolated and explicitly reviewed; placing an arbitrary script or DLL in a folder must
+never silently grant it access to Iris or the user's accounts.
 
 ## Also next, in order of value
 

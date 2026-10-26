@@ -104,9 +104,13 @@ replaceable piece if you ever want real embeddings.
 * `SandboxGuard` — tiers: reflex (instant), scoped (workspace only, logged), system-critical
   (always asks, 15 second auto-deny, recorded forever in `audit.jsonl`).
 
-Nothing is loaded from disk at runtime. The body consists of the modules the application
-lists in `AppModules.CreateBuiltInModules` — no `plugin.json` folders, no dll scanning, no
-self-installing extensions. Growing her is a build decision.
+Built-in modules are registered from `AppModules.CreateBuiltInModules`. External modules
+currently use a validated `plugin.json` manifest and a separate command or MCP process; they
+are adapted into the same router and sandbox, and arbitrary DLLs are not loaded into Iris.
+External tools all ask before running today. This is a basic extension path, not the finished
+SDK: plugins cannot yet contribute hosted panels or overlays, declare enforceable capability
+grants, or report progress through the shared activity event. See `MODULE-SDK.md` for the
+current contract and the remaining platform work.
 
 ---
 

@@ -36,6 +36,7 @@ public sealed partial class ShellModel : ObservableObject
         EventBus events = _runtime.Events;
 
         _subscriptions.Add(events.Subscribe<ConversationEvent>(payload => OnUiThread(() => HandleConversation(payload))));
+        _subscriptions.Add(events.Subscribe<ModuleProgressEvent>(payload => OnUiThread(() => HandleModuleProgress(payload))));
         _subscriptions.Add(events.Subscribe<MindStateChangedEvent>(payload => OnUiThread(() => HandleMindState(payload))));
         _subscriptions.Add(events.Subscribe<OperatingModeChangedEvent>(payload => OnUiThread(() => HandleMode(payload))));
         _subscriptions.Add(events.Subscribe<MemoryRecallEvent>(payload => OnUiThread(() => HandleRecall(payload))));
@@ -78,6 +79,7 @@ public sealed partial class ShellModel : ObservableObject
                 break;
 
             case ConversationPhase.AssistantStarted:
+                BeginActivity(payload.TurnId, "Thinking", "Iris", "Preparing a response");
                 _streamBuffer.Clear();
                 _streamingEntry = new ChatEntry
                 {
@@ -98,6 +100,7 @@ public sealed partial class ShellModel : ObservableObject
 
             case ConversationPhase.AssistantCompleted:
                 IsTurnInProgress = false;
+                ClearActivity();
                 if (_streamingEntry is null)
                 {
                     Messages.Add(new ChatEntry { Role = ChatRole.Assistant, Text = payload.Text });
@@ -112,6 +115,7 @@ public sealed partial class ShellModel : ObservableObject
                 break;
 
             case ConversationPhase.ToolStarted:
+                BeginActivity(payload.TurnId, payload.Text, payload.Detail ?? "Module", "Working");
                 Messages.Add(new ChatEntry
                 {
                     Role = ChatRole.Tool,
@@ -130,9 +134,46 @@ public sealed partial class ShellModel : ObservableObject
 
             case ConversationPhase.TurnFailed:
                 IsTurnInProgress = false;
+                ClearActivity();
                 AddSystemMessage($"Something went wrong: {payload.Text}");
                 break;
         }
+    }
+
+    private void HandleModuleProgress(ModuleProgressEvent payload)
+    {
+        if (payload.TurnId != ActivityTurnId ||
+            (!string.IsNullOrWhiteSpace(ActivityModule) &&
+             !string.Equals(ActivityModule, payload.ModuleName, StringComparison.OrdinalIgnoreCase)))
+        {
+            return;
+        }
+
+        ActivityMessage = string.IsNullOrWhiteSpace(payload.Message) ? ActivityMessage : payload.Message;
+        ActivityModule = payload.ModuleName;
+        ActivityProgress = payload.Progress;
+        ActivityTotal = payload.Total;
+    }
+
+    private void BeginActivity(string turnId, string message, string module, string detail)
+    {
+        ActivityTurnId = turnId;
+        ActivityMessage = message;
+        ActivityModule = module;
+        ActivityDetail = detail;
+        ActivityProgress = null;
+        ActivityTotal = null;
+        ActivityStartedAt = DateTimeOffset.Now;
+    }
+
+    private void ClearActivity()
+    {
+        ActivityTurnId = string.Empty;
+        ActivityMessage = string.Empty;
+        ActivityModule = string.Empty;
+        ActivityDetail = string.Empty;
+        ActivityProgress = null;
+        ActivityTotal = null;
     }
 
     private void HandleMindState(MindStateChangedEvent payload)

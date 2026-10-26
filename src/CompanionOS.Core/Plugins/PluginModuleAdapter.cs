@@ -67,6 +67,7 @@ public sealed class PluginModuleAdapter : IAssistantModule
             invocation.Arguments.ValueKind == System.Text.Json.JsonValueKind.Undefined
                 ? "{}"
                 : invocation.Arguments.GetRawText(),
+            invocation.TurnId,
             cancellationToken).ConfigureAwait(false);
 
         return result.Ok
