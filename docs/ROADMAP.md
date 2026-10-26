@@ -116,10 +116,11 @@ Remaining work:
    transcript, attention, and speech events carry the same ID. Still connect listening state,
    wake decisions, media-pause ownership, and tool progress into the same inspectable record.
    Tool activity now has one start/finish pair and chat entries are associated with their turn;
-   completed tools return the activity card to result review. Cancellation emits a terminal turn
-   event, closes active chat/tool UI, and marks the journal turn intentionally cancelled so
-   restart recovery does not mislabel it as a crash. The recognizer contract currently returns
-   text only, so recognition confidence is unavailable and must not be implied in UI or prompts.
+   completed tools return the activity card to result review. Cancellation and failure close the
+   associated module overlay as well as active chat/tool UI, and cancellation marks the journal
+   turn intentionally cancelled so restart recovery does not mislabel it as a crash. The
+   recognizer contract currently returns text only, so recognition confidence is unavailable and
+   must not be implied in UI or prompts.
 3. Show what memory informed a reply, with provenance and correction/forget controls; verify
    memory writes, consolidation, conflicts, and long-session bounds.
 4. Make multi-step work inspectable and interruptible. Iris must verify each result, ask when

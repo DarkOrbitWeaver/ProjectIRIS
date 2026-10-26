@@ -772,6 +772,24 @@ public sealed class OverlayWindow : Window
 
     private void HandleModuleConversation(ConversationEvent payload)
     {
+        if (payload.Phase is ConversationPhase.TurnCancelled or ConversationPhase.TurnFailed)
+        {
+            if (!string.Equals(payload.TurnId, _activeModuleTurnId, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            foreach (ModuleSurfaceOverlayWindow window in FindModuleSurfaceOverlays(_activeModuleId))
+            {
+                window.Hide();
+            }
+            _activeModuleId = string.Empty;
+            _activeModuleTurnId = string.Empty;
+            SyncModuleSurfaceOverlays();
+            SyncActivityOverlay();
+            return;
+        }
+
         if (payload.Phase == ConversationPhase.ToolStarted)
         {
             ModuleSurfaceOverlayWindow[] windows = FindModuleSurfaceOverlays(payload.ModuleId).ToArray();

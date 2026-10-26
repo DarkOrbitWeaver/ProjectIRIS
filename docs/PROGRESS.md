@@ -42,7 +42,8 @@ behavior that has been exercised.
   ID. Cancellation now closes the active UI state and is journaled as intentional rather than as
   an interrupted crash-recovery turn. Tool lifecycle now publishes one start/finish pair per
   synchronous action; tool capsules are matched to their turn, finalized on cancellation/error,
-  and the activity card returns to result review after each tool completes.
+  and the activity card returns to result review after each tool completes. Active module overlays
+  now hide on their correlated turn's cancellation or failure instead of remaining stuck.
 
 These are implementation findings from source inspection. They do not prove the complete workflow
 works on the target PC under real microphone, speaker, model, display, game, and device conditions.
