@@ -84,7 +84,8 @@ public sealed class PluginModuleAdapter : IAssistantModule, IModuleSurfaceProvid
                 Name = element.Name,
                 Placeholder = element.Placeholder,
                 ToolName = QualifiedToolName(_plugin.Id, element.ToolName),
-                Options = element.Options.Select(option => new ModuleSurfaceOption(option.Value, option.Label)).ToList()
+                Options = element.Options.Select(option => new ModuleSurfaceOption(option.Value, option.Label)).ToList(),
+                DynamicOptions = element.DynamicOptions
             }).ToList()
         })
         .ToList();

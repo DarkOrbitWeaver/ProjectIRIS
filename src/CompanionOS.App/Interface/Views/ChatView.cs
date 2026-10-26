@@ -35,6 +35,8 @@ public sealed class ChatView : UserControl
     private readonly TextBox _composer;
     private readonly Border _voiceMeter;
     private readonly Panel _railHost = new();
+    private readonly Dictionary<string, ModuleSurfaceControlSet> _moduleSurfaceControls =
+        new(StringComparer.OrdinalIgnoreCase);
     private MusicRailPanel? _musicPanel;
     private readonly SensesRailRow _sensesRow;
     private readonly ResourcesRailCard _resourcesCard;
@@ -100,6 +102,8 @@ public sealed class ChatView : UserControl
         _model.Messages.CollectionChanged += OnMessagesChanged;
         _composer.KeyDown += OnComposerKeyDown;
         model.Runtime.Events.Subscribe<ModuleRegistryChangedEvent>(_ => Dispatcher.UIThread.Post(RebindMusic));
+        model.Runtime.Events.Subscribe<ModuleSurfaceStateChangedEvent>(payload =>
+            Dispatcher.UIThread.Post(() => ApplyModuleSurfaceState(payload)));
 
         Content = BuildLayout();
         RebindMusic();
@@ -210,6 +214,7 @@ public sealed class ChatView : UserControl
 
         MusicRailPanel musicPanel = _musicPanel ?? new MusicRailPanel(null, InvokeMusicTool);
         _musicPanel = musicPanel;
+        _moduleSurfaceControls.Clear();
         _railHost.Children.Clear();
         _railHost.Children.Add(BuildRailCard(musicPanel, _sensesRow, _resourcesCard));
         foreach (ModuleSurface surface in surfaces.Where(surface =>
@@ -221,6 +226,8 @@ public sealed class ChatView : UserControl
 
     private Control BuildModuleSurfaceCard(ModuleSurface surface)
     {
+        ModuleSurfaceControlSet surfaceControls = new(surface.ModuleId);
+        _moduleSurfaceControls[surface.Id] = surfaceControls;
         StackPanel content = new() { Spacing = 10 };
         StackPanel heading = new()
         {
@@ -233,13 +240,16 @@ public sealed class ChatView : UserControl
             FontWeight.SemiBold, wrap: false));
         content.Children.Add(heading);
 
-        Dictionary<string, TextBox> inputs = new(StringComparer.OrdinalIgnoreCase);
+        Dictionary<string, Func<string>> inputs = new(StringComparer.OrdinalIgnoreCase);
         foreach (ModuleSurfaceElement element in surface.Elements)
         {
             switch (element.Type)
             {
                 case ModuleSurfaceElementType.Text:
-                    content.Children.Add(Ui.Text(element.Label, Palette.FontBody, Palette.TextSecondaryBrush));
+                    TextBlock text = Ui.Text(element.Label, Palette.FontBody, Palette.TextSecondaryBrush);
+                    surfaceControls.Controls[element.Id] = text;
+                    surfaceControls.Hosts[element.Id] = text;
+                    content.Children.Add(text);
                     break;
 
                 case ModuleSurfaceElementType.Input:
@@ -256,16 +266,58 @@ public sealed class ChatView : UserControl
                         CornerRadius = new CornerRadius(Palette.RadiusControl),
                         Padding = new Thickness(10, 8)
                     };
-                    inputs[element.Name] = input;
+                    inputs[element.Name] = () => input.Text ?? string.Empty;
                     StackPanel field = new() { Spacing = 5 };
-                    field.Children.Add(Ui.Caption(element.Label));
+                    TextBlock inputLabel = Ui.Caption(element.Label);
+                    surfaceControls.Labels[element.Id] = inputLabel;
+                    surfaceControls.Controls[element.Id] = input;
+                    surfaceControls.Hosts[element.Id] = field;
+                    field.Children.Add(inputLabel);
                     field.Children.Add(input);
                     content.Children.Add(field);
                     break;
 
+                case ModuleSurfaceElementType.Select:
+                    ComboBox select = new()
+                    {
+                        FontFamily = Palette.UiFont,
+                        FontSize = Palette.FontBody,
+                        Foreground = Palette.TextPrimaryBrush,
+                        Background = Palette.SurfaceBrush,
+                        BorderBrush = Palette.StrokeBrush,
+                        BorderThickness = new Thickness(1),
+                        CornerRadius = new CornerRadius(Palette.RadiusControl),
+                        Padding = new Thickness(8, 5)
+                    };
+                    foreach (ModuleSurfaceOption option in element.Options)
+                    {
+                        select.Items.Add(new ComboBoxItem { Content = option.Label, Tag = option.Value });
+                    }
+                    if (select.Items.Count > 0)
+                    {
+                        select.SelectedIndex = 0;
+                    }
+                    inputs[element.Name] = () => (select.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? string.Empty;
+                    StackPanel choiceField = new() { Spacing = 5 };
+                    TextBlock selectLabel = Ui.Caption(element.Label);
+                    surfaceControls.Labels[element.Id] = selectLabel;
+                    surfaceControls.Controls[element.Id] = select;
+                    surfaceControls.Hosts[element.Id] = choiceField;
+                    if (element.DynamicOptions)
+                    {
+                        surfaceControls.DynamicSelects.Add(element.Id);
+                    }
+                    choiceField.Children.Add(selectLabel);
+                    choiceField.Children.Add(select);
+                    content.Children.Add(choiceField);
+                    break;
+
                 case ModuleSurfaceElementType.Button:
-                    content.Children.Add(Ui.PrimaryButton(element.Label,
-                        () => InvokeModuleSurfaceAction(surface, element, inputs), wide: true));
+                    Button action = Ui.PrimaryButton(element.Label,
+                        () => InvokeModuleSurfaceAction(surface, element, inputs), wide: true);
+                    surfaceControls.Controls[element.Id] = action;
+                    surfaceControls.Hosts[element.Id] = action;
+                    content.Children.Add(action);
                     break;
             }
         }
@@ -274,13 +326,92 @@ public sealed class ChatView : UserControl
     }
 
     private void InvokeModuleSurfaceAction(ModuleSurface surface, ModuleSurfaceElement action,
-        IReadOnlyDictionary<string, TextBox> inputs)
+        IReadOnlyDictionary<string, Func<string>> inputs)
     {
         Dictionary<string, string> values = inputs.ToDictionary(
             pair => pair.Key,
-            pair => pair.Value.Text ?? string.Empty,
+            pair => pair.Value(),
             StringComparer.OrdinalIgnoreCase);
         _ = _model.ExecuteModuleSurfaceActionAsync(surface, action, values);
+    }
+
+    private void ApplyModuleSurfaceState(ModuleSurfaceStateChangedEvent update)
+    {
+        if (!_moduleSurfaceControls.TryGetValue(update.SurfaceId, out ModuleSurfaceControlSet? surface) ||
+            !string.Equals(surface.ModuleId, update.ModuleId, StringComparison.OrdinalIgnoreCase) ||
+            !surface.Controls.TryGetValue(update.ElementId, out Control? control))
+        {
+            return;
+        }
+
+        if (update.Label is { } label)
+        {
+            if (surface.Labels.TryGetValue(update.ElementId, out TextBlock? fieldLabel))
+            {
+                fieldLabel.Text = label;
+            }
+            else if (control is TextBlock text)
+            {
+                text.Text = label;
+            }
+            else if (control is Button button && button.Content is TextBlock buttonLabel)
+            {
+                buttonLabel.Text = label;
+            }
+        }
+
+        if (update.Options is { } options && control is ComboBox dynamicSelect &&
+            surface.DynamicSelects.Contains(update.ElementId))
+        {
+            string? selectedValue = update.Value ?? (dynamicSelect.SelectedItem as ComboBoxItem)?.Tag?.ToString();
+            dynamicSelect.Items.Clear();
+            foreach (ModuleSurfaceOption option in options)
+            {
+                dynamicSelect.Items.Add(new ComboBoxItem { Content = option.Label, Tag = option.Value });
+            }
+            dynamicSelect.SelectedItem = dynamicSelect.Items
+                .OfType<ComboBoxItem>()
+                .FirstOrDefault(item => string.Equals(item.Tag?.ToString(), selectedValue, StringComparison.Ordinal));
+            if (dynamicSelect.SelectedItem is null && dynamicSelect.Items.Count > 0)
+            {
+                dynamicSelect.SelectedIndex = 0;
+            }
+        }
+        else if (update.Value is { } value)
+        {
+            switch (control)
+            {
+                case TextBlock text:
+                    text.Text = value;
+                    break;
+                case TextBox input:
+                    input.Text = value;
+                    break;
+                case ComboBox select:
+                    select.SelectedItem = select.Items
+                        .OfType<ComboBoxItem>()
+                        .FirstOrDefault(item => string.Equals(item.Tag?.ToString(), value, StringComparison.Ordinal));
+                    break;
+            }
+        }
+
+        if (update.IsEnabled is { } isEnabled)
+        {
+            control.IsEnabled = isEnabled;
+        }
+        if (update.IsVisible is { } isVisible && surface.Hosts.TryGetValue(update.ElementId, out Control? host))
+        {
+            host.IsVisible = isVisible;
+        }
+    }
+
+    private sealed class ModuleSurfaceControlSet(string moduleId)
+    {
+        public string ModuleId { get; } = moduleId;
+        public Dictionary<string, Control> Controls { get; } = new(StringComparer.OrdinalIgnoreCase);
+        public Dictionary<string, Control> Hosts { get; } = new(StringComparer.OrdinalIgnoreCase);
+        public Dictionary<string, TextBlock> Labels { get; } = new(StringComparer.OrdinalIgnoreCase);
+        public HashSet<string> DynamicSelects { get; } = new(StringComparer.OrdinalIgnoreCase);
     }
 
     private static Border BuildRailCard(Control music, Control senses, Control resources)

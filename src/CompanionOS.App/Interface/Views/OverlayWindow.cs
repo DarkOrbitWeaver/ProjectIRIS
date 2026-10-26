@@ -82,6 +82,7 @@ public sealed class OverlayWindow : Window
     private IDisposable? _conversationSubscription;
     private IDisposable? _moduleProgressSubscription;
     private IDisposable? _backgroundTaskSubscription;
+    private IDisposable? _moduleSurfaceStateSubscription;
     private BackgroundTaskSnapshot? _backgroundTask;
     private string _activeModuleId = string.Empty;
     private string _activeModuleTurnId = string.Empty;
@@ -284,6 +285,7 @@ public sealed class OverlayWindow : Window
             _conversationSubscription?.Dispose();
             _moduleProgressSubscription?.Dispose();
             _backgroundTaskSubscription?.Dispose();
+            _moduleSurfaceStateSubscription?.Dispose();
             if (_nowPlaying is not null)
             {
                 _nowPlaying.PropertyChanged -= OnNowPlayingChanged;
@@ -323,6 +325,8 @@ public sealed class OverlayWindow : Window
             Dispatcher.UIThread.Post(() => HandleModuleProgress(payload)));
         _backgroundTaskSubscription = _model.Runtime.Events.Subscribe<BackgroundTaskChangedEvent>(payload =>
             Dispatcher.UIThread.Post(() => HandleBackgroundTask(payload.Task)));
+        _moduleSurfaceStateSubscription = _model.Runtime.Events.Subscribe<ModuleSurfaceStateChangedEvent>(payload =>
+            Dispatcher.UIThread.Post(() => HandleModuleSurfaceState(payload)));
         RebindModuleSurfaces();
     }
 
@@ -647,6 +651,14 @@ public sealed class OverlayWindow : Window
             _backgroundCompletionTimer.Start();
         }
         SyncActivityOverlay();
+    }
+
+    private void HandleModuleSurfaceState(ModuleSurfaceStateChangedEvent payload)
+    {
+        foreach (ModuleSurfaceOverlayWindow window in _moduleSurfaceOverlays.Values)
+        {
+            window.ApplyState(payload);
+        }
     }
 
     /// <summary>Looks up the module surface only when the registry changes. Progress is

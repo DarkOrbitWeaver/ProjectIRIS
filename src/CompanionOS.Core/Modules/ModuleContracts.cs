@@ -324,6 +324,7 @@ public sealed class ModuleSurfaceElement
     public string Placeholder { get; init; } = string.Empty;
     public string ToolName { get; init; } = string.Empty;
     public IReadOnlyList<ModuleSurfaceOption> Options { get; init; } = Array.Empty<ModuleSurfaceOption>();
+    public bool DynamicOptions { get; init; }
 }
 
 /// <summary>A safe label/value pair for a module-authored select control.</summary>

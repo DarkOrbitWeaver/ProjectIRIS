@@ -5,6 +5,7 @@ using Avalonia.Media;
 using Avalonia.Threading;
 using CompanionOS.App.Interface.Controls;
 using CompanionOS.App.Interface.Theme;
+using CompanionOS.Core.Events;
 using CompanionOS.Core.Modules;
 
 namespace CompanionOS.App.Interface.Views;
@@ -22,6 +23,9 @@ internal sealed class ModuleSurfaceOverlayWindow : Window
 
     private readonly ModuleSurface _surface;
     private readonly TextBlock _status;
+    private readonly Dictionary<string, Control> _elementControls = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, Control> _elementHosts = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, TextBlock> _elementLabels = new(StringComparer.OrdinalIgnoreCase);
     private readonly Border _progressTrack;
     private readonly Border _progressFill;
     private DispatcherTimer? _completedTimer;
@@ -114,8 +118,10 @@ internal sealed class ModuleSurfaceOverlayWindow : Window
             switch (element.Type)
             {
                 case ModuleSurfaceElementType.Text:
-                    controls.Children.Add(Ui.Text(element.Label, Palette.FontBody,
-                        Palette.TextSecondaryBrush, wrap: true));
+                    TextBlock text = Ui.Text(element.Label, Palette.FontBody, Palette.TextSecondaryBrush, wrap: true);
+                    _elementControls[element.Id] = text;
+                    _elementHosts[element.Id] = text;
+                    controls.Children.Add(text);
                     break;
 
                 case ModuleSurfaceElementType.Input:
@@ -134,7 +140,11 @@ internal sealed class ModuleSurfaceOverlayWindow : Window
                     };
                     inputs[element.Name] = () => input.Text ?? string.Empty;
                     StackPanel field = new() { Spacing = 5 };
-                    field.Children.Add(Ui.Caption(element.Label));
+                    TextBlock inputLabel = Ui.Caption(element.Label);
+                    _elementLabels[element.Id] = inputLabel;
+                    _elementControls[element.Id] = input;
+                    _elementHosts[element.Id] = field;
+                    field.Children.Add(inputLabel);
                     field.Children.Add(input);
                     controls.Children.Add(field);
                     break;
@@ -161,20 +171,27 @@ internal sealed class ModuleSurfaceOverlayWindow : Window
                     }
                     inputs[element.Name] = () => (select.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? string.Empty;
                     StackPanel choiceField = new() { Spacing = 5 };
-                    choiceField.Children.Add(Ui.Caption(element.Label));
+                    TextBlock selectLabel = Ui.Caption(element.Label);
+                    _elementLabels[element.Id] = selectLabel;
+                    _elementControls[element.Id] = select;
+                    _elementHosts[element.Id] = choiceField;
+                    choiceField.Children.Add(selectLabel);
                     choiceField.Children.Add(select);
                     controls.Children.Add(choiceField);
                     break;
 
                 case ModuleSurfaceElementType.Button:
-                    controls.Children.Add(Ui.PrimaryButton(element.Label, () =>
+                    Button action = Ui.PrimaryButton(element.Label, () =>
                     {
                         Dictionary<string, string> values = inputs.ToDictionary(
                             pair => pair.Key,
                             pair => pair.Value(),
                             StringComparer.OrdinalIgnoreCase);
                         _ = model.ExecuteModuleSurfaceActionAsync(surface, element, values);
-                    }, wide: true));
+                    }, wide: true);
+                    _elementControls[element.Id] = action;
+                    _elementHosts[element.Id] = action;
+                    controls.Children.Add(action);
                     break;
             }
         }
@@ -224,6 +241,75 @@ internal sealed class ModuleSurfaceOverlayWindow : Window
         }
         _status.Text = ClipDisplayText(message);
         return _hiddenTurnId != turnId;
+    }
+
+    public void ApplyState(ModuleSurfaceStateChangedEvent update)
+    {
+        if (!string.Equals(update.ModuleId, ModuleId, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(update.SurfaceId, SurfaceId, StringComparison.OrdinalIgnoreCase) ||
+            !_elementControls.TryGetValue(update.ElementId, out Control? control))
+        {
+            return;
+        }
+
+        if (update.Label is { } label)
+        {
+            if (_elementLabels.TryGetValue(update.ElementId, out TextBlock? fieldLabel))
+            {
+                fieldLabel.Text = label;
+            }
+            else if (control is TextBlock text)
+            {
+                text.Text = label;
+            }
+            else if (control is Button button && button.Content is TextBlock buttonLabel)
+            {
+                buttonLabel.Text = label;
+            }
+        }
+
+        if (update.Options is { } options && control is ComboBox dynamicSelect)
+        {
+            string? selectedValue = update.Value ?? (dynamicSelect.SelectedItem as ComboBoxItem)?.Tag?.ToString();
+            dynamicSelect.Items.Clear();
+            foreach (ModuleSurfaceOption option in options)
+            {
+                dynamicSelect.Items.Add(new ComboBoxItem { Content = option.Label, Tag = option.Value });
+            }
+            dynamicSelect.SelectedItem = dynamicSelect.Items
+                .OfType<ComboBoxItem>()
+                .FirstOrDefault(item => string.Equals(item.Tag?.ToString(), selectedValue, StringComparison.Ordinal));
+            if (dynamicSelect.SelectedItem is null && dynamicSelect.Items.Count > 0)
+            {
+                dynamicSelect.SelectedIndex = 0;
+            }
+        }
+        else if (update.Value is { } value)
+        {
+            switch (control)
+            {
+                case TextBlock text:
+                    text.Text = value;
+                    break;
+                case TextBox input:
+                    input.Text = value;
+                    break;
+                case ComboBox select:
+                    select.SelectedItem = select.Items
+                        .OfType<ComboBoxItem>()
+                        .FirstOrDefault(item => string.Equals(item.Tag?.ToString(), value, StringComparison.Ordinal));
+                    break;
+            }
+        }
+
+        if (update.IsEnabled is { } isEnabled)
+        {
+            control.IsEnabled = isEnabled;
+        }
+        if (update.IsVisible is { } isVisible && _elementHosts.TryGetValue(update.ElementId, out Control? host))
+        {
+            host.IsVisible = isVisible;
+        }
     }
 
     public bool BindProgress(string turnId, string message, double? progress, double? total)

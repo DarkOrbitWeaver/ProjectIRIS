@@ -218,13 +218,24 @@ public sealed class PluginManifest
                                 }
                             }
 
+                            bool dynamicOptions = false;
+                            if (element.TryGetProperty("dynamic", out JsonElement dynamicElement))
+                            {
+                                if (dynamicElement.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+                                {
+                                    rejectionReason = "UI element 'dynamic' must be a boolean";
+                                    return false;
+                                }
+                                dynamicOptions = dynamicElement.ValueKind == JsonValueKind.True;
+                            }
+
                             elements.Add(new PluginSurfaceElementManifest(
                                 ReadString(element, "id"),
                                 ReadString(element, "type"),
                                 ReadString(element, "label"),
                                 ReadString(element, "name"),
                                 ReadString(element, "placeholder"),
-                                ReadString(element, "tool"), options));
+                                ReadString(element, "tool"), options, dynamicOptions));
                         }
                     }
 
@@ -409,7 +420,7 @@ public sealed class PluginManifest
                     return false;
                 }
                 if (!string.Equals(element.Type, "select", StringComparison.OrdinalIgnoreCase) &&
-                    element.Options.Count > 0)
+                    (element.Options.Count > 0 || element.DynamicOptions))
                 {
                     rejectionReason = $"only select element '{element.Id}' may declare options";
                     return false;
@@ -440,7 +451,8 @@ public sealed class PluginManifest
                 {
                     HashSet<string> optionValues = new(StringComparer.Ordinal);
                     if (!IsIdentifier(element.Name) || string.IsNullOrWhiteSpace(element.Label) ||
-                        !seenInputNames.Add(element.Name) || element.Options.Count is 0 or > 64 ||
+                        !seenInputNames.Add(element.Name) || element.Options.Count > 64 ||
+                        (element.Options.Count == 0 && !element.DynamicOptions) ||
                         element.Options.Any(option => string.IsNullOrWhiteSpace(option.Value) || option.Value.Length > 96 ||
                                                       string.IsNullOrWhiteSpace(option.Label) || option.Label.Length > 96 ||
                                                       !optionValues.Add(option.Value)))
@@ -606,7 +618,8 @@ public sealed record PluginSurfaceElementManifest(
     string Name,
     string Placeholder,
     string ToolName,
-    List<PluginSurfaceOptionManifest> Options);
+    List<PluginSurfaceOptionManifest> Options,
+    bool DynamicOptions = false);
 
 public sealed record PluginSurfaceOptionManifest(string Value, string Label);
 

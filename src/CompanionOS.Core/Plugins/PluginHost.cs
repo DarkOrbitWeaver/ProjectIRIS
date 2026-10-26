@@ -10,6 +10,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using CompanionOS.Core.Diagnostics;
 using CompanionOS.Core.Events;
+using CompanionOS.Core.Modules;
 
 namespace CompanionOS.Core.Plugins;
 
@@ -31,6 +32,7 @@ public sealed class PluginHost : IDisposable
     private const int MaximumCommandErrorCharacters = 16 * 1024;
     private const int MaximumProgressMessageCharacters = 240;
     private const int MaximumToolInputCharacters = 256 * 1024;
+    private const int MaximumSurfaceUpdatesPerCommand = 128;
     private static readonly TimeSpan CommandProgressMinimumInterval = TimeSpan.FromMilliseconds(100);
     private readonly EventBus _events;
 
@@ -332,6 +334,7 @@ public sealed class PluginHost : IDisposable
         bool exceededLimit = false;
         PluginResult? result = null;
         long lastProgressTicks = 0;
+        int surfaceUpdateCount = 0;
 
         while (true)
         {
@@ -366,7 +369,7 @@ public sealed class PluginHost : IDisposable
                 if (character == '\n')
                 {
                     ProcessCommandLine(line.ToString().TrimEnd('\r'), plainText, plugin, tool, turnId, ref result,
-                        ref lastProgressTicks);
+                        ref lastProgressTicks, ref surfaceUpdateCount);
                     line.Clear();
                 }
                 else
@@ -379,14 +382,14 @@ public sealed class PluginHost : IDisposable
         if (!exceededLimit && line.Length > 0)
         {
             ProcessCommandLine(line.ToString().TrimEnd('\r'), plainText, plugin, tool, turnId, ref result,
-                ref lastProgressTicks);
+                ref lastProgressTicks, ref surfaceUpdateCount);
         }
 
         return new CommandOutput(plainText.ToString(), result, exceededLimit);
     }
 
     private void ProcessCommandLine(string line, StringBuilder plainText, PluginManifest plugin, PluginTool tool,
-        string turnId, ref PluginResult? result, ref long lastProgressTicks)
+        string turnId, ref PluginResult? result, ref long lastProgressTicks, ref int surfaceUpdateCount)
     {
         try
         {
@@ -442,6 +445,15 @@ public sealed class PluginHost : IDisposable
                     result = new PluginResult(ok, text, ok ? null : text);
                     return;
                 }
+
+                if (string.Equals(type, "ui", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (surfaceUpdateCount < MaximumSurfaceUpdatesPerCommand)
+                    {
+                        TryPublishSurfaceState(root, plugin, ref surfaceUpdateCount);
+                    }
+                    return;
+                }
             }
         }
         catch (JsonException)
@@ -454,6 +466,138 @@ public sealed class PluginHost : IDisposable
             plainText.AppendLine();
         }
         plainText.Append(line);
+    }
+
+    private void TryPublishSurfaceState(JsonElement root, PluginManifest plugin, ref int surfaceUpdateCount)
+    {
+        if (!TryReadBoundedString(root, "surface", 64, out string surfaceId) ||
+            !TryReadBoundedString(root, "element", 64, out string elementId))
+        {
+            return;
+        }
+
+        PluginSurfaceManifest? surface = plugin.Surfaces.FirstOrDefault(candidate =>
+            string.Equals(candidate.Id, surfaceId, StringComparison.OrdinalIgnoreCase));
+        PluginSurfaceElementManifest? element = surface?.Elements.FirstOrDefault(candidate =>
+            string.Equals(candidate.Id, elementId, StringComparison.OrdinalIgnoreCase));
+        if (element is null)
+        {
+            return;
+        }
+
+        string? label = null;
+        if (root.TryGetProperty("label", out JsonElement labelElement))
+        {
+            if (labelElement.ValueKind != JsonValueKind.String || (label = labelElement.GetString()) is null || label.Length > 96)
+            {
+                return;
+            }
+        }
+
+        string? value = null;
+        if (root.TryGetProperty("value", out JsonElement valueElement))
+        {
+            if (valueElement.ValueKind != JsonValueKind.String || (value = valueElement.GetString()) is null || value.Length > 4096 ||
+                string.Equals(element.Type, "button", StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+        }
+
+        bool? visible = TryReadOptionalBoolean(root, "visible", out bool visibleValue, out bool visibleInvalid)
+            ? visibleValue : null;
+        bool? enabled = TryReadOptionalBoolean(root, "enabled", out bool enabledValue, out bool enabledInvalid)
+            ? enabledValue : null;
+        if (visibleInvalid || enabledInvalid)
+        {
+            return;
+        }
+
+        IReadOnlyList<ModuleSurfaceOption>? options = null;
+        if (root.TryGetProperty("options", out JsonElement optionsElement))
+        {
+            if (!string.Equals(element.Type, "select", StringComparison.OrdinalIgnoreCase) || !element.DynamicOptions ||
+                optionsElement.ValueKind != JsonValueKind.Array || optionsElement.GetArrayLength() > 64)
+            {
+                return;
+            }
+
+            List<ModuleSurfaceOption> parsedOptions = [];
+            HashSet<string> values = new(StringComparer.Ordinal);
+            foreach (JsonElement option in optionsElement.EnumerateArray())
+            {
+                if (option.ValueKind != JsonValueKind.Object || !TryReadBoundedString(option, "value", 96, out string optionValue) ||
+                    string.IsNullOrWhiteSpace(optionValue) || !TryReadBoundedString(option, "label", 96, out string optionLabel) ||
+                    string.IsNullOrWhiteSpace(optionLabel) || !values.Add(optionValue))
+                {
+                    return;
+                }
+                parsedOptions.Add(new ModuleSurfaceOption(optionValue, optionLabel));
+            }
+            options = parsedOptions;
+        }
+
+        if (value is not null && string.Equals(element.Type, "select", StringComparison.OrdinalIgnoreCase))
+        {
+            if (element.DynamicOptions && options is null)
+            {
+                return;
+            }
+            IReadOnlyList<PluginSurfaceOptionManifest> availableOptions = options is null
+                ? element.Options
+                : options.Select(option => new PluginSurfaceOptionManifest(option.Value, option.Label)).ToList();
+            if ((availableOptions.Count > 0 || !element.DynamicOptions) &&
+                !availableOptions.Any(option => string.Equals(option.Value, value, StringComparison.Ordinal)))
+            {
+                return;
+            }
+        }
+
+        if (label is null && value is null && visible is null && enabled is null && options is null)
+        {
+            return;
+        }
+        surfaceUpdateCount++;
+        _events.Publish(new ModuleSurfaceStateChangedEvent
+        {
+            ModuleId = $"plugin:{plugin.Id}",
+            SurfaceId = $"plugin:{plugin.Id}:{surfaceId}",
+            ElementId = elementId,
+            Label = label,
+            Value = value,
+            IsVisible = visible,
+            IsEnabled = enabled,
+            Options = options
+        });
+    }
+
+    private static bool TryReadBoundedString(JsonElement root, string name, int maximumLength, out string result)
+    {
+        result = string.Empty;
+        if (!root.TryGetProperty(name, out JsonElement element) || element.ValueKind != JsonValueKind.String ||
+            element.GetString() is not { } value || value.Length is 0 || value.Length > maximumLength)
+        {
+            return false;
+        }
+        result = value;
+        return true;
+    }
+
+    private static bool TryReadOptionalBoolean(JsonElement root, string name, out bool value, out bool invalid)
+    {
+        value = false;
+        invalid = false;
+        if (!root.TryGetProperty(name, out JsonElement element))
+        {
+            return false;
+        }
+        if (element.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+        {
+            invalid = true;
+            return false;
+        }
+        value = element.ValueKind == JsonValueKind.True;
+        return true;
     }
 
     private static double? TryReadFiniteNumber(JsonElement root, string property)

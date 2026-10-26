@@ -210,6 +210,19 @@ public sealed class BackgroundTaskChangedEvent : CompanionEvent
     public required BackgroundTaskSnapshot Task { get; init; }
 }
 
+/// <summary>A validated state patch for one element in a module's declared surface.</summary>
+public sealed class ModuleSurfaceStateChangedEvent : CompanionEvent
+{
+    public required string ModuleId { get; init; }
+    public required string SurfaceId { get; init; }
+    public required string ElementId { get; init; }
+    public string? Label { get; init; }
+    public string? Value { get; init; }
+    public bool? IsVisible { get; init; }
+    public bool? IsEnabled { get; init; }
+    public IReadOnlyList<ModuleSurfaceOption>? Options { get; init; }
+}
+
 /// <summary>Live resource numbers for the status strip.</summary>
 public sealed class TelemetryEvent : CompanionEvent
 {

@@ -91,7 +91,7 @@ public sealed class CoreRegressionTests
                     "slot": "sidebar",
                     "icon": "telegram",
                     "elements": [
-                      {"id":"recipient","type":"input","name":"recipient","label":"To","placeholder":"Contact"},
+                      {"id":"recipient","type":"select","name":"recipient","label":"To","dynamic":true,"options":[]},
                       {"id":"message","type":"input","name":"message","label":"Message"},
                       {"id":"source","type":"select","name":"source","label":"Contact source","options":[{"value":"recent","label":"Recent"},{"value":"all","label":"All contacts"}]},
                       {"id":"send","type":"button","label":"Send","tool":"send_message"}
@@ -115,6 +115,7 @@ public sealed class CoreRegressionTests
             Assert.Equal("telegram", surface.Icon);
             Assert.Equal("sidebar", surface.Slot);
             Assert.Equal(4, surface.Elements.Count);
+            Assert.True(surface.Elements[0].DynamicOptions);
             Assert.Equal("send_message", surface.Elements[^1].ToolName);
             Assert.Equal("recent", surface.Elements[2].Options[0].Value);
             Assert.Equal("overlay", manifest.Surfaces[1].Slot);
@@ -389,11 +390,15 @@ public sealed class CoreRegressionTests
         File.WriteAllText(Path.Combine(folder, "worker.ps1"), """
             $request = ConvertFrom-Json -InputObject ([Console]::In.ReadLine())
             [Console]::Out.WriteLine('{"type":"progress","message":"Finding contact","progress":1,"total":2}')
+            [Console]::Out.WriteLine('{"type":"ui","surface":"contacts","element":"undeclared","value":"ignore"}')
+            [Console]::Out.WriteLine('{"type":"ui","surface":"contacts","element":"recipient","options":[{"value":"ada","label":"Ada"}],"value":"ada","visible":true}')
             [Console]::Out.WriteLine('{"type":"result","text":"Found Ada"}')
             """);
         EventBus events = new();
         List<ModuleProgressEvent> progress = [];
+        List<ModuleSurfaceStateChangedEvent> surfaceUpdates = [];
         using IDisposable subscription = events.Subscribe<ModuleProgressEvent>(progress.Add);
+        using IDisposable surfaceSubscription = events.Subscribe<ModuleSurfaceStateChangedEvent>(surfaceUpdates.Add);
         using PluginHost host = new(events, folder);
         PluginManifest plugin = new()
         {
@@ -402,7 +407,13 @@ public sealed class CoreRegressionTests
             Transport = "command",
             Command = ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "worker.ps1"],
             Folder = folder,
-            Disabled = false
+            Disabled = false,
+            Surfaces =
+            [
+                new PluginSurfaceManifest("contacts", "Contacts", "overlay", "telegram",
+                [new PluginSurfaceElementManifest("recipient", "select", "Recipient", "recipient", "", "",
+                    [], DynamicOptions: true)])
+            ]
         };
 
         try
@@ -419,6 +430,13 @@ public sealed class CoreRegressionTests
             Assert.Equal("Finding contact", update.Message);
             Assert.Equal(1, update.Progress);
             Assert.Equal(2, update.Total);
+            ModuleSurfaceStateChangedEvent surfaceUpdate = Assert.Single(surfaceUpdates);
+            Assert.Equal("plugin:telegram", surfaceUpdate.ModuleId);
+            Assert.Equal("plugin:telegram:contacts", surfaceUpdate.SurfaceId);
+            Assert.Equal("recipient", surfaceUpdate.ElementId);
+            Assert.Equal("ada", surfaceUpdate.Value);
+            Assert.True(surfaceUpdate.IsVisible);
+            Assert.Equal("Ada", Assert.Single(surfaceUpdate.Options!).Label);
         }
         finally
         {

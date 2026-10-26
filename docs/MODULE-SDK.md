@@ -26,7 +26,9 @@ permission, activity, and shell contracts so each integration feels like part of
 - External modules may declare up to six surfaces (up to five sidebar surfaces and one
   independent overlay), each with at most twenty native elements: plain text, text inputs,
   constrained select controls, and buttons bound to that module's offered tools. Select options
-  map to string enum values in the target tool schema. The shell shows a module overlay while its
+  map to string enum values in the target tool schema; a `dynamic: true` select can start empty
+  and receive safe option updates from its module. Command modules can update only elements in
+  their own declared surfaces through `ui` JSONL messages. The shell shows a module overlay while its
   tool is running, updates it from real MCP progress, and lets the user hide it for that task. A
   button action is checked against its owning module and then uses the same permission gate
   as a model-selected tool. All inputs in one surface are string fields shared by its buttons
@@ -76,6 +78,18 @@ intermediate work and a structured final result on stdout, one JSON object per l
 {"type":"progress","message":"Finding Alex","progress":1,"total":3}
 {"type":"result","ok":true,"text":"Found Alex in contacts."}
 ```
+
+They may also update a declared surface element using only the host's native controls:
+
+```json
+{"type":"ui","surface":"compose","element":"contacts","options":[{"value":"user-42","label":"Alex"}],"value":"user-42"}
+```
+
+The host scopes this update to the calling plugin, validates both IDs and the element type, and
+caps successful updates at 128 per tool call. `label`, `value`, `visible`, and `enabled` can update
+declared controls; `options` is accepted only for a select declared with `dynamic: true`. Modules
+cannot supply markup or executable UI code. A button action still goes through the ordinary tool
+router and permission gate.
 
 Progress numbers are optional; omit them when there is no honest total. `result.ok` defaults to
 true and `result.text` is returned to Iris. The module process is isolated from Iris's UI process,
