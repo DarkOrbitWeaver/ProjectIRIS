@@ -22,6 +22,62 @@ namespace CompanionOS.Core.Tests;
 public sealed class CoreRegressionTests
 {
     [Fact]
+    public async Task SpeechOutputArbiterSerializesConcurrentCallers()
+    {
+        SpeechOutputArbiter arbiter = new();
+        TaskCompletionSource firstEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        TaskCompletionSource releaseFirst = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        int active = 0;
+        int maximumActive = 0;
+
+        Task first = arbiter.RunAsync(async _ =>
+        {
+            int current = Interlocked.Increment(ref active);
+            maximumActive = Math.Max(maximumActive, current);
+            firstEntered.TrySetResult();
+            await releaseFirst.Task;
+            Interlocked.Decrement(ref active);
+        }, CancellationToken.None);
+
+        await firstEntered.Task;
+        Task second = arbiter.RunAsync(_ =>
+        {
+            int current = Interlocked.Increment(ref active);
+            maximumActive = Math.Max(maximumActive, current);
+            Interlocked.Decrement(ref active);
+            return Task.CompletedTask;
+        }, CancellationToken.None);
+
+        Assert.False(second.IsCompleted);
+        releaseFirst.TrySetResult();
+        await Task.WhenAll(first, second);
+
+        Assert.Equal(1, maximumActive);
+    }
+
+    [Fact]
+    public async Task SpeechOutputArbiterCancelsQueuedAndActiveWorkDuringShutdown()
+    {
+        SpeechOutputArbiter arbiter = new();
+        TaskCompletionSource activeEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        Task active = arbiter.RunAsync(async token =>
+        {
+            activeEntered.TrySetResult();
+            await Task.Delay(Timeout.InfiniteTimeSpan, token);
+        }, CancellationToken.None);
+        await activeEntered.Task;
+
+        using CancellationTokenSource queuedCancellation = new();
+        Task queued = arbiter.RunAsync(_ => Task.CompletedTask, queuedCancellation.Token);
+        queuedCancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => queued);
+
+        arbiter.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => active);
+        await arbiter.DrainAsync();
+    }
+
+    [Fact]
     public void ToolArgumentsRejectMalformedJsonAndNonObjectValues()
     {
         Assert.False(ToolArgumentsParser.TryParse("{\"path\":", out _));

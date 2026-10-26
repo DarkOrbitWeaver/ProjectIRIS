@@ -31,7 +31,9 @@ behavior that has been exercised.
   audio or rejected playback also produces correlated failure feedback while preserving text.
   Cached reflex phrases now publish the same speaking state as generated replies, report rejected
   output, and release the settings-event subscription when the pipeline is disposed. Background
-  reflex calls observe cancellation and a pre-cancelled audio request cannot start playback.
+  reflex calls observe cancellation and a pre-cancelled audio request cannot start playback. A
+  shared speech-output arbiter serializes generated replies, reflexes, and module-triggered speech;
+  shutdown cancels queued/active speech and drains the output before disposing voice resources.
   Target-device voice behavior remains unverified.
 - **Awareness:** low-cost Windows foreground, media, idle, CPU/RAM, and battery observations;
   optional screen capture; game detection; and sleep/gaming resource handoff are implemented.
@@ -113,7 +115,7 @@ works on the target PC under real microphone, speaker, model, display, game, and
 
 ## Verification checkpoint
 
-The current worktree builds with zero warnings/errors and the core suite passes 77/77 tests. New
+The current worktree builds with zero warnings/errors and the core suite passes 80/80 tests. New
 regressions verify that `vision: off` blocks forced capture, that Iris does not claim passive
 screen access, that malformed or non-object tool arguments cannot reach a module, and that module
 schemas reject missing, mistyped, unlisted, and unsupported arguments before execution; a host-level
@@ -126,7 +128,8 @@ journal turn without hiding a later interrupted turn, and synchronous tools publ
 one finish event. Media ownership regressions cover concurrent voice calls, a setting change
 while paused, cancellation before resume, visible recovery on a failed resume, direct-versus-
 associated memory recall explanations, the privacy-safe correlated recall audit, stable voice
-addressing through slow recognition, and missing-Whisper-model classification. Voice outcome
+addressing through slow recognition, missing-Whisper-model classification, serialized speech
+output, shutdown cancellation/draining, and rejection of pre-cancelled playback. Voice outcome
 instrumentation builds with the app; live microphone and wake behavior remain target-PC
 acceptance work. No model was
 loaded and the app was not launched for this

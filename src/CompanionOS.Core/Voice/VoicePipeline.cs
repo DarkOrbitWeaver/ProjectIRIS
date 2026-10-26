@@ -28,6 +28,7 @@ public sealed class VoicePipeline : IAsyncDisposable
     private readonly WakePhraseMatcher _wakeMatcher;
     private readonly PocketTtsServerHost _pocketHost;
     private readonly IDisposable _settingsChangedSubscription;
+    private readonly SpeechOutputArbiter _speechOutputArbiter = new();
     private readonly object _segmentLock = new();
     private readonly SemaphoreSlim _recognitionGate = new(1, 1);
 
@@ -622,14 +623,19 @@ public sealed class VoicePipeline : IAsyncDisposable
     /// </summary>
     public async Task ApplyVoiceProfileAsync(VoiceProfile profile, CancellationToken cancellationToken = default)
     {
-        ISpeechSynthesizer replacement = SpeechSynthesizerFactory.Create(_settings.Current.Voice);
-        ISpeechSynthesizer previous = Synthesizer;
+        await _speechOutputArbiter.RunAsync(token =>
+        {
+            token.ThrowIfCancellationRequested();
+            ISpeechSynthesizer replacement = SpeechSynthesizerFactory.Create(_settings.Current.Voice);
+            ISpeechSynthesizer previous = Synthesizer;
 
-        Profile = profile;
-        Synthesizer = replacement;
-        ReflexBank = new ReflexBank(_personaStore.Current, profile, replacement, CompanionPaths.CacheDirectory);
+            Profile = profile;
+            Synthesizer = replacement;
+            ReflexBank = new ReflexBank(_personaStore.Current, profile, replacement, CompanionPaths.CacheDirectory);
+            previous.Dispose();
+            return Task.CompletedTask;
+        }, cancellationToken).ConfigureAwait(false);
 
-        previous.Dispose();
         _wakeMatcher.Refresh(_personaStore.Current);
 
         // The voice itself is live the moment the profile lands. The reflex cache, though,
@@ -700,6 +706,35 @@ public sealed class VoicePipeline : IAsyncDisposable
             return;
         }
 
+        try
+        {
+            await _speechOutputArbiter.RunAsync(
+                token => SpeakExclusiveAsync(text, sentences, token), cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            IrisEvent.Log("Voice", "speech.cancelled_while_queued", LogLevel.Trace,
+                data: new Dictionary<string, string?> { ["chars"] = text.Length.ToString() });
+        }
+    }
+
+    private async Task SpeakExclusiveAsync(string text, IReadOnlyList<string> sentences,
+        CancellationToken cancellationToken)
+    {
+        if (IsMuted || !IsVoiceOnline)
+        {
+            ScheduleVoiceReprobe();
+            IrisEvent.Log("Voice", "speech.skipped", LogLevel.Info,
+                message: "Speech was skipped because voice became unavailable while waiting for the output device.",
+                data: new Dictionary<string, string?>
+                {
+                    ["muted"] = IsMuted.ToString(),
+                    ["voice_online"] = IsVoiceOnline.ToString(),
+                    ["chars"] = text.Length.ToString()
+                });
+            return;
+        }
+
         string turnId = IrisEvent.CurrentCorrelationId ?? string.Empty;
         _events.Publish(new SpeechEvent { IsSpeaking = true, Text = text, TurnId = turnId });
 
@@ -715,6 +750,7 @@ public sealed class VoicePipeline : IAsyncDisposable
 
                 if (audio is null)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     IrisEvent.Log("Voice", "synth.failed", LogLevel.Warning,
                         message: "The engine returned no audio for a sentence.",
                         data: new Dictionary<string, string?>
@@ -775,9 +811,21 @@ public sealed class VoicePipeline : IAsyncDisposable
     }
 
     /// <summary>Plays a cached phrase immediately; false means it was unavailable or output did not start.</summary>
-    public async Task<bool> SpeakReflexAsync(string category, CancellationToken cancellationToken = default)
+    public Task<bool> SpeakReflexAsync(string category, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        if (IsMuted || !IsVoiceOnline || !_settings.Current.Voice.ReflexPhrasesEnabled)
+        {
+            ScheduleVoiceReprobe();
+            return Task.FromResult(false);
+        }
+
+        return _speechOutputArbiter.RunAsync(
+            token => SpeakReflexExclusiveAsync(category, token), cancellationToken);
+    }
+
+    private async Task<bool> SpeakReflexExclusiveAsync(string category, CancellationToken cancellationToken)
+    {
         if (IsMuted || !IsVoiceOnline || !_settings.Current.Voice.ReflexPhrasesEnabled)
         {
             ScheduleVoiceReprobe();
@@ -785,10 +833,7 @@ public sealed class VoicePipeline : IAsyncDisposable
         }
 
         SpeechAudio? phrase = ReflexBank.TryPick(category);
-        if (phrase is null)
-        {
-            return false;
-        }
+        if (phrase is null) return false;
 
         string turnId = IrisEvent.CurrentCorrelationId ?? string.Empty;
         _events.Publish(new SpeechEvent { IsSpeaking = true, TurnId = turnId });
@@ -854,6 +899,9 @@ public sealed class VoicePipeline : IAsyncDisposable
         }
 
         _isDisposed = true;
+        _speechOutputArbiter.Cancel();
+        StopSpeaking();
+        await _speechOutputArbiter.DrainAsync().ConfigureAwait(false);
         _settingsChangedSubscription.Dispose();
         _microphone.SamplesAvailable -= OnMicrophoneSamples;
         _microphone.LevelChanged -= OnMicrophoneLevel;
