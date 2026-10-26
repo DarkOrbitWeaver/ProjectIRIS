@@ -162,20 +162,25 @@ public sealed class MusicRailPanel : Border
 
     private void BlinkTransportRow()
     {
-        _play = TransportButton(IconGlyph.Play, Palette.TextPrimaryBrush, "Play or pause", OnTransportPressed);
+        _play = TransportButton(IconGlyph.Play, Palette.TextPrimaryBrush, "Play or pause", OnTransportPressed,
+            primary: true);
     }
 
-    private static Button TransportButton(string geometry, IBrush stroke, string label, Action onClick)
+    private static Button TransportButton(string geometry, IBrush stroke, string label, Action onClick,
+        bool primary = false)
     {
         Button button = new()
         {
             Content = IconGlyph.Make(geometry, 20, stroke),
-            Background = Brushes.Transparent,
-            BorderThickness = new Thickness(0),
+            Background = primary ? Palette.ElevatedBrush : Brushes.Transparent,
+            BorderBrush = primary ? Palette.StrokeBrush : Brushes.Transparent,
+            BorderThickness = primary ? new Thickness(1) : new Thickness(0),
             Padding = new Thickness(0),
-            Width = 28,
-            Height = 28,
-            CornerRadius = new CornerRadius(6)
+            Width = primary ? 36 : 28,
+            Height = primary ? 36 : 28,
+            CornerRadius = new CornerRadius(primary ? 18 : 14),
+            HorizontalContentAlignment = HorizontalAlignment.Center,
+            VerticalContentAlignment = VerticalAlignment.Center
         };
         ToolTip.SetTip(button, label);
         button.Click += (_, _) => onClick();

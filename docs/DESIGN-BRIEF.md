@@ -273,15 +273,14 @@ New design — **capability poster, not a list:**
 
 ### 5.9 Status strip (bottom of main window, 32px, Canvas inset)
 
-Micro caps, tabular: `BRAIN Vision Agent · VRAM 5.5/8.0 · CTX 12% · RAM 186 MB · MIC OPEN · LOCAL ONLY`
+Micro caps, tabular: `BRAIN Vision Agent · VRAM 5.5/8.0 · CTX 12% · RAM 186 MB · MIC OPEN`
 - Separated by hairline dots, not pipes. Mic OPEN in Success when open, Tertiary when closed.
-- One right-aligned word only: `Local only`. Nothing leaves this machine — that is the
-  whole privacy sentence, and it lives here and NOWHERE else (delete any repeated privacy lines).
+- Do not show a blanket `Local only` claim here: the active brain endpoint may be remote.
 
 ### 5.10 Notices (toasts)
 
 Top-center under chrome, width 420, radius 12, Canvas raised, icon 16 + Body text,
-auto-dismiss 4s (success) / 8s (warning) / persistent (error + action "Details" → log).
+auto-dismiss 4s (success) / 5s (info) / 8s (warning) / persistent (error + action "Details" → log).
 Max 2 stacked. No colored left-bars; state = icon color only.
 
 ---

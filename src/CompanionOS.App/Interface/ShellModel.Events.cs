@@ -393,11 +393,12 @@ public sealed partial class ShellModel : ObservableObject
     {
         for (int index = Notices.Count - 1; index >= 0; index--)
         {
-            // Board timing: 4 s for good news, 8 s for a warning, and errors stay until
-            // the user reads them (Details) or dismisses the card.
+            // Short status and success notices clear themselves. Warnings get longer;
+            // actionable errors stay until the user reads Details or dismisses them.
             TimeSpan? lifetime = Notices[index].Severity switch
             {
                 NoticeSeverity.Success => TimeSpan.FromSeconds(4),
+                NoticeSeverity.Info => TimeSpan.FromSeconds(5),
                 NoticeSeverity.Warning => TimeSpan.FromSeconds(8),
                 _ => null
             };

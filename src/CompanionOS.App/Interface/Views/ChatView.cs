@@ -90,7 +90,6 @@ public sealed class ChatView : UserControl
         _sensesRow = new SensesRailRow(model.Runtime);
         _resourcesCard = new ResourcesRailCard(model.Runtime);
         _musicPanel = new MusicRailPanel(null, InvokeMusicTool);
-        _railHost.Children.Add(BuildRailCard(_musicPanel, _sensesRow, _resourcesCard));
         _emptyState = BuildEmptyState();
 
         _messages.ItemsSource = _model.Messages;
@@ -105,8 +104,8 @@ public sealed class ChatView : UserControl
         model.Runtime.Events.Subscribe<ModuleSurfaceStateChangedEvent>(payload =>
             Dispatcher.UIThread.Post(() => ApplyModuleSurfaceState(payload)));
 
-        Content = BuildLayout();
         RebindMusic();
+        Content = BuildLayout();
         RefreshEmptyState();
 
         // The composer's ring and underline follow real state, not just the last click.
@@ -215,6 +214,13 @@ public sealed class ChatView : UserControl
         MusicRailPanel musicPanel = _musicPanel ?? new MusicRailPanel(null, InvokeMusicTool);
         _musicPanel = musicPanel;
         _moduleSurfaceControls.Clear();
+        if (_railHost.Children.FirstOrDefault() is Border { Child: StackPanel previousRailStack })
+        {
+            // The live rail cards are reusable controls. Detach them from their old
+            // stack before rebuilding it, or Avalonia rejects a second visual parent
+            // when a module registry change rebinds the music model.
+            previousRailStack.Children.Clear();
+        }
         _railHost.Children.Clear();
         _railHost.Children.Add(BuildRailCard(musicPanel, _sensesRow, _resourcesCard));
         foreach (ModuleSurface surface in surfaces.Where(surface =>
@@ -506,6 +512,7 @@ public sealed class ChatView : UserControl
             BorderThickness = new Thickness(2),
             Background = Brushes.Transparent,
             HorizontalContentAlignment = HorizontalAlignment.Center,
+            VerticalContentAlignment = VerticalAlignment.Center,
             Padding = new Thickness(0),
             Cursor = new Cursor(StandardCursorType.Hand)
         };
@@ -524,6 +531,8 @@ public sealed class ChatView : UserControl
             CornerRadius = new CornerRadius(18),
             BorderThickness = new Thickness(0),
             Background = Palette.IrisBrush,
+            HorizontalContentAlignment = HorizontalAlignment.Center,
+            VerticalContentAlignment = VerticalAlignment.Center,
             Padding = new Thickness(0)
         };
         ToolTip.SetTip(_sendButton, "Send");

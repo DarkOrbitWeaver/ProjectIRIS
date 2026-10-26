@@ -218,7 +218,9 @@ public sealed class PersonaView : UserControl
             BorderBrush = Palette.StrokeBrush,
             Background = Palette.SurfaceBrush,
             BorderThickness = new Thickness(1),
-            Padding = new Thickness(0)
+            Padding = new Thickness(0),
+            HorizontalContentAlignment = HorizontalAlignment.Center,
+            VerticalContentAlignment = VerticalAlignment.Center
         };
         ToolTip.SetTip(preview, $"Preview {candidate.Label}");
         preview.Click += (_, _) => _ = PreviewAsync(candidate);

@@ -378,6 +378,7 @@ public sealed partial class MainWindow : Window
 
         // Left cluster: orb, name, state — gap 10, from the board.
         StackPanel identity = new() { Orientation = Orientation.Horizontal, Spacing = 10, VerticalAlignment = VerticalAlignment.Center };
+        identity.Margin = new Thickness(8, 0, 0, 0);
         identity.Children.Add(_titleOrb);
 
         TextBlock name = Ui.Text("Iris", Palette.FontTitle, Palette.TextPrimaryBrush, FontWeight.SemiBold, wrap: false);
@@ -450,6 +451,7 @@ public sealed partial class MainWindow : Window
             MinWidth = 32,
             Height = 32,
             CornerRadius = new CornerRadius(8),
+            VerticalContentAlignment = VerticalAlignment.Center,
             Cursor = new Cursor(StandardCursorType.Hand)
         };
         ToolTip.SetTip(button, label);
@@ -468,6 +470,8 @@ public sealed partial class MainWindow : Window
             MinHeight = 32,
             Height = 32,
             CornerRadius = new CornerRadius(8),
+            HorizontalContentAlignment = HorizontalAlignment.Center,
+            VerticalContentAlignment = VerticalAlignment.Center,
             Cursor = new Cursor(StandardCursorType.Hand)
         };
         ToolTip.SetTip(button, label);
@@ -576,7 +580,9 @@ public sealed partial class MainWindow : Window
             Width = 56,
             Height = 56,
             CornerRadius = new CornerRadius(12),
-            Padding = new Thickness(0)
+            Padding = new Thickness(0),
+            HorizontalContentAlignment = HorizontalAlignment.Center,
+            VerticalContentAlignment = VerticalAlignment.Center
         };
 
         ToolTip.SetTip(button, label);
@@ -646,7 +652,8 @@ public sealed partial class MainWindow : Window
 
     /// <summary>
     /// The board's status strip: 32 px, dotted uppercase captions, mic in green when her
-    /// ears are open, "Local only" pinned right.
+    /// ears are open. Endpoint privacy is configuration-dependent, so the strip makes no
+    /// blanket local-only claim.
     /// </summary>
     private Control BuildStatusStrip()
     {
@@ -666,30 +673,14 @@ public sealed partial class MainWindow : Window
         left.Children.Add(_ramLabel);
         left.Children.Add(_microphoneLabel);
 
-        TextBlock privacy = new()
-        {
-            Text = "LOCAL ONLY",
-            FontFamily = Palette.UiFont,
-            FontSize = Palette.FontCaption,
-            FontWeight = FontWeight.Medium,
-            LetterSpacing = 0.88,
-            Foreground = Palette.TextSecondaryBrush,
-            VerticalAlignment = VerticalAlignment.Center
-        };
-
-        Grid strip = new() { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
-        Grid.SetColumn(left, 0);
-        Grid.SetColumn(privacy, 1);
-        privacy.Margin = new Thickness(0, 0, 16, 0);
-        strip.Children.Add(left);
-        strip.Children.Add(privacy);
+        left.Margin = new Thickness(10, 0, 0, 0);
 
         return new Border
         {
             Background = Palette.SurfaceBrush,
             BorderBrush = Palette.StrokeBrush,
             BorderThickness = new Thickness(0, 1, 0, 0),
-            Child = strip
+            Child = left
         };
     }
 

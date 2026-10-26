@@ -56,7 +56,10 @@ public sealed class DiagnosticsView : UserControl
         _perception.SituationUpdated += OnSituationUpdated;
         events.Subscribe<SettingsChangedEvent>(_ =>
         {
-            if (IsVisible) Dispatcher.UIThread.Post(RefreshSensorHealth);
+            Dispatcher.UIThread.Post(() =>
+            {
+                if (IsVisible) RefreshSensorHealth();
+            });
         });
 
         _filter.TextChanged += (_, _) =>
@@ -166,10 +169,12 @@ public sealed class DiagnosticsView : UserControl
 
     private void OnSituationUpdated(SituationSnapshot _)
     {
-        if (IsVisible)
+        // Perception publishes from its background timer. Avalonia controls, including
+        // IsVisible, must only be touched after hopping to the UI dispatcher.
+        Dispatcher.UIThread.Post(() =>
         {
-            Dispatcher.UIThread.Post(RefreshSensorHealth);
-        }
+            if (IsVisible) RefreshSensorHealth();
+        });
     }
 
     /// <summary>Refresh the panel when opened; background sensor ticks do no UI work while hidden.</summary>
