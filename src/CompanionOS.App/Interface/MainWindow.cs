@@ -750,7 +750,7 @@ public sealed partial class MainWindow : Window
         _chatView = new ChatView(_model);
         _memoryView = new MemoryView(_runtime);
         _modulesView = new ModulesView(_runtime);
-        _diagnosticsView = new DiagnosticsView();
+        _diagnosticsView = new DiagnosticsView(_runtime.Perception, _runtime.Events);
     }
 
     private void ShowChat()
@@ -793,6 +793,7 @@ public sealed partial class MainWindow : Window
 
     private void ShowDiagnostics()
     {
+        _diagnosticsView.RefreshSensorHealth();
         _contentHost.Content = _diagnosticsView;
         // The orb is not one of the tiles: while her truth screen is up nothing on the
         // rail pretends to be the active screen, so every tile goes quiet.

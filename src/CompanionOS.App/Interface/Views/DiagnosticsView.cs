@@ -6,6 +6,8 @@ using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Threading;
 using CompanionOS.App.Interface.Theme;
+using CompanionOS.Core.Events;
+using CompanionOS.Core.Perception;
 using CompanionOS.Core.Diagnostics;
 
 namespace CompanionOS.App.Interface.Views;
@@ -31,6 +33,9 @@ public sealed class DiagnosticsView : UserControl
 
     private readonly TextBox _filter = Ui.Input("Filter by area, event or text");
     private readonly ToggleButton _pauseButton;
+    private readonly PerceptionEngine _perception;
+    private readonly StackPanel _sensingRows = new() { Spacing = Palette.SpaceSm };
+    private readonly TextBlock _sensingUpdated = Ui.Text("", Palette.FontCaption, Palette.TextFaintBrush);
     private readonly ItemsControl _eventRows = new();
     private readonly ItemsControl _diaryRows = new();
     private readonly ItemsControl _systemRows = new();
@@ -42,11 +47,17 @@ public sealed class DiagnosticsView : UserControl
     private readonly List<DiagnosticsEntry> _diaryEntries = new();
     private readonly List<DiagnosticsEntry> _systemEntries = new();
 
-    public DiagnosticsView()
+    public DiagnosticsView(PerceptionEngine perception, EventBus events)
     {
+        _perception = perception;
         IrisEvent.EventLogged += OnEventLogged;
         CompanionLog.EntryWritten += OnEntryWritten;
         SystemWatch.LineWritten += OnSystemLineWritten;
+        _perception.SituationUpdated += OnSituationUpdated;
+        events.Subscribe<SettingsChangedEvent>(_ =>
+        {
+            if (IsVisible) Dispatcher.UIThread.Post(RefreshSensorHealth);
+        });
 
         _filter.TextChanged += (_, _) =>
         {
@@ -103,10 +114,11 @@ public sealed class DiagnosticsView : UserControl
         _diaryRows.ItemTemplate = rowTemplate;
         _systemRows.ItemTemplate = rowTemplate;
 
+        TabItem sensingTab = new() { Header = "Sensing", Content = BuildSensingPanel() };
         TabItem eventsTab = new() { Header = "Behavior", Content = WrapList(_eventRows) };
         TabItem logTab = new() { Header = "App diary", Content = WrapList(_diaryRows) };
         TabItem systemTab = new() { Header = "OS watch", Content = WrapList(_systemRows) };
-        TabControl tabs = new() { Items = { eventsTab, logTab, systemTab } };
+        TabControl tabs = new() { Items = { sensingTab, eventsTab, logTab, systemTab } };
 
         StackPanel stack = new() { Spacing = Palette.SpaceMd, Margin = new Thickness(Palette.SpaceLg) };
         stack.Children.Add(header);
@@ -124,8 +136,84 @@ public sealed class DiagnosticsView : UserControl
         foreach (EventRecord record in IrisEvent.Recent(MaximumRows).Reverse()) _eventEntries.Add(DiagnosticsEntry.ForEvent(record));
         foreach (LogEntry entry in CompanionLog.Recent(MaximumRows).Reverse()) _diaryEntries.Add(DiagnosticsEntry.ForEntry(entry));
         foreach (string line in SystemWatch.Recent(MaximumRows).Reverse()) _systemEntries.Add(DiagnosticsEntry.ForSystemLine(line));
+        RefreshSensorHealth();
         Rebind();
     }
+
+    private Control BuildSensingPanel()
+    {
+        StackPanel content = new() { Spacing = Palette.SpaceMd, Margin = new Thickness(Palette.SpaceLg) };
+        content.Children.Add(Ui.Text("Current sensing status", Palette.FontSection, Palette.TextPrimaryBrush,
+            FontWeight.SemiBold));
+        content.Children.Add(Ui.Caption(
+            "Shows what is enabled and what each source last returned. Screen pixels are only available after a requested capture succeeds."));
+        content.Children.Add(_sensingUpdated);
+        content.Children.Add(_sensingRows);
+        return new Border
+        {
+            Background = Palette.BackgroundBrush,
+            BorderBrush = Palette.StrokeBrush,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(Palette.RadiusControl),
+            Padding = new Thickness(Palette.SpaceMd),
+            Child = new ScrollViewer
+            {
+                Content = content,
+                HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled
+            }
+        };
+    }
+
+    private void OnSituationUpdated(SituationSnapshot _)
+    {
+        if (IsVisible)
+        {
+            Dispatcher.UIThread.Post(RefreshSensorHealth);
+        }
+    }
+
+    /// <summary>Refresh the panel when opened; background sensor ticks do no UI work while hidden.</summary>
+    public void RefreshSensorHealth()
+    {
+        _sensingRows.Children.Clear();
+        foreach (PerceptionSourceHealth source in _perception.GetSourceHealth())
+        {
+            Grid row = new()
+            {
+                ColumnDefinitions = new ColumnDefinitions("150,110,*"),
+                MinHeight = 34
+            };
+            TextBlock name = Ui.Text(source.Name, Palette.FontBody, Palette.TextPrimaryBrush, FontWeight.Medium);
+            TextBlock status = Ui.Text(source.Status, Palette.FontCaption, StatusBrush(source.Status), FontWeight.SemiBold);
+            status.Margin = new Thickness(0, 0, Palette.SpaceMd, 0);
+            TextBlock detail = Ui.Text(source.Detail, Palette.FontCaption, Palette.TextSecondaryBrush);
+            detail.TextWrapping = Avalonia.Media.TextWrapping.Wrap;
+            Grid.SetColumn(status, 1);
+            Grid.SetColumn(detail, 2);
+            row.Children.Add(name);
+            row.Children.Add(status);
+            row.Children.Add(detail);
+            _sensingRows.Children.Add(new Border
+            {
+                Background = Palette.SurfaceBrush,
+                BorderBrush = Palette.StrokeBrush,
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(Palette.RadiusControl),
+                Padding = new Thickness(Palette.SpaceMd, Palette.SpaceSm),
+                Child = row
+            });
+        }
+
+        _sensingUpdated.Text = $"Updated {DateTimeOffset.Now:HH:mm:ss}. Sensor checks use the existing low-rate sampling cadence.";
+    }
+
+    private static IBrush StatusBrush(string status) => status switch
+    {
+        "Available" => Palette.SuccessBrush,
+        "Unavailable" or "Stale" => Palette.WarningBrush,
+        "Disabled" => Palette.TextFaintBrush,
+        _ => Palette.TextSecondaryBrush
+    };
 
     /// <summary>Fresh Grid and fresh TextBlocks for every row, every time. Never shared.</summary>
     private static Control RowControl(DiagnosticsEntry item) => new Grid

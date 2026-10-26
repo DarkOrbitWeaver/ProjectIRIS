@@ -80,6 +80,24 @@ public sealed class CoreRegressionTests
     }
 
     [Fact]
+    public void PerceptionHealthSeparatesDisabledSourcesFromUnobservedSources()
+    {
+        SettingsStore settings = new();
+        settings.Current.Senses.WatchSystemStats = false;
+        settings.Current.Senses.VisionMode = "ondemand";
+        using PerceptionEngine perception = new(settings, new EventBus());
+
+        IReadOnlyDictionary<string, PerceptionSourceHealth> health =
+            perception.GetSourceHealth().ToDictionary(source => source.Name);
+
+        Assert.Equal("Disabled", health["CPU load"].Status);
+        Assert.Equal("Disabled", health["Memory"].Status);
+        Assert.Equal("Stopped", health["Media session"].Status);
+        Assert.Equal("On demand", health["Screen vision"].Status);
+        Assert.Contains("No continuous screen access", health["Screen vision"].Detail);
+    }
+
+    [Fact]
     public void SituationPromptStopsPresentingAmbientValuesAsCurrentAfterSensingStops()
     {
         SettingsStore settings = new();
@@ -125,6 +143,8 @@ public sealed class CoreRegressionTests
         string prompt = perception.DescribeForPrompt();
         Assert.Contains("Windows media session information is unavailable", prompt);
         Assert.DoesNotContain("Last known track", prompt);
+        Assert.Equal("Unavailable", Assert.Single(perception.GetSourceHealth(),
+            source => source.Name == "Media session").Status);
     }
 
     [Fact]
@@ -147,6 +167,10 @@ public sealed class CoreRegressionTests
         await noSessionObserved.Task.WaitAsync(TimeSpan.FromSeconds(3));
 
         Assert.Contains("No active Windows media session was found", perception.DescribeForPrompt());
+        PerceptionSourceHealth mediaHealth = Assert.Single(perception.GetSourceHealth(),
+            source => source.Name == "Media session");
+        Assert.Equal("Available", mediaHealth.Status);
+        Assert.Contains("No active Windows media session", mediaHealth.Detail);
     }
 
     private static SettingsStore CreatePerceptionTestSettings()

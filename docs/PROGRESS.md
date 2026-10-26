@@ -26,7 +26,8 @@ behavior that has been exercised.
   blocks even a forced-capture request. Prompt context labels ambient observation as unknown,
   current, stopped, stale, or disabled instead of presenting an old sample as live. Enabled
   foreground, CPU, RAM, power, and idle probes report unavailable results separately; media
-  reports no session, unavailable, stale, or its last successfully read track.
+  reports no session, unavailable, stale, or its last successfully read track. The Diagnostics
+  screen exposes per-source status and latest evidence without increasing the sampling cadence.
 - **Memory:** a local graph with layers, typed/polarized links, activation, persistence,
   consolidation, visualization, and exact forget paths exists.
 - **Capabilities:** built-in music and system tools use the shared module router and approval
@@ -42,8 +43,8 @@ works on the target PC under real microphone, speaker, model, display, game, and
 
 ## Biggest remaining work
 
-1. **Connect and explain the whole loop.** Add source and freshness to observations and service
-   health; distinguish "configured" from "available" and "actually observed"; correlate voice,
+1. **Connect and explain the whole loop.** Correlate source and freshness information with each
+   turn; distinguish "configured" from "available" and "actually observed"; connect voice,
    memory, tools, overlays, cancellation, and recovery under one inspectable task/turn identity.
 2. **Make voice dependable on this machine.** Verify every offered profile through the real
    engine, repair voice preview and selected-voice failures, and measure warm/cold synthesis,
@@ -73,10 +74,11 @@ works on the target PC under real microphone, speaker, model, display, game, and
 
 ## Verification checkpoint
 
-The current worktree builds with zero warnings/errors and the core suite passes 61/61 tests. New
+The current worktree builds with zero warnings/errors and the core suite passes 62/62 tests. New
 regressions verify that `vision: off` blocks forced capture, that Iris does not claim passive
 screen access, that ambient context is withheld until observed and when sensing has stopped, and
-that a failed media probe never presents the previous track as current. No model was loaded and
+that a failed media probe never presents the previous track as current. Sensor-health checks
+distinguish disabled, waiting, available, and unavailable sources. No model was loaded and
 the app was not launched for this snapshot. The automated suite is still narrower than the product
 acceptance matrix; real-device audio, visual/layout, multi-display, and sustained resource behavior
 remain unverified here.

@@ -54,6 +54,138 @@ public sealed class PerceptionEngine : IDisposable
         get { lock (_snapshotLock) { return _current; } }
     }
 
+    /// <summary>
+    /// Returns a lightweight, point-in-time account of configured sensing and the
+    /// latest evidence from each source. This describes metadata availability; it
+    /// never claims that Iris saw screen pixels unless a screen frame was captured.
+    /// </summary>
+    public IReadOnlyList<PerceptionSourceHealth> GetSourceHealth()
+    {
+        SituationSnapshot snapshot;
+        bool hasAmbientObservation;
+        ScreenFrame? lastFrame;
+        lock (_snapshotLock)
+        {
+            snapshot = Clone(_current);
+            hasAmbientObservation = _hasAmbientObservation;
+            lastFrame = _lastFrame;
+        }
+
+        SenseSettings settings = _settings.Current.Senses;
+        DateTimeOffset now = DateTimeOffset.Now;
+        TimeSpan staleAfter = TimeSpan.FromMilliseconds(
+            Math.Clamp(settings.StatsIntervalMilliseconds, 1000, 15000) * 3L);
+        bool ambientFresh = hasAmbientObservation && _isRunning && now - snapshot.CapturedAt <= staleAfter;
+        List<PerceptionSourceHealth> sources = new(7)
+        {
+            BuildAmbientSource("Foreground window", settings.WatchActiveWindow, _isRunning,
+                hasAmbientObservation, ambientFresh, snapshot.CapturedAt, snapshot.ForegroundAvailable,
+                snapshot.ActiveApplicationName.Length == 0 ? "No application name was returned." : snapshot.ActiveApplicationName),
+            BuildMediaSource(settings.WatchMediaSession, _isRunning, snapshot, now, staleAfter),
+            BuildAmbientSource("CPU load", settings.WatchSystemStats, _isRunning,
+                hasAmbientObservation, ambientFresh, snapshot.CapturedAt, snapshot.CpuAvailable,
+                snapshot.CpuAvailable ? $"{snapshot.CpuPercent:0}%" : "CPU probe did not return a reading."),
+            BuildAmbientSource("Memory", settings.WatchSystemStats, _isRunning,
+                hasAmbientObservation, ambientFresh, snapshot.CapturedAt, snapshot.MemoryAvailable,
+                snapshot.MemoryAvailable
+                    ? $"{snapshot.RamUsedMegabytes / 1024:0.0} / {snapshot.RamTotalMegabytes / 1024:0.0} GB used"
+                    : "Memory probe did not return a reading."),
+            BuildAmbientSource("Power", settings.WatchSystemStats, _isRunning,
+                hasAmbientObservation, ambientFresh, snapshot.CapturedAt, snapshot.PowerAvailable,
+                snapshot.PowerAvailable
+                    ? snapshot.BatteryPercent >= 0
+                        ? $"{snapshot.BatteryPercent}% battery; {PowerSourceDescription(snapshot.IsOnAcPower)}"
+                        : $"{PowerSourceDescription(snapshot.IsOnAcPower)}; battery percentage unavailable"
+                    : "Power probe did not return a reading."),
+            BuildAmbientSource("Idle duration", settings.WatchIdleState, _isRunning,
+                hasAmbientObservation, ambientFresh, snapshot.CapturedAt, snapshot.IdleAvailable,
+                snapshot.IdleAvailable ? $"{snapshot.IdleSeconds:0} seconds" : "Idle probe did not return a reading."),
+            BuildVisionSource(settings.VisionMode, lastFrame, now)
+        };
+        return sources;
+    }
+
+    private static PerceptionSourceHealth BuildAmbientSource(string name, bool enabled, bool running,
+        bool hasObservation, bool fresh, DateTimeOffset observedAt, bool available, string detail)
+    {
+        if (!enabled)
+        {
+            return new(name, "Disabled", "Disabled in settings.", null);
+        }
+
+        if (!hasObservation)
+        {
+            return new(name, running ? "Waiting" : "Stopped", "No successful ambient sample in this session.", null);
+        }
+
+        if (!running)
+        {
+            return new(name, "Stopped", $"Last sample: {FormatAge(DateTimeOffset.Now - observedAt)} ago; not current.", observedAt);
+        }
+
+        if (!fresh)
+        {
+            return new(name, "Stale", $"Last sample: {FormatAge(DateTimeOffset.Now - observedAt)} ago; refresh delayed.", observedAt);
+        }
+
+        return available
+            ? new(name, "Available", detail, observedAt)
+            : new(name, "Unavailable", detail, observedAt);
+    }
+
+    private static PerceptionSourceHealth BuildMediaSource(bool enabled, bool running, SituationSnapshot snapshot,
+        DateTimeOffset now, TimeSpan staleAfter)
+    {
+        if (!enabled)
+        {
+            return new("Media session", "Disabled", "Disabled in settings.", null);
+        }
+
+        if (snapshot.MediaObservedAt is not { } observedAt)
+        {
+            return new("Media session", running ? "Waiting" : "Stopped",
+                "No successful media read in this session.", null);
+        }
+
+        TimeSpan age = now - observedAt;
+        if (!snapshot.MediaObservationAvailable)
+        {
+            return new("Media session", "Unavailable", "Windows media session read failed; the previous track is not current.", observedAt);
+        }
+
+        if (!running)
+        {
+            return new("Media session", "Stopped", $"Last successful read: {FormatAge(age)} ago; not current.", observedAt);
+        }
+
+        if (age > staleAfter)
+        {
+            return new("Media session", "Stale", $"Last successful read: {FormatAge(age)} ago.", observedAt);
+        }
+
+        return snapshot.MediaSessionPresent
+            ? new("Media session", "Available", string.IsNullOrWhiteSpace(snapshot.MediaTitle)
+                ? "An active session did not provide a title."
+                : $"{snapshot.MediaTitle}{(string.IsNullOrWhiteSpace(snapshot.MediaArtist) ? string.Empty : $" — {snapshot.MediaArtist}")}", observedAt)
+            : new("Media session", "Available", "No active Windows media session was found.", observedAt);
+    }
+
+    private static PerceptionSourceHealth BuildVisionSource(string? mode, ScreenFrame? lastFrame, DateTimeOffset now)
+    {
+        string lastFrameDetail = lastFrame is null
+            ? "No screen frame has been captured in this session."
+            : $"Last frame captured {FormatAge(now - lastFrame.CapturedAt)} ago; it is not live evidence.";
+        return mode?.ToLowerInvariant() switch
+        {
+            "off" => new("Screen vision", "Disabled", $"Screen capture is off in settings. {lastFrameDetail}", lastFrame?.CapturedAt),
+            "live" or "liveshare" or "live-share" => new("Screen vision", "Configured",
+                $"Live share is configured; each frame must be captured successfully. {lastFrameDetail}", lastFrame?.CapturedAt),
+            _ => new("Screen vision", "On demand",
+                $"No continuous screen access. A frame is attached only after a requested capture succeeds. {lastFrameDetail}",
+                lastFrame?.CapturedAt)
+        };
+    }
+
     /// <summary>The last frame her eyes actually saw, if any.</summary>
     public ScreenFrame? LastFrame
     {
@@ -759,3 +891,10 @@ public sealed class SituationSnapshot
     public string VisionMode { get; set; } = "ondemand";
     public DateTimeOffset CapturedAt { get; set; } = DateTimeOffset.Now;
 }
+
+/// <summary>One sensing source's configured state and most recent evidence.</summary>
+public sealed record PerceptionSourceHealth(
+    string Name,
+    string Status,
+    string Detail,
+    DateTimeOffset? LastObservedAt);
