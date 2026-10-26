@@ -106,6 +106,8 @@ public sealed class SpeechEvent : CompanionEvent
 {
     public required bool IsSpeaking { get; init; }
     public string Text { get; init; } = string.Empty;
+    /// <summary>The originating conversation or voice interaction, when one exists.</summary>
+    public string TurnId { get; init; } = string.Empty;
 }
 
 /// <summary>Live microphone or speaker level, 0.0 to 1.0, used by the orb waveform.</summary>
@@ -121,6 +123,8 @@ public sealed class TranscriptEvent : CompanionEvent
     public required string Text { get; init; }
     public required bool IsFinal { get; init; }
     public required bool IsUser { get; init; }
+    /// <summary>Correlation key linking recognized speech to the conversation it starts.</summary>
+    public string TurnId { get; init; } = string.Empty;
 }
 
 /// <summary>
@@ -131,6 +135,8 @@ public sealed class AttentionRequestedEvent : CompanionEvent
 {
     public required string Reason { get; init; }
     public TimeSpan HoldFor { get; init; } = TimeSpan.FromSeconds(12);
+    /// <summary>The voice interaction that asked Iris to become attentive, when available.</summary>
+    public string TurnId { get; init; } = string.Empty;
 }
 
 /// <summary>Model availability changed: loading, ready, unloaded, failed.</summary>

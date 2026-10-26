@@ -38,7 +38,7 @@ behavior that has been exercised.
   and immediate enable/disable are implemented.
 - **Shared state:** typed events connect conversation, mind state, voice, memory recall, tools,
   perception, notices, telemetry, and the interface. Local diagnostic logs and a turn journal
-  exist.
+  exist. Recognized transcript, attention, and speech events now carry the active interaction ID.
 
 These are implementation findings from source inspection. They do not prove the complete workflow
 works on the target PC under real microphone, speaker, model, display, game, and device conditions.

@@ -629,7 +629,8 @@ public sealed class VoicePipeline : IAsyncDisposable
             return;
         }
 
-        _events.Publish(new SpeechEvent { IsSpeaking = true, Text = text });
+        string turnId = IrisEvent.CurrentCorrelationId ?? string.Empty;
+        _events.Publish(new SpeechEvent { IsSpeaking = true, Text = text, TurnId = turnId });
 
         try
         {
@@ -678,7 +679,7 @@ public sealed class VoicePipeline : IAsyncDisposable
         }
         finally
         {
-            _events.Publish(new SpeechEvent { IsSpeaking = false, Text = text });
+            _events.Publish(new SpeechEvent { IsSpeaking = false, Text = text, TurnId = turnId });
         }
     }
 
@@ -859,7 +860,13 @@ public sealed class VoicePipeline : IAsyncDisposable
                     ["recognized"] = Recognizer.EngineName
                 });
 
-            _events.Publish(new TranscriptEvent { Text = transcript, IsFinal = true, IsUser = true });
+            _events.Publish(new TranscriptEvent
+            {
+                Text = transcript,
+                IsFinal = true,
+                IsUser = true,
+                TurnId = IrisEvent.CurrentCorrelationId ?? string.Empty
+            });
             // Speech text belongs in the visible conversation, not persistent diagnostics.
             CompanionLog.Info("Voice", $"Recognized speech ({transcript.Length} characters; transcript kept in conversation only).");
 

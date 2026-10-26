@@ -325,7 +325,12 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
 
     private async Task BeginVoiceAttentionAsync(string reason, TimeSpan holdFor)
     {
-        _events.Publish(new AttentionRequestedEvent { Reason = reason, HoldFor = holdFor });
+        _events.Publish(new AttentionRequestedEvent
+        {
+            Reason = reason,
+            HoldFor = holdFor,
+            TurnId = IrisEvent.CurrentCorrelationId ?? string.Empty
+        });
         await _perception.PauseMediaForVoiceAsync().ConfigureAwait(false);
 
         _voiceAttentionTimeout?.Cancel();

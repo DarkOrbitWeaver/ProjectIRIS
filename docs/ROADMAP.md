@@ -112,8 +112,11 @@ Remaining work:
    only source names, statuses, timestamps, and image attachment under its turn ID; private window
    and media text are omitted. Still connect voice-input confidence, memory provenance, tool
    outcomes, speech, cancellation, and recovery into that same inspectable turn record.
-2. Connect listening, recognition confidence, wake state, media-pause ownership, tool progress,
-   speech playback, cancellation, and recovery through correlated, inspectable turn/activity state.
+2. Recognized transcript, attention, and speech events now carry the active interaction ID, and
+   voice-to-turn correlation already begins before transcription. Still connect listening state,
+   wake decisions, media-pause ownership, tool progress, cancellation, and recovery into the same
+   inspectable record. The recognizer contract currently returns text only, so recognition
+   confidence is unavailable and must not be implied in UI or prompts.
 3. Show what memory informed a reply, with provenance and correction/forget controls; verify
    memory writes, consolidation, conflicts, and long-session bounds.
 4. Make multi-step work inspectable and interruptible. Iris must verify each result, ask when
