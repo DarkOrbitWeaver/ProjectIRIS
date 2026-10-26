@@ -63,6 +63,7 @@ public sealed class SynapticMemoryEngine : IMemoryAccess
         }
 
         Dictionary<string, double> scores = new(StringComparer.Ordinal);
+        Dictionary<string, MemoryActivationPath> activationPaths = new(StringComparer.Ordinal);
         List<MemorySynapse> usedSynapses = new();
 
         foreach ((MemoryNode node, double score) in matches)
@@ -105,6 +106,7 @@ public sealed class SynapticMemoryEngine : IMemoryAccess
                     if (!scores.TryGetValue(neighbourId, out double current) || candidateScore > current)
                     {
                         scores[neighbourId] = candidateScore;
+                        activationPaths[neighbourId] = new MemoryActivationPath(nodeId, synapse.Id);
                         if (!usedSynapses.Contains(synapse))
                         {
                             usedSynapses.Add(synapse);
@@ -150,7 +152,8 @@ public sealed class SynapticMemoryEngine : IMemoryAccess
         {
             Activated = activated,
             ActivatedSynapses = usedSynapses,
-            Seeds = matches.Select(match => match.Node).ToList()
+            Seeds = matches.Select(match => match.Node).ToList(),
+            ActivationPaths = activationPaths
         };
     }
 
@@ -345,7 +348,28 @@ public sealed class SynapticMemoryEngine : IMemoryAccess
     {
         _events.Publish(new MemoryRecallEvent(
             turnId,
-            activation.Activated.Take(6).Select(pair => ToRecalled(pair.Node)).ToList(),
+            activation.Activated.Take(6).Select(pair =>
+            {
+                bool directMatch = activation.Seeds.Any(seed => seed.Id == pair.Node.Id);
+                activation.ActivationPaths.TryGetValue(pair.Node.Id, out MemoryActivationPath? path);
+                MemoryNode? related = path is null ? null : _graph.FindById(path.ParentNodeId);
+                MemorySynapse? relationship = path is null
+                    ? null
+                    : activation.ActivatedSynapses.FirstOrDefault(synapse => synapse.Id == path.SynapseId);
+                RecalledMemory memory = ToRecalled(pair.Node);
+                return new RecalledMemory
+                {
+                    NodeId = memory.NodeId,
+                    Title = memory.Title,
+                    Layer = memory.Layer,
+                    Strength = memory.Strength,
+                    Provenance = memory.Provenance,
+                    ActivationScore = pair.Score,
+                    IsDirectMatch = directMatch,
+                    RelatedMemoryTitle = related?.Title ?? string.Empty,
+                    Relationship = relationship is null ? string.Empty : SynapseTypes.ToWords(relationship.Type)
+                };
+            }).ToList(),
             intuitionText));
     }
 
@@ -355,7 +379,8 @@ public sealed class SynapticMemoryEngine : IMemoryAccess
         NodeId = node.Id,
         Title = node.Title,
         Layer = (int)node.Layer,
-        Strength = node.Strength
+        Strength = node.Strength,
+        Provenance = node.Provenance
     };
 
     private static string Trim(string text, int maximumLength) =>

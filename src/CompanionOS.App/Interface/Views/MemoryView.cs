@@ -54,6 +54,19 @@ public sealed class MemoryView : UserControl
         RefreshGraph();
     }
 
+    /// <summary>Selects a recalled node and opens its provenance/actions in the detail rail.</summary>
+    public bool SelectNode(string nodeId)
+    {
+        if (_runtime.Graph.FindById(nodeId) is null)
+        {
+            return false;
+        }
+
+        _selectedNodeId = nodeId;
+        RefreshGraph();
+        return true;
+    }
+
     /// <summary>Redraws if the screen is on display and enough time passed to matter.</summary>
     public void RefreshIfVisible()
     {

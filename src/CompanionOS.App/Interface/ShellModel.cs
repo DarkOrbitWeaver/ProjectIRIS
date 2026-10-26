@@ -32,8 +32,8 @@ public sealed class ChatEntry : ObservableObject
     /// <summary>Turn that produced this line, for linking conversation and activity state.</summary>
     public string TurnId { get; init; } = string.Empty;
 
-    /// <summary>Memory titles that fired for this turn, shown as chips under the bubble.</summary>
-    public IReadOnlyList<string> RecalledTitles { get; set; } = Array.Empty<string>();
+    /// <summary>Memory evidence that contributed to this turn, shown as inspectable chips.</summary>
+    public IReadOnlyList<RecalledMemory> RecalledMemories { get; set; } = Array.Empty<RecalledMemory>();
 
     public string Text
     {
@@ -108,7 +108,8 @@ public sealed partial class ShellModel : ObservableObject
     private double _microphoneLevel;
     private double _speechLevel;
     private PermissionRequest? _pendingPermission;
-    private IReadOnlyList<string> _pendingRecall = Array.Empty<string>();
+    private IReadOnlyList<RecalledMemory> _pendingRecall = Array.Empty<RecalledMemory>();
+    private string _pendingRecallTurnId = string.Empty;
     private string _pendingUserDetail = string.Empty;
     private readonly DispatcherTimer _permissionTimer;
 
@@ -327,6 +328,17 @@ public sealed partial class ShellModel : ObservableObject
 
     /// <summary>The name she answers to, taken from her persona.</summary>
     public string PersonaName => _runtime.Persona.Current.Name;
+
+    /// <summary>Raised when the user opens the source memory behind a recall chip.</summary>
+    public event Action<string>? MemoryNodeOpenRequested;
+
+    public void OpenMemoryNode(string nodeId)
+    {
+        if (!string.IsNullOrWhiteSpace(nodeId))
+        {
+            MemoryNodeOpenRequested?.Invoke(nodeId);
+        }
+    }
 
     /// <summary>Starts her whole body. Called once, from the window.</summary>
     public async Task InitializeAsync(CancellationToken cancellationToken = default)

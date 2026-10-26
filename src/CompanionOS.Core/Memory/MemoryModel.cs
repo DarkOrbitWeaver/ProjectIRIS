@@ -179,6 +179,13 @@ public sealed class ActivationResult
 
     public IReadOnlyList<MemoryNode> Seeds { get; init; } = Array.Empty<MemoryNode>();
 
+    /// <summary>The strongest known parent edge used to activate each non-seed node.</summary>
+    public IReadOnlyDictionary<string, MemoryActivationPath> ActivationPaths { get; init; } =
+        new Dictionary<string, MemoryActivationPath>(StringComparer.Ordinal);
+
     /// <summary>True when nothing was recalled, so the prompt can simply omit the block.</summary>
     public bool IsEmpty => Activated.Count == 0;
 }
+
+/// <summary>One edge in the strongest spread-activation explanation for a memory.</summary>
+public sealed record MemoryActivationPath(string ParentNodeId, string SynapseId);

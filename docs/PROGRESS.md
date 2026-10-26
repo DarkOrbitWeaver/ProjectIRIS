@@ -31,7 +31,9 @@ behavior that has been exercised.
   Each model turn now logs the matching source statuses and image-attached flag under its turn
   correlation ID; the log omits foreground titles and media metadata.
 - **Memory:** a local graph with layers, typed/polarized links, activation, persistence,
-  consolidation, visualization, and exact forget paths exists.
+  consolidation, visualization, and exact forget paths exists. Recall chips now distinguish direct
+  matches from association-activated memories, show the activation path/source on demand, and open
+  the exact node in Memory for provenance, pin, and forget actions.
 - **Capabilities:** built-in music and system tools use the shared module router and approval
   boundary. External command/MCP modules can discover tools, request scoped consent, use encrypted
   credentials, expose bounded native controls and overlays, and report progress. Folder refresh
@@ -84,7 +86,7 @@ works on the target PC under real microphone, speaker, model, display, game, and
 
 ## Verification checkpoint
 
-The current worktree builds with zero warnings/errors and the core suite passes 69/69 tests. New
+The current worktree builds with zero warnings/errors and the core suite passes 70/70 tests. New
 regressions verify that `vision: off` blocks forced capture, that Iris does not claim passive
 screen access, that ambient context is withheld until observed and when sensing has stopped, and
 that a failed media probe never presents the previous track as current. Sensor-health checks
@@ -92,10 +94,10 @@ distinguish disabled, waiting, available, and unavailable sources; turn context 
 from the same snapshot used to build the prompt; and an intentional cancellation closes the
 journal turn without hiding a later interrupted turn, and synchronous tools publish one start and
 one finish event. Media ownership regressions cover concurrent voice calls, a setting change
-while paused, cancellation before resume, and visible recovery on a failed resume. No model was
-loaded and the app was not launched for this snapshot. The automated suite is still narrower than
-the product acceptance matrix; real-device audio, visual/layout, multi-display, and sustained
-resource behavior remain unverified here.
+while paused, cancellation before resume, visible recovery on a failed resume, and direct-versus-
+associated memory recall explanations. No model was loaded and the app was not launched for this
+snapshot. The automated suite is still narrower than the product acceptance matrix; real-device
+audio, visual/layout, multi-display, and sustained resource behavior remain unverified here.
 
 ## Delivery promise
 

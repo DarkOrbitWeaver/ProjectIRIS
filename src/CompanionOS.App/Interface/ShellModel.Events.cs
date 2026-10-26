@@ -66,6 +66,11 @@ public sealed partial class ShellModel : ObservableObject
         if (payload.Phase == ConversationPhase.UserMessage)
         {
             ActiveConversationTurnId = payload.TurnId;
+            if (_pendingRecallTurnId != payload.TurnId)
+            {
+                _pendingRecall = Array.Empty<RecalledMemory>();
+                _pendingRecallTurnId = string.Empty;
+            }
         }
         else if (!string.Equals(payload.TurnId, ActiveConversationTurnId, StringComparison.Ordinal))
         {
@@ -96,11 +101,16 @@ public sealed partial class ShellModel : ObservableObject
                     Role = ChatRole.Assistant,
                     IsStreaming = true,
                     TurnId = payload.TurnId,
-                    RecalledTitles = _runtime.Settings.Current.Interface.ShowRecallChips
+                    RecalledMemories = _runtime.Settings.Current.Interface.ShowRecallChips &&
+                                       _pendingRecallTurnId == payload.TurnId
                         ? _pendingRecall
-                        : Array.Empty<string>()
+                        : Array.Empty<RecalledMemory>()
                 };
-                _pendingRecall = Array.Empty<string>();
+                if (_pendingRecallTurnId == payload.TurnId)
+                {
+                    _pendingRecall = Array.Empty<RecalledMemory>();
+                    _pendingRecallTurnId = string.Empty;
+                }
                 Messages.Add(_streamingEntry);
                 break;
 
@@ -272,14 +282,19 @@ public sealed partial class ShellModel : ObservableObject
 
     private void HandleRecall(MemoryRecallEvent payload)
     {
-        IReadOnlyList<string> titles = payload.Memories.Select(memory => memory.Title).ToList();
-        if (_streamingEntry is not null)
+        if (payload.TurnId != ActiveConversationTurnId)
         {
-            _streamingEntry.RecalledTitles = titles;
+            return;
+        }
+
+        if (_streamingEntry is not null && _streamingEntry.TurnId == payload.TurnId)
+        {
+            _streamingEntry.RecalledMemories = payload.Memories;
         }
         else
         {
-            _pendingRecall = titles;
+            _pendingRecall = payload.Memories;
+            _pendingRecallTurnId = payload.TurnId;
         }
     }
 

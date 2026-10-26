@@ -1701,6 +1701,57 @@ public sealed class CoreRegressionTests
     }
 
     [Fact]
+    public async Task MemoryRecallExplainsDirectMatchesAndTheAssociationThatActivatedRelatedNodes()
+    {
+        string databasePath = Path.Combine(Path.GetTempPath(), $"iris-recall-{Guid.NewGuid():N}.db");
+        try
+        {
+            await using MemoryGraph graph = new(databasePath);
+            await graph.InitializeAsync();
+            SettingsStore settings = new();
+            settings.Current.Memory.SeedCount = 1;
+            settings.Current.Memory.IntuitionDepth = 1;
+            EventBus events = new();
+            List<MemoryRecallEvent> recalls = [];
+            using IDisposable subscription = events.Subscribe<MemoryRecallEvent>(recalls.Add);
+            SynapticMemoryEngine memory = new(graph, settings, events);
+
+            MemoryNode seed = await graph.UpsertNodeAsync(
+                "night drive", "A direct request anchor.", MemoryLayer.Semantic, "user-correction");
+            MemoryNode related = await graph.UpsertNodeAsync(
+                "ambient tones", "A preference connected to night driving.", MemoryLayer.Semantic, "conversation");
+            await graph.LinkAsync(seed.Id, related.Id, SynapseType.Likes, 0.8, "user-correction");
+
+            ActivationResult activation = await memory.ActivateAsync("night drive");
+            memory.PublishRecall("turn-recall", activation, memory.RenderIntuition(activation));
+
+            MemoryRecallEvent recall = Assert.Single(recalls);
+            RecalledMemory direct = Assert.Single(recall.Memories, item => item.NodeId == seed.Id);
+            RecalledMemory associated = Assert.Single(recall.Memories, item => item.NodeId == related.Id);
+            Assert.True(direct.IsDirectMatch);
+            Assert.True(direct.ActivationScore > 0);
+            Assert.False(associated.IsDirectMatch);
+            Assert.Equal(seed.Title, associated.RelatedMemoryTitle);
+            Assert.Equal("likes", associated.Relationship);
+            Assert.Equal("conversation", associated.Provenance);
+        }
+        finally
+        {
+            foreach (string path in new[] { databasePath, databasePath + "-wal", databasePath + "-shm" })
+            {
+                try
+                {
+                    if (File.Exists(path)) File.Delete(path);
+                }
+                catch
+                {
+                    // Test cleanup is best effort.
+                }
+            }
+        }
+    }
+
+    [Fact]
     public async Task ForgetMemoryRequiresAnExactTitleAndNeverRemovesASimilarMemory()
     {
         string databasePath = Path.Combine(Path.GetTempPath(), $"iris-test-{Guid.NewGuid():N}.db");

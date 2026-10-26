@@ -100,6 +100,11 @@ public sealed class RecalledMemory
     public required string Title { get; init; }
     public required int Layer { get; init; }
     public required double Strength { get; init; }
+    public string Provenance { get; init; } = string.Empty;
+    public double ActivationScore { get; init; }
+    public bool IsDirectMatch { get; init; }
+    public string RelatedMemoryTitle { get; init; } = string.Empty;
+    public string Relationship { get; init; } = string.Empty;
 }
 
 /// <summary>Raised whenever she starts or stops talking.</summary>

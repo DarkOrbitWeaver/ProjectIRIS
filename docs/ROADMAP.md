@@ -123,8 +123,11 @@ Remaining work:
    turn intentionally cancelled so restart recovery does not mislabel it as a crash. The
    recognizer contract currently returns text only, so recognition confidence is unavailable and
    must not be implied in UI or prompts.
-3. Show what memory informed a reply, with provenance and correction/forget controls; verify
-   memory writes, consolidation, conflicts, and long-session bounds.
+3. Chat recall chips now identify direct matches versus association-activated memories, show the
+   activation edge, stored source, strength, and score in a tooltip, and open the exact memory node
+   for provenance/pin/forget actions. Still show why each recalled fact affected the answer, expose
+   correction and safe-forget controls more directly, and verify consolidation, conflicts, and
+   long-session bounds.
 4. Make multi-step work inspectable and interruptible. Iris must verify each result, ask when
    ambiguity or impact warrants it, and explain partial failure without inventing progress.
 5. Measure idle, voice, model, vision, music, and gaming resource use on target hardware; tune for

@@ -697,25 +697,31 @@ public sealed class ChatView : UserControl
             }
         });
 
-        if (entry.RecalledTitles.Count > 0 && _model.Runtime.Settings.Current.Interface.ShowRecallChips)
+        if (entry.RecalledMemories.Count > 0 && _model.Runtime.Settings.Current.Interface.ShowRecallChips)
         {
             WrapPanel chips = new() { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 0) };
-            foreach (string title in entry.RecalledTitles.Take(4))
+            foreach (RecalledMemory memory in entry.RecalledMemories.Take(4))
             {
-                chips.Children.Add(new Border
+                Button chip = new()
                 {
                     Background = new SolidColorBrush(Palette.Iris, 0.14),
                     CornerRadius = new CornerRadius(Palette.RadiusPill),
+                    BorderThickness = new Thickness(0),
                     Padding = new Thickness(10, 3),
                     Margin = new Thickness(0, 0, 6, 0),
-                    Child = new TextBlock
+                    Cursor = new Cursor(StandardCursorType.Hand),
+                    Focusable = true,
+                    Content = new TextBlock
                     {
-                        Text = title,
+                        Text = memory.Title,
                         FontSize = Palette.FontCaption,
                         FontWeight = FontWeight.Medium,
                         Foreground = Palette.AccentSoftBrush
                     }
-                });
+                };
+                ToolTip.SetTip(chip, DescribeRecall(memory));
+                chip.Click += (_, _) => _model.OpenMemoryNode(memory.NodeId);
+                chips.Children.Add(chip);
             }
 
             bubbleContent.Children.Add(chips);
@@ -735,6 +741,18 @@ public sealed class ChatView : UserControl
 
         stack.Children.Add(bubble);
         return stack;
+    }
+
+    private static string DescribeRecall(RecalledMemory memory)
+    {
+        string reason = memory.IsDirectMatch
+            ? "Matched your request directly."
+            : !string.IsNullOrWhiteSpace(memory.RelatedMemoryTitle)
+                ? $"Activated from \"{memory.RelatedMemoryTitle}\" {memory.Relationship}."
+                : "Activated through a stored association.";
+        string source = string.IsNullOrWhiteSpace(memory.Provenance) ? "unknown" : memory.Provenance;
+        return $"{reason}\nActivation {memory.ActivationScore:0.00} · stored strength {memory.Strength:P0}\n" +
+               $"Source: {source}\nOpen this memory in the Memory view.";
     }
 
     private Control BuildUserBubble(ChatEntry entry)

@@ -749,8 +749,17 @@ public sealed partial class MainWindow : Window
     {
         _chatView = new ChatView(_model);
         _memoryView = new MemoryView(_runtime);
+        _model.MemoryNodeOpenRequested += OpenRecallMemory;
         _modulesView = new ModulesView(_runtime);
         _diagnosticsView = new DiagnosticsView(_runtime.Perception, _runtime.Events);
+    }
+
+    private void OpenRecallMemory(string nodeId)
+    {
+        if (_memoryView.SelectNode(nodeId))
+        {
+            ShowMemory();
+        }
     }
 
     private void ShowChat()
