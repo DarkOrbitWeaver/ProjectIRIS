@@ -133,7 +133,7 @@ public sealed class CoreRegressionTests
         EventBus events = new();
         await using BackgroundTaskManager manager = new(events);
         TaskCompletionSource started = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        string id = manager.Start("plugin:sample", "Sample", "scan", async (_, token) =>
+        string id = manager.Start("plugin:sample", "Sample", "search", "scan", async (_, token) =>
         {
             started.TrySetResult();
             await Task.Delay(Timeout.InfiniteTimeSpan, token);
@@ -156,6 +156,7 @@ public sealed class CoreRegressionTests
 
         Assert.NotNull(finished);
         Assert.Equal(BackgroundTaskState.Cancelled, finished.State);
+        Assert.Equal("search", finished.IconKey);
     }
 
     [Theory]
@@ -371,6 +372,51 @@ public sealed class CoreRegressionTests
 
             Assert.True(result.Ok, result.Error);
             Assert.Contains("send_message", result.Text, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            Directory.Delete(folder, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task ExternalCommandModuleCanReportBoundedProgressAndStructuredResult()
+    {
+        string folder = Path.Combine(Path.GetTempPath(), $"iris-plugin-progress-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(folder);
+        File.WriteAllText(Path.Combine(folder, "worker.ps1"), """
+            $request = ConvertFrom-Json -InputObject ([Console]::In.ReadLine())
+            [Console]::Out.WriteLine('{"type":"progress","message":"Finding contact","progress":1,"total":2}')
+            [Console]::Out.WriteLine('{"type":"result","text":"Found Ada"}')
+            """);
+        EventBus events = new();
+        List<ModuleProgressEvent> progress = [];
+        using IDisposable subscription = events.Subscribe<ModuleProgressEvent>(progress.Add);
+        using PluginHost host = new(events, folder);
+        PluginManifest plugin = new()
+        {
+            Id = "telegram",
+            Name = "Telegram",
+            Transport = "command",
+            Command = ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "worker.ps1"],
+            Folder = folder,
+            Disabled = false
+        };
+
+        try
+        {
+            PluginResult result = await host.CallAsync(plugin,
+                new PluginTool("search_contacts", "Find a contact.", "contacts.read", "{}"), "{}", "task-123",
+                CancellationToken.None);
+
+            Assert.True(result.Ok, result.Error);
+            Assert.Equal("Found Ada", result.Text);
+            ModuleProgressEvent update = Assert.Single(progress);
+            Assert.Equal("plugin:telegram", update.ModuleId);
+            Assert.Equal("task-123", update.TurnId);
+            Assert.Equal("Finding contact", update.Message);
+            Assert.Equal(1, update.Progress);
+            Assert.Equal(2, update.Total);
         }
         finally
         {

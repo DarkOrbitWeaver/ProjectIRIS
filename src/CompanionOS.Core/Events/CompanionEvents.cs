@@ -190,7 +190,7 @@ public sealed class ModuleRegistryChangedEvent : CompanionEvent
 /// A module reported a real intermediate step while one of its tools is running.
 /// Progress is optional: many useful actions cannot estimate a percentage honestly.
 /// Consumers should treat the message as untrusted display text and the turn id as
-/// the correlation key for the current foreground task.
+/// the correlation key for the foreground turn or background task.
 /// </summary>
 public sealed class ModuleProgressEvent : CompanionEvent
 {

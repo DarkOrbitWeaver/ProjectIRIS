@@ -147,7 +147,7 @@ internal sealed class ActivityOverlayWindow : Window
 
         bool live = task.State is BackgroundTaskState.Queued or BackgroundTaskState.Running or BackgroundTaskState.CancelRequested;
         _module.Text = $"{task.ModuleName.ToUpperInvariant()} · {(live ? "IN BACKGROUND" : task.State.ToString().ToUpperInvariant())}";
-        _moduleIcon.Data = Avalonia.Media.StreamGeometry.Parse(ModuleIconGlyph.Resolve("activity"));
+        _moduleIcon.Data = Avalonia.Media.StreamGeometry.Parse(ModuleIconGlyph.Resolve(task.IconKey));
         _step.Text = task.CurrentStep;
         _detail.Text = task.Result ?? $"{task.ToolName} · {task.Id}";
         _cancel.IsVisible = live;

@@ -61,7 +61,25 @@ permission, activity, and shell contracts so each integration feels like part of
 - A bare executable such as `node` or `python` resolves through `PATH`; a relative command path
   resolves inside the module folder. External code runs only after the module is enabled.
 - A command module receives one JSON line on stdin with its module id, local tool name, and
-  arguments. MCP modules receive the standard `tools/call` request with the local tool name.
+  arguments (plus protocol version 1). It may write ordinary text for its result, or emit
+  JSONL `progress` and `result` envelopes for shared live activity; stdout is capped at 256 KiB,
+  stderr storage at 16 KiB, and oversized stdout terminates the process. MCP modules receive the
+  standard `tools/call` request with the local tool name.
+
+### Command module progress protocol
+
+Existing command modules may keep writing plain text. Version 1 modules can instead report
+intermediate work and a structured final result on stdout, one JSON object per line:
+
+```json
+{"type":"progress","message":"Finding Alex","progress":1,"total":3}
+{"type":"result","ok":true,"text":"Found Alex in contacts."}
+```
+
+Progress numbers are optional; omit them when there is no honest total. `result.ok` defaults to
+true and `result.text` is returned to Iris. The module process is isolated from Iris's UI process,
+and cancellation terminates its process tree. The command runs with the user's OS permissions, so
+the existing module enablement and capability approval still matter.
 
 ## What the public SDK still needs
 

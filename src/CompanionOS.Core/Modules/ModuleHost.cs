@@ -391,7 +391,7 @@ public sealed class ModuleHost : IAsyncDisposable
             });
             try
             {
-                string taskId = _backgroundTasks.Start(owner.Id, owner.DisplayName, tool.Name,
+                string taskId = _backgroundTasks.Start(owner.Id, owner.DisplayName, owner.IconKey, tool.Name,
                     (backgroundTurnId, token) => ExecuteAuthorizedToolAsync(owner, tool, arguments, backgroundTurnId,
                         token, publishConversationEvents: false, isBackground: true));
                 ToolResult started = ToolResult.Ok(

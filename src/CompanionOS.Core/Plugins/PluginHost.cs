@@ -27,6 +27,11 @@ namespace CompanionOS.Core.Plugins;
 /// </summary>
 public sealed class PluginHost : IDisposable
 {
+    private const int MaximumCommandOutputCharacters = 256 * 1024;
+    private const int MaximumCommandErrorCharacters = 16 * 1024;
+    private const int MaximumProgressMessageCharacters = 240;
+    private const int MaximumToolInputCharacters = 256 * 1024;
+    private static readonly TimeSpan CommandProgressMinimumInterval = TimeSpan.FromMilliseconds(100);
     private readonly EventBus _events;
 
     private readonly List<PluginManifest> _loaded = [];
@@ -196,6 +201,12 @@ public sealed class PluginHost : IDisposable
     public async Task<PluginResult> CallAsync(PluginManifest plugin, PluginTool tool,
         string argumentsJson, string turnId, CancellationToken cancellationToken)
     {
+        if (argumentsJson is null || argumentsJson.Length > MaximumToolInputCharacters)
+        {
+            return new PluginResult(false, string.Empty,
+                $"Tool input is missing or exceeds the {MaximumToolInputCharacters:N0}-character limit.");
+        }
+
         if (plugin.Disabled)
         {
             return new PluginResult(false, "", $"Plugin '{plugin.Name}' is disabled in its manifest.");
@@ -205,7 +216,7 @@ public sealed class PluginHost : IDisposable
         {
             if (plugin.Transport == "command")
             {
-                return await CallCommandAsync(plugin, tool, argumentsJson, cancellationToken).ConfigureAwait(false);
+                return await CallCommandAsync(plugin, tool, argumentsJson, turnId, cancellationToken).ConfigureAwait(false);
             }
 
             if (plugin.Transport == "mcp")
@@ -223,7 +234,7 @@ public sealed class PluginHost : IDisposable
     }
 
     private async Task<PluginResult> CallCommandAsync(PluginManifest plugin, PluginTool tool,
-        string argumentsJson, CancellationToken cancellationToken)
+        string argumentsJson, string turnId, CancellationToken cancellationToken)
     {
         string fileName = PluginCommandPath.Resolve(plugin);
         if (PluginCommandPath.IsPathLike(plugin.Command[0]) && !File.Exists(fileName))
@@ -266,32 +277,214 @@ public sealed class PluginHost : IDisposable
             catch (System.ComponentModel.Win32Exception) { }
         });
 
+        using JsonDocument inputDocument = JsonDocument.Parse(string.IsNullOrWhiteSpace(argumentsJson) ? "{}" : argumentsJson);
         string payload = JsonSerializer.Serialize(new
         {
+            protocol = 1,
             plugin = plugin.Id,
             tool = tool.Name,
-            arguments = JsonDocument.Parse(string.IsNullOrWhiteSpace(argumentsJson) ? "{}" : argumentsJson).RootElement.Clone()
+            arguments = inputDocument.RootElement.Clone()
         });
         await process.StandardInput.WriteLineAsync(payload).ConfigureAwait(false);
+        process.StandardInput.Close();
 
-        Task<string> standardOutTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
-        Task<string> standardErrorTask = process.StandardError.ReadToEndAsync(cancellationToken);
+        Task<CommandOutput> standardOutTask = ReadCommandOutputAsync(process.StandardOutput, process, plugin, tool, turnId,
+            cancellationToken);
+        Task<string> standardErrorTask = ReadBoundedOutputAsync(process.StandardError, MaximumCommandErrorCharacters,
+            cancellationToken);
         await Task.WhenAll(standardOutTask, standardErrorTask).ConfigureAwait(false);
-        string standardOut = await standardOutTask.ConfigureAwait(false);
+        CommandOutput commandOutput = await standardOutTask.ConfigureAwait(false);
         string standardError = await standardErrorTask.ConfigureAwait(false);
         await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
 
         double cost = (Stopwatch.GetTimestamp() - started) * 1000.0 / Stopwatch.Frequency;
         _events.Publish(new PluginActivityEvent(plugin.Id, "call", $"{plugin.Name} answered in {cost:0} ms"));
 
+        if (commandOutput.ExceededLimit)
+        {
+            return new PluginResult(false, string.Empty,
+                $"'{plugin.Name}' exceeded the {MaximumCommandOutputCharacters:N0}-character output limit.");
+        }
+
         if (process.ExitCode != 0)
         {
             string error = string.IsNullOrWhiteSpace(standardError) ? $"exit code {process.ExitCode}" : standardError.Trim();
-            return new PluginResult(false, standardOut.Trim(), error);
+            return new PluginResult(false, commandOutput.Text.Trim(), error);
         }
 
-        return new PluginResult(true, standardOut.Trim());
+        if (commandOutput.Result is { } result)
+        {
+            return result.Ok
+                ? new PluginResult(true, result.Text)
+                : new PluginResult(false, result.Text, string.IsNullOrWhiteSpace(result.Text) ? "The module reported failure." : result.Text);
+        }
+
+        return new PluginResult(true, commandOutput.Text.Trim());
     }
+
+    private async Task<CommandOutput> ReadCommandOutputAsync(StreamReader reader, Process process,
+        PluginManifest plugin, PluginTool tool, string turnId, CancellationToken cancellationToken)
+    {
+        StringBuilder plainText = new();
+        StringBuilder line = new();
+        char[] buffer = new char[2048];
+        int totalCharacters = 0;
+        bool exceededLimit = false;
+        PluginResult? result = null;
+        long lastProgressTicks = 0;
+
+        while (true)
+        {
+            int read = await reader.ReadAsync(buffer.AsMemory(), cancellationToken).ConfigureAwait(false);
+            if (read == 0)
+            {
+                break;
+            }
+
+            for (int index = 0; index < read; index++)
+            {
+                char character = buffer[index];
+                totalCharacters++;
+                if (totalCharacters > MaximumCommandOutputCharacters)
+                {
+                    if (!exceededLimit)
+                    {
+                        exceededLimit = true;
+                        try
+                        {
+                            if (!process.HasExited)
+                            {
+                                process.Kill(entireProcessTree: true);
+                            }
+                        }
+                        catch (InvalidOperationException) { }
+                        catch (System.ComponentModel.Win32Exception) { }
+                    }
+                    continue;
+                }
+
+                if (character == '\n')
+                {
+                    ProcessCommandLine(line.ToString().TrimEnd('\r'), plainText, plugin, tool, turnId, ref result,
+                        ref lastProgressTicks);
+                    line.Clear();
+                }
+                else
+                {
+                    line.Append(character);
+                }
+            }
+        }
+
+        if (!exceededLimit && line.Length > 0)
+        {
+            ProcessCommandLine(line.ToString().TrimEnd('\r'), plainText, plugin, tool, turnId, ref result,
+                ref lastProgressTicks);
+        }
+
+        return new CommandOutput(plainText.ToString(), result, exceededLimit);
+    }
+
+    private void ProcessCommandLine(string line, StringBuilder plainText, PluginManifest plugin, PluginTool tool,
+        string turnId, ref PluginResult? result, ref long lastProgressTicks)
+    {
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(line);
+            JsonElement root = document.RootElement;
+            if (root.ValueKind == JsonValueKind.Object && root.TryGetProperty("type", out JsonElement typeElement) &&
+                typeElement.ValueKind == JsonValueKind.String)
+            {
+                string? type = typeElement.GetString();
+                if (string.Equals(type, "progress", StringComparison.OrdinalIgnoreCase))
+                {
+                    long now = Stopwatch.GetTimestamp();
+                    if (lastProgressTicks != 0 && Stopwatch.GetElapsedTime(lastProgressTicks, now) < CommandProgressMinimumInterval)
+                    {
+                        return;
+                    }
+                    lastProgressTicks = now;
+                    string message = root.TryGetProperty("message", out JsonElement messageElement) &&
+                                     messageElement.ValueKind == JsonValueKind.String
+                        ? messageElement.GetString() ?? string.Empty
+                        : string.Empty;
+                    if (message.Length > MaximumProgressMessageCharacters)
+                    {
+                        message = message[..MaximumProgressMessageCharacters];
+                    }
+                    if (string.IsNullOrWhiteSpace(message))
+                    {
+                        message = $"{tool.Name} is working";
+                    }
+
+                    _events.Publish(new ModuleProgressEvent
+                    {
+                        ModuleId = $"plugin:{plugin.Id}",
+                        ModuleName = plugin.Name,
+                        ToolName = tool.Name,
+                        TurnId = turnId,
+                        Message = message,
+                        IconKey = plugin.Icon,
+                        Progress = TryReadFiniteNumber(root, "progress"),
+                        Total = TryReadFiniteNumber(root, "total")
+                    });
+                    return;
+                }
+
+                if (string.Equals(type, "result", StringComparison.OrdinalIgnoreCase))
+                {
+                    bool ok = !root.TryGetProperty("ok", out JsonElement okElement) ||
+                              okElement.ValueKind != JsonValueKind.False;
+                    string text = root.TryGetProperty("text", out JsonElement textElement) &&
+                                  textElement.ValueKind == JsonValueKind.String
+                        ? textElement.GetString() ?? string.Empty
+                        : string.Empty;
+                    result = new PluginResult(ok, text, ok ? null : text);
+                    return;
+                }
+            }
+        }
+        catch (JsonException)
+        {
+            // Plain text remains the protocol-v1 fallback for existing command modules.
+        }
+
+        if (plainText.Length > 0)
+        {
+            plainText.AppendLine();
+        }
+        plainText.Append(line);
+    }
+
+    private static double? TryReadFiniteNumber(JsonElement root, string property)
+    {
+        return root.TryGetProperty(property, out JsonElement value) && value.ValueKind == JsonValueKind.Number &&
+               value.TryGetDouble(out double number) && double.IsFinite(number)
+            ? number
+            : null;
+    }
+
+    private static async Task<string> ReadBoundedOutputAsync(StreamReader reader, int maximumCharacters,
+        CancellationToken cancellationToken)
+    {
+        StringBuilder output = new();
+        char[] buffer = new char[1024];
+        while (true)
+        {
+            int read = await reader.ReadAsync(buffer.AsMemory(), cancellationToken).ConfigureAwait(false);
+            if (read == 0)
+            {
+                return output.ToString();
+            }
+            int remaining = maximumCharacters - output.Length;
+            if (remaining > 0)
+            {
+                output.Append(buffer, 0, Math.Min(read, remaining));
+            }
+        }
+    }
+
+    private sealed record CommandOutput(string Text, PluginResult? Result, bool ExceededLimit);
 
     /// <summary>Talks JSON-RPC 2.0 over the plugin's stdio, MCP-style.</summary>
     private async Task<PluginResult> CallMcpAsync(PluginManifest plugin, PluginTool tool,

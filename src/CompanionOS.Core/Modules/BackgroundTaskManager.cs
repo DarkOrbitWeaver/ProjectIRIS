@@ -17,6 +17,7 @@ public sealed record BackgroundTaskSnapshot(
     string Id,
     string ModuleId,
     string ModuleName,
+    string IconKey,
     string ToolName,
     BackgroundTaskState State,
     string CurrentStep,
@@ -58,7 +59,7 @@ public sealed class BackgroundTaskManager : IBackgroundTaskAccess, IAsyncDisposa
         _progressSubscription = events.Subscribe<ModuleProgressEvent>(OnProgress);
     }
 
-    public string Start(string moduleId, string moduleName, string toolName,
+    public string Start(string moduleId, string moduleName, string iconKey, string toolName,
         Func<string, CancellationToken, Task<ToolResult>> execute)
     {
         ArgumentNullException.ThrowIfNull(execute);
@@ -74,7 +75,7 @@ public sealed class BackgroundTaskManager : IBackgroundTaskAccess, IAsyncDisposa
 
             string id = "task-" + Guid.NewGuid().ToString("N")[..10];
             DateTimeOffset now = DateTimeOffset.Now;
-            entry = new Entry(id, moduleId, moduleName, toolName, now);
+            entry = new Entry(id, moduleId, moduleName, iconKey, toolName, now);
             _tasks.Add(id, entry);
             _order.Enqueue(id);
             TrimHistory();
@@ -285,13 +286,14 @@ public sealed class BackgroundTaskManager : IBackgroundTaskAccess, IAsyncDisposa
         }
     }
 
-    private sealed class Entry(string id, string moduleId, string moduleName, string toolName, DateTimeOffset startedAt)
+    private sealed class Entry(string id, string moduleId, string moduleName, string iconKey, string toolName,
+        DateTimeOffset startedAt)
     {
         public string Id { get; } = id;
         public CancellationTokenSource Cancellation { get; } = new();
         public Task? Execution { get; set; }
         public BackgroundTaskSnapshot Snapshot { get; set; } = new(
-            id, moduleId, moduleName, toolName, BackgroundTaskState.Queued,
+            id, moduleId, moduleName, iconKey, toolName, BackgroundTaskState.Queued,
             "Queued", null, null, null, startedAt, startedAt);
     }
 }
