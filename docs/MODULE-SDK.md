@@ -23,15 +23,15 @@ permission, activity, and shell contracts so each integration feels like part of
   callable discovered tools and the reason is logged. Discovered tools without a matching
   manifest permission policy still pass through the conservative system-critical approval gate;
   they simply have no named scope attached to the prompt yet.
-- External modules may declare up to six surfaces (up to five sidebar surfaces and one
-  independent overlay), each with at most twenty native elements: plain text, text inputs,
+- External modules may declare up to eight surfaces (up to five sidebar surfaces and three
+  independent overlays), each with at most twenty native elements: plain text, text inputs,
   constrained select controls, and buttons bound to that module's offered tools. Select options
   map to string enum values in the target tool schema; a `dynamic: true` select can start empty
   and receive safe option updates from its module. Command modules can update only elements in
-  their own declared surfaces through `ui` JSONL messages. The shell shows a module overlay while its
-  tool is running, updates it from real MCP progress, and lets the user hide it for that task. A
-  button action is checked against its owning module and then uses the same permission gate
-  as a model-selected tool. All inputs in one surface are string fields shared by its buttons
+  their own declared surfaces through `ui` JSONL messages. The shell can show up to three declared
+  module overlays together while its tool is running, updates them from real progress, and lets the
+  user hide each one for that task. A button action is checked against its owning module and then
+  uses the same permission gate as a model-selected tool. All inputs in one surface are string fields shared by its buttons
   and must match each target tool's JSON schema. Semantic icon keys use Iris's built-in glyph set;
   a module's icon also appears in the activity card.
 - The request router keeps the model-facing list to at most eight tools, chooses no more than two
@@ -47,7 +47,7 @@ permission, activity, and shell contracts so each integration feels like part of
   not OS isolation: an external process still runs with the current user's OS access, so the
   user must trust enabled module code and its declared behavior.
 - MCP tools may send `notifications/progress` after Iris supplies `_meta.progressToken` with
-  `tools/call`. Iris correlates those messages to the plugin, tool, and conversation and
+  `tools/call`. Iris correlates those messages to the plugin, tool, and turn or background task and
   publishes `ModuleProgressEvent`. Intermediate updates are throttled to avoid UI event floods.
 - The activity card shows the current conversation/tool step without taking focus. The compact
   call pill remains a separate surface. Progress bars appear only when the module reports both
@@ -98,10 +98,10 @@ the existing module enablement and capability approval still matter.
 
 ## What the public SDK still needs
 
-The current mechanism is not yet the complete extensibility promise. Controls are static, use
-semantic glyphs rather than a module's own branded assets, and currently support only one
-activity-attached overlay per module. They cannot yet provide main tabs, persistent state updates,
-richer typed form controls, or explicit show/hide component APIs. The next SDK work must define and
+The current mechanism is not yet the complete extensibility promise. Controls are native and
+state can update during a command call, but icons still use semantic glyphs rather than module
+assets, overlays are activity-attached, and modules cannot persist UI state across restarts. They
+cannot yet provide main tabs, rich typed forms, or explicit show/hide component APIs. The next SDK work must define and
 implement:
 
 1. A versioned manifest and authoring kit with stronger validation, dynamic discovery for

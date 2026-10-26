@@ -102,6 +102,12 @@ public sealed class CoreRegressionTests
                     "slot": "overlay",
                     "icon": "telegram",
                     "elements": [{"id":"progress","type":"text","label":"Sending message"}]
+                  }, {
+                    "id": "contacts",
+                    "title": "Contact picker",
+                    "slot": "overlay",
+                    "icon": "telegram",
+                    "elements": [{"id":"contact-list","type":"text","label":"Choose a contact"}]
                   }]
                 }
                 """);
@@ -110,7 +116,7 @@ public sealed class CoreRegressionTests
 
             Assert.True(loaded, reason);
             Assert.NotNull(manifest);
-            Assert.Equal(2, manifest.Surfaces.Count);
+            Assert.Equal(3, manifest.Surfaces.Count);
             PluginSurfaceManifest surface = manifest.Surfaces[0];
             Assert.Equal("telegram", surface.Icon);
             Assert.Equal("sidebar", surface.Slot);
@@ -119,9 +125,11 @@ public sealed class CoreRegressionTests
             Assert.Equal("send_message", surface.Elements[^1].ToolName);
             Assert.Equal("recent", surface.Elements[2].Options[0].Value);
             Assert.Equal("overlay", manifest.Surfaces[1].Slot);
+            Assert.Equal("overlay", manifest.Surfaces[2].Slot);
             using PluginHost host = new(new EventBus(), folder);
             PluginModuleAdapter adapter = new(host, manifest);
             Assert.Equal(ShellSlot.Overlay, adapter.GetSurfaces()[1].Slot);
+            Assert.Equal(ShellSlot.Overlay, adapter.GetSurfaces()[2].Slot);
             Assert.True(Assert.Single(adapter.Tools).BackgroundCapable);
         }
         finally
@@ -297,7 +305,7 @@ public sealed class CoreRegressionTests
     }
 
     [Fact]
-    public void ExternalModuleManifestLimitsIndependentOverlaysToOnePerModule()
+    public void ExternalModuleManifestLimitsIndependentOverlaysToThreePerModule()
     {
         string folder = Path.Combine(Path.GetTempPath(), $"iris-plugin-overlay-{Guid.NewGuid():N}");
         Directory.CreateDirectory(folder);
@@ -311,7 +319,9 @@ public sealed class CoreRegressionTests
                   "transport": "builtin",
                   "surfaces": [
                     {"id":"first","title":"First","slot":"overlay","icon":"body","elements":[{"id":"text1","type":"text","label":"One"}]},
-                    {"id":"second","title":"Second","slot":"overlay","icon":"body","elements":[{"id":"text2","type":"text","label":"Two"}]}
+                    {"id":"second","title":"Second","slot":"overlay","icon":"body","elements":[{"id":"text2","type":"text","label":"Two"}]},
+                    {"id":"third","title":"Third","slot":"overlay","icon":"body","elements":[{"id":"text3","type":"text","label":"Three"}]},
+                    {"id":"fourth","title":"Fourth","slot":"overlay","icon":"body","elements":[{"id":"text4","type":"text","label":"Four"}]}
                   ]
                 }
                 """);
@@ -319,7 +329,7 @@ public sealed class CoreRegressionTests
             bool loaded = PluginManifest.TryLoad(folder, out _, out string reason);
 
             Assert.False(loaded);
-            Assert.Contains("one independent overlay", reason, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("at most 3 independent overlay", reason, StringComparison.OrdinalIgnoreCase);
         }
         finally
         {

@@ -346,17 +346,37 @@ internal sealed class ModuleSurfaceOverlayWindow : Window
     }
 
     public void PlaceNear(PixelPoint pillPosition, int pillWidth, int pillHeight,
-        PixelRect workArea, bool growsLeft)
+        PixelRect workArea, bool growsLeft, int stackIndex = 0)
     {
         double scale = RenderScaling > 0 ? RenderScaling : 1.0;
         int width = (int)Math.Ceiling(CardWidth * scale);
         int height = (int)Math.Ceiling(CardHeight * scale);
         int gap = (int)Math.Ceiling(10 * scale);
-        int x = growsLeft ? pillPosition.X + pillWidth - width : pillPosition.X;
-        int y = pillPosition.Y - height - gap;
-        if (y < workArea.Y)
+        int baseX = growsLeft ? pillPosition.X + pillWidth - width : pillPosition.X;
+        int baseY = pillPosition.Y - height - gap;
+        bool abovePill = baseY >= workArea.Y;
+        if (!abovePill)
         {
-            y = pillPosition.Y + pillHeight + gap;
+            baseY = pillPosition.Y + pillHeight + gap;
+        }
+
+        int direction = growsLeft ? -1 : 1;
+        int availableInDirection = direction > 0
+            ? workArea.Right - baseX
+            : baseX + width - workArea.X;
+        int columns = Math.Max(1, (availableInDirection + gap) / (width + gap));
+        int column = stackIndex % columns;
+        int row = stackIndex / columns;
+        int x = baseX + direction * column * (width + gap);
+        int y = row == 0
+            ? baseY
+            : abovePill
+                ? pillPosition.Y + pillHeight + gap + (row - 1) * (height + gap)
+                : baseY - row * (height + gap);
+
+        if (x < workArea.X || x + width > workArea.Right)
+        {
+            x = baseX - direction * column * (width + gap);
         }
 
         Position = new PixelPoint(

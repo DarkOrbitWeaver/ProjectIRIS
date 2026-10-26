@@ -76,6 +76,8 @@ public sealed class OverlayWindow : Window
     private readonly ActivityOverlayWindow _activityOverlay;
     private readonly Dictionary<string, ModuleSurfaceOverlayWindow> _moduleSurfaceOverlays =
         new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, BackgroundTaskSnapshot> _backgroundTasks =
+        new(StringComparer.OrdinalIgnoreCase);
     private NowPlayingModel? _nowPlaying;
     private ActiveTimerModel? _activeTimer;
     private IDisposable? _moduleRegistrySubscription;
@@ -640,8 +642,35 @@ public sealed class OverlayWindow : Window
 
     private void HandleBackgroundTask(BackgroundTaskSnapshot task)
     {
+        _backgroundTasks[task.Id] = task;
+        foreach (string stale in _backgroundTasks.Values
+                     .Where(candidate => candidate.State is not (BackgroundTaskState.Queued or BackgroundTaskState.Running or BackgroundTaskState.CancelRequested))
+                     .OrderByDescending(candidate => candidate.UpdatedAt)
+                     .Skip(32)
+                     .Select(candidate => candidate.Id)
+                     .ToList())
+        {
+            _backgroundTasks.Remove(stale);
+        }
+
         _backgroundTask = task;
         bool live = task.State is BackgroundTaskState.Queued or BackgroundTaskState.Running or BackgroundTaskState.CancelRequested;
+        bool foregroundOwnsModule = string.Equals(task.ModuleId, _activeModuleId, StringComparison.OrdinalIgnoreCase) &&
+                                    !string.IsNullOrEmpty(_activeModuleTurnId);
+        foreach (ModuleSurfaceOverlayWindow moduleSurface in foregroundOwnsModule
+                     ? Array.Empty<ModuleSurfaceOverlayWindow>()
+                     : FindModuleSurfaceOverlays(task.ModuleId))
+        {
+            if (live)
+            {
+                moduleSurface.BindProgress(task.Id, task.CurrentStep, task.Progress, task.Total);
+            }
+            else
+            {
+                string summary = string.IsNullOrWhiteSpace(task.Result) ? task.CurrentStep : task.Result;
+                moduleSurface.BindCompletion(task.Id, summary);
+            }
+        }
         if (live)
         {
             _backgroundCompletionTimer.Stop();
@@ -650,6 +679,7 @@ public sealed class OverlayWindow : Window
         {
             _backgroundCompletionTimer.Start();
         }
+        SyncModuleSurfaceOverlays();
         SyncActivityOverlay();
     }
 
@@ -744,14 +774,17 @@ public sealed class OverlayWindow : Window
     {
         if (payload.Phase == ConversationPhase.ToolStarted)
         {
-            ModuleSurfaceOverlayWindow? window = FindModuleSurfaceOverlay(payload.ModuleId);
-            if (window is null)
+            ModuleSurfaceOverlayWindow[] windows = FindModuleSurfaceOverlays(payload.ModuleId).ToArray();
+            if (windows.Length == 0)
             {
                 return;
             }
             _activeModuleId = payload.ModuleId;
             _activeModuleTurnId = payload.TurnId;
-            window.BindActivity(payload.TurnId, payload.Text);
+            foreach (ModuleSurfaceOverlayWindow window in windows)
+            {
+                window.BindActivity(payload.TurnId, payload.Text);
+            }
             SyncModuleSurfaceOverlays();
             SyncActivityOverlay();
             return;
@@ -764,21 +797,23 @@ public sealed class OverlayWindow : Window
             return;
         }
 
-        ModuleSurfaceOverlayWindow? active = FindModuleSurfaceOverlay(_activeModuleId);
+        ModuleSurfaceOverlayWindow[] active = FindModuleSurfaceOverlays(_activeModuleId).ToArray();
         _activeModuleId = string.Empty;
         _activeModuleTurnId = string.Empty;
-        if (active is not null && !(payload.Detail?.Contains("did not allow", StringComparison.OrdinalIgnoreCase) ?? false))
+        if (active.Length > 0 && !(payload.Detail?.Contains("did not allow", StringComparison.OrdinalIgnoreCase) ?? false))
         {
-            bool visible = active.BindCompletion(payload.TurnId,
-                string.IsNullOrWhiteSpace(payload.Detail) ? "Done" : payload.Detail);
-            if (visible)
+            string completion = string.IsNullOrWhiteSpace(payload.Detail) ? "Done" : payload.Detail;
+            foreach (ModuleSurfaceOverlayWindow window in active)
             {
-                ShowModuleSurfaceOverlay(active);
+                window.BindCompletion(payload.TurnId, completion);
             }
         }
         else
         {
-            active?.Hide();
+            foreach (ModuleSurfaceOverlayWindow window in active)
+            {
+                window.Hide();
+            }
         }
         SyncModuleSurfaceOverlays();
         SyncActivityOverlay();
@@ -792,8 +827,7 @@ public sealed class OverlayWindow : Window
             return;
         }
 
-        ModuleSurfaceOverlayWindow? active = FindModuleSurfaceOverlay(payload.ModuleId);
-        if (active is not null)
+        foreach (ModuleSurfaceOverlayWindow active in FindModuleSurfaceOverlays(payload.ModuleId))
         {
             active.BindProgress(payload.TurnId, payload.Message, payload.Progress, payload.Total);
         }
@@ -802,19 +836,33 @@ public sealed class OverlayWindow : Window
 
     private void SyncModuleSurfaceOverlays()
     {
+        int stackIndex = 0;
         foreach (ModuleSurfaceOverlayWindow window in _moduleSurfaceOverlays.Values)
         {
-            bool activeTurn = string.Equals(window.ModuleId, _activeModuleId, StringComparison.OrdinalIgnoreCase) &&
-                              !string.IsNullOrEmpty(_activeModuleTurnId);
+            bool foregroundTurn = string.Equals(window.ModuleId, _activeModuleId, StringComparison.OrdinalIgnoreCase) &&
+                                  !string.IsNullOrEmpty(_activeModuleTurnId);
+            BackgroundTaskSnapshot? backgroundTask = _backgroundTasks.Values
+                .Where(task => string.Equals(task.ModuleId, window.ModuleId, StringComparison.OrdinalIgnoreCase) &&
+                               task.State is BackgroundTaskState.Queued or BackgroundTaskState.Running or BackgroundTaskState.CancelRequested)
+                .OrderByDescending(task => task.UpdatedAt)
+                .FirstOrDefault();
+            if (!foregroundTurn && backgroundTask is not null)
+            {
+                window.BindProgress(backgroundTask.Id, backgroundTask.CurrentStep,
+                    backgroundTask.Progress, backgroundTask.Total);
+            }
+
+            string activeWorkId = foregroundTurn ? _activeModuleTurnId : backgroundTask?.Id ?? string.Empty;
+            bool activeTurn = activeWorkId.Length > 0;
             bool completed = window.IsCompletionHold;
             bool mayShow = IsVisible && !_model.HasPendingPermission && _model.State != MindState.Gaming;
-            if (activeTurn && mayShow && !window.IsHiddenFor(_activeModuleTurnId))
+            if (activeTurn && mayShow && !window.IsHiddenFor(activeWorkId))
             {
-                ShowModuleSurfaceOverlay(window);
+                ShowModuleSurfaceOverlay(window, stackIndex++);
             }
             else if (completed && mayShow)
             {
-                ShowModuleSurfaceOverlay(window);
+                ShowModuleSurfaceOverlay(window, stackIndex++);
             }
             else
             {
@@ -823,11 +871,11 @@ public sealed class OverlayWindow : Window
         }
     }
 
-    private void ShowModuleSurfaceOverlay(ModuleSurfaceOverlayWindow window)
+    private void ShowModuleSurfaceOverlay(ModuleSurfaceOverlayWindow window, int stackIndex)
     {
         if (WorkArea() is { } work)
         {
-            window.PlaceNear(Position, PixelWidth(), PixelHeight(), work, _growsLeft);
+            window.PlaceNear(Position, PixelWidth(), PixelHeight(), work, _growsLeft, stackIndex);
         }
         if (!window.IsVisible)
         {
@@ -835,8 +883,8 @@ public sealed class OverlayWindow : Window
         }
     }
 
-    private ModuleSurfaceOverlayWindow? FindModuleSurfaceOverlay(string moduleId) =>
-        _moduleSurfaceOverlays.Values.FirstOrDefault(window =>
+    private IEnumerable<ModuleSurfaceOverlayWindow> FindModuleSurfaceOverlays(string moduleId) =>
+        _moduleSurfaceOverlays.Values.Where(window =>
             string.Equals(window.ModuleId, moduleId, StringComparison.OrdinalIgnoreCase));
 
     private void OnNowPlayingChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs eventArgs)

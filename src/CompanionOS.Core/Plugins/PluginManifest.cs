@@ -355,7 +355,9 @@ public sealed class PluginManifest
     private static bool ValidateSurfaces(PluginManifest plugin, out string rejectionReason,
         bool validateActionsAndSchemas)
     {
-        const int maximumSurfaces = 6;
+        const int maximumSurfaces = 8;
+        const int maximumSidebarSurfaces = 5;
+        const int maximumOverlaySurfaces = 3;
         const int maximumElementsPerSurface = 20;
         string[] iconKeys = ["body", "chat", "memory", "music", "search", "send", "settings", "telegram", "timer", "web"];
         HashSet<string> surfaceIds = new(StringComparer.OrdinalIgnoreCase);
@@ -368,14 +370,21 @@ public sealed class PluginManifest
 
         if (plugin.Surfaces.Count > maximumSurfaces)
         {
-            rejectionReason = $"at most {maximumSurfaces} UI surfaces are allowed";
+            rejectionReason = $"at most {maximumSurfaces} UI surfaces are allowed (up to five sidebar and three overlay surfaces)";
             return false;
         }
 
         if (plugin.Surfaces.Count(surface =>
-                string.Equals(surface.Slot, "overlay", StringComparison.OrdinalIgnoreCase)) > 1)
+                string.Equals(surface.Slot, "sidebar", StringComparison.OrdinalIgnoreCase)) > maximumSidebarSurfaces)
         {
-            rejectionReason = "at most one independent overlay surface is allowed per module in schema v1";
+            rejectionReason = $"at most {maximumSidebarSurfaces} sidebar surfaces are allowed per module";
+            return false;
+        }
+
+        if (plugin.Surfaces.Count(surface =>
+                string.Equals(surface.Slot, "overlay", StringComparison.OrdinalIgnoreCase)) > maximumOverlaySurfaces)
+        {
+            rejectionReason = $"at most {maximumOverlaySurfaces} independent overlay surfaces are allowed per module";
             return false;
         }
 
