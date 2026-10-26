@@ -322,9 +322,9 @@ public sealed class PluginManifest
                 rejectionReason = "transport needs a 'command' array";
                 return false;
             }
-            if (parsed.DiscoverTools && parsed.Transport != "mcp")
+            if (parsed.DiscoverTools && parsed.Transport is not ("mcp" or "command"))
             {
-                rejectionReason = "'discoverTools' is currently supported only for MCP modules";
+                rejectionReason = "'discoverTools' is supported only for MCP or command modules";
                 return false;
             }
 

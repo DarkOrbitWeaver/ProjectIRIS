@@ -32,6 +32,9 @@ public sealed class PluginHost : IDisposable
     private const int MaximumCommandErrorCharacters = 16 * 1024;
     private const int MaximumProgressMessageCharacters = 240;
     private const int MaximumToolInputCharacters = 256 * 1024;
+    private const int MaximumDiscoveredTools = 128;
+    private const int MaximumDiscoveredSchemaCharacters = 16_384;
+    private const int MaximumDiscoveredDescriptionCharacters = 1_000;
     private const int MaximumSurfaceUpdatesPerCommand = 128;
     private static readonly TimeSpan CommandProgressMinimumInterval = TimeSpan.FromMilliseconds(100);
     private readonly EventBus _events;
@@ -66,48 +69,148 @@ public sealed class PluginHost : IDisposable
     public async Task PrepareEnabledAsync(CancellationToken cancellationToken)
     {
         foreach (PluginManifest plugin in _loaded.Where(candidate =>
-                     !candidate.Disabled && candidate.DiscoverTools && candidate.Transport == "mcp"))
+                     !candidate.Disabled && candidate.DiscoverTools && candidate.Transport is "mcp" or "command"))
         {
             using CancellationTokenSource discoveryBudget =
                 CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             discoveryBudget.CancelAfter(TimeSpan.FromSeconds(10));
             try
             {
-                McpConnection connection = await GetMcpAsync(plugin, discoveryBudget.Token).ConfigureAwait(false);
-                IReadOnlyList<PluginTool> discovered = await connection.ListToolsAsync(discoveryBudget.Token)
-                    .ConfigureAwait(false);
-
-                List<PluginTool> merged = discovered.Select(tool =>
+                IReadOnlyList<PluginTool> discovered;
+                if (plugin.Transport == "command")
                 {
-                    PluginTool? policy = plugin.DeclaredTools.FirstOrDefault(declared =>
-                        string.Equals(declared.Name, tool.Name, StringComparison.OrdinalIgnoreCase));
-                    return tool with { Permission = policy?.Permission, Background = policy?.Background ?? false };
-                }).ToList();
-
-                plugin.Tools = merged;
-                if (!PluginManifest.ValidateDiscoveredSurfaces(plugin, out string reason))
+                    PluginResult response = await CallCommandAsync(plugin,
+                        new PluginTool("__discover_tools__", "Discover module tools.", null, "{}"),
+                        "{}", string.Empty, discoveryBudget.Token, action: "tools/list").ConfigureAwait(false);
+                    if (!response.Ok)
+                    {
+                        throw new InvalidOperationException(response.Error ?? response.Text);
+                    }
+                    discovered = ParseCommandDiscoveredTools(response.Text);
+                }
+                else
                 {
-                    plugin.Tools = [];
-                    StopMcp(plugin.Id);
-                    CompanionLog.Warning("Plugins", $"Rejected discovered tools for '{plugin.Name}': {reason}");
-                    continue;
+                    McpConnection connection = await GetMcpAsync(plugin, discoveryBudget.Token).ConfigureAwait(false);
+                    discovered = await connection.ListToolsAsync(discoveryBudget.Token).ConfigureAwait(false);
                 }
 
-                CompanionLog.Info("Plugins", $"Discovered {merged.Count} MCP tools for '{plugin.Name}'.");
+                if (!ApplyDiscoveredTools(plugin, discovered) && plugin.Transport == "mcp")
+                {
+                    StopMcp(plugin.Id);
+                }
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
                 plugin.Tools = [];
-                StopMcp(plugin.Id);
+                if (plugin.Transport == "mcp")
+                {
+                    StopMcp(plugin.Id);
+                }
                 throw;
             }
             catch (Exception exception)
             {
                 plugin.Tools = [];
-                StopMcp(plugin.Id);
+                if (plugin.Transport == "mcp")
+                {
+                    StopMcp(plugin.Id);
+                }
                 CompanionLog.Warning("Plugins", $"Tool discovery failed for '{plugin.Name}': {exception.Message}");
             }
         }
+    }
+
+    private bool ApplyDiscoveredTools(PluginManifest plugin, IReadOnlyList<PluginTool> discovered)
+    {
+        List<PluginTool> merged = discovered.Select(tool =>
+        {
+            PluginTool? policy = plugin.DeclaredTools.FirstOrDefault(declared =>
+                string.Equals(declared.Name, tool.Name, StringComparison.OrdinalIgnoreCase));
+            return tool with { Permission = policy?.Permission, Background = policy?.Background ?? false };
+        }).ToList();
+
+        plugin.Tools = merged;
+        if (!PluginManifest.ValidateDiscoveredSurfaces(plugin, out string reason))
+        {
+            plugin.Tools = [];
+            CompanionLog.Warning("Plugins", $"Rejected discovered tools for '{plugin.Name}': {reason}");
+            return false;
+        }
+
+        CompanionLog.Info("Plugins", $"Discovered {merged.Count} {plugin.Transport} tools for '{plugin.Name}'.");
+        return true;
+    }
+
+    private static IReadOnlyList<PluginTool> ParseCommandDiscoveredTools(string jsonl)
+    {
+        JsonElement root;
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(jsonl);
+            root = document.RootElement.Clone();
+        }
+        catch (JsonException exception)
+        {
+            throw new InvalidOperationException($"Command module tool discovery must return one JSON object: {exception.Message}");
+        }
+
+        if (root.ValueKind != JsonValueKind.Object ||
+            !root.TryGetProperty("type", out JsonElement kind) || kind.GetString() != "tools" ||
+            !root.TryGetProperty("tools", out JsonElement toolsElement) || toolsElement.ValueKind != JsonValueKind.Array ||
+            toolsElement.GetArrayLength() > MaximumDiscoveredTools)
+        {
+            throw new InvalidOperationException($"Command module discovery must return a 'tools' envelope with at most {MaximumDiscoveredTools} tools.");
+        }
+
+        List<PluginTool> tools = [];
+        HashSet<string> names = new(StringComparer.OrdinalIgnoreCase);
+        foreach (JsonElement entry in toolsElement.EnumerateArray())
+        {
+            if (entry.ValueKind != JsonValueKind.Object ||
+                !entry.TryGetProperty("name", out JsonElement nameElement) || nameElement.ValueKind != JsonValueKind.String)
+            {
+                throw new InvalidOperationException("Command module discovery returned a tool without a string name.");
+            }
+
+            string name = nameElement.GetString() ?? string.Empty;
+            if (name.Length is 0 or > 128 || !names.Add(name))
+            {
+                throw new InvalidOperationException("Command module discovery returned an empty, oversized, or duplicate tool name.");
+            }
+
+            string description = string.Empty;
+            if (entry.TryGetProperty("description", out JsonElement descriptionElement))
+            {
+                if (descriptionElement.ValueKind != JsonValueKind.String)
+                {
+                    throw new InvalidOperationException($"Discovered tool '{name}' description must be a string.");
+                }
+                description = descriptionElement.GetString() ?? string.Empty;
+                if (description.Length > MaximumDiscoveredDescriptionCharacters)
+                {
+                    throw new InvalidOperationException($"Discovered tool '{name}' description exceeds {MaximumDiscoveredDescriptionCharacters} characters.");
+                }
+            }
+
+            JsonElement schema = entry.TryGetProperty("schema", out JsonElement schemaElement)
+                ? schemaElement
+                : entry.TryGetProperty("inputSchema", out JsonElement inputSchemaElement) ? inputSchemaElement : default;
+            if (schema.ValueKind != JsonValueKind.Object ||
+                !schema.TryGetProperty("type", out JsonElement typeElement) || typeElement.ValueKind != JsonValueKind.String ||
+                typeElement.GetString() != "object")
+            {
+                throw new InvalidOperationException($"Discovered tool '{name}' must provide an object schema.");
+            }
+
+            string schemaJson = schema.GetRawText();
+            if (schemaJson.Length > MaximumDiscoveredSchemaCharacters)
+            {
+                throw new InvalidOperationException($"Discovered tool '{name}' schema exceeds {MaximumDiscoveredSchemaCharacters} characters.");
+            }
+            tools.Add(new PluginTool(name, description, null, schemaJson));
+        }
+
+        return tools;
     }
 
     private void StopMcp(string pluginId)
@@ -236,7 +339,7 @@ public sealed class PluginHost : IDisposable
     }
 
     private async Task<PluginResult> CallCommandAsync(PluginManifest plugin, PluginTool tool,
-        string argumentsJson, string turnId, CancellationToken cancellationToken)
+        string argumentsJson, string turnId, CancellationToken cancellationToken, string action = "call")
     {
         string fileName = PluginCommandPath.Resolve(plugin);
         if (PluginCommandPath.IsPathLike(plugin.Command[0]) && !File.Exists(fileName))
@@ -283,6 +386,7 @@ public sealed class PluginHost : IDisposable
         string payload = JsonSerializer.Serialize(new
         {
             protocol = 1,
+            action,
             plugin = plugin.Id,
             tool = tool.Name,
             arguments = inputDocument.RootElement.Clone()
@@ -401,6 +505,10 @@ public sealed class PluginHost : IDisposable
                 string? type = typeElement.GetString();
                 if (string.Equals(type, "progress", StringComparison.OrdinalIgnoreCase))
                 {
+                    if (string.IsNullOrEmpty(turnId))
+                    {
+                        return;
+                    }
                     long now = Stopwatch.GetTimestamp();
                     if (lastProgressTicks != 0 && Stopwatch.GetElapsedTime(lastProgressTicks, now) < CommandProgressMinimumInterval)
                     {
@@ -448,7 +556,7 @@ public sealed class PluginHost : IDisposable
 
                 if (string.Equals(type, "ui", StringComparison.OrdinalIgnoreCase))
                 {
-                    if (surfaceUpdateCount < MaximumSurfaceUpdatesPerCommand)
+                    if (!string.IsNullOrEmpty(turnId) && surfaceUpdateCount < MaximumSurfaceUpdatesPerCommand)
                     {
                         TryPublishSurfaceState(root, plugin, ref surfaceUpdateCount);
                     }

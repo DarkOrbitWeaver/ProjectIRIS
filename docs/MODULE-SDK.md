@@ -13,11 +13,14 @@ permission, activity, and shell contracts so each integration feels like part of
   enabling them is a user action and takes effect after Iris restarts. Existing manifests that
   omitted the field now require that explicit enable step.
 - External tools are adapted into the same dynamic router and execution boundary, and receive
-  stable module-qualified router names so unrelated modules can reuse local tool names. MCP
-  modules may set `"discoverTools": true` to load tool schemas from `tools/list` during startup;
-  each tool name and schema then comes from its server. The manifest can still declare
+  stable module-qualified router names so unrelated modules can reuse local tool names. MCP and
+  command modules may set `"discoverTools": true` to load tool schemas during startup. MCP tools
+  come from `tools/list`; a command module receives an `action: "tools/list"` handshake and
+  returns a `tools` JSON envelope. Each tool name and schema then comes from the module. The
+  manifest can still declare
   name-to-permission policy entries without duplicating those schemas. Discovery follows MCP
-  pagination and caps each module at 128 tools and 16 pages, each schema at 16 KB and description
+  pagination and caps each module at 128 tools (and MCP at 16 pages), each schema at 16 KB and
+  description
   at 1,000 characters, with a 10-second total discovery budget per module. If discovery fails or
   the live surfaces do not match the discovered schemas, the module is registered without
   callable discovered tools and the reason is logged. Discovered tools without a matching
@@ -64,9 +67,14 @@ permission, activity, and shell contracts so each integration feels like part of
   unbounded work.
 - A bare executable such as `node` or `python` resolves through `PATH`; a relative command path
   resolves inside the module folder. External code runs only after the module is enabled.
-- A command module receives one JSON line on stdin with its module id, local tool name, and
-  arguments (plus protocol version 1). It may write ordinary text for its result, or emit
-  JSONL `progress` and `result` envelopes for shared live activity; stdout is capped at 256 KiB,
+- A command module receives one JSON line on stdin with its module id, local tool name, arguments,
+  and action (plus protocol version 1). `action` is `call` for execution and `tools/list` for
+  startup discovery. For discovery, return one JSON object with `type: "tools"` and a `tools`
+  array;
+  each entry has a `name`, optional `description`, and object `schema` (or `inputSchema`). The
+  manifest still owns permission and background policy. It may write ordinary text for a normal
+  result, or emit JSONL `progress` and `result` envelopes for shared live activity; stdout is
+  capped at 256 KiB,
   stderr storage at 16 KiB, and oversized stdout terminates the process. MCP modules receive the
   standard `tools/call` request with the local tool name.
 
@@ -143,8 +151,8 @@ permission policy.
 
 ### Current schema-v1 module surfaces example
 
-With `discoverTools: true`, the MCP server supplies its tool schemas and the manifest supplies
-permission policy; a button names a discovered tool and input names map to its JSON argument
+With `discoverTools: true`, the MCP server or command supplies its tool schemas and the manifest
+supplies permission policy; a button names a discovered tool and input names map to its JSON argument
 properties. `icon` is a semantic key from Iris's allow-list. The module stays disabled until the
 user explicitly enables it.
 

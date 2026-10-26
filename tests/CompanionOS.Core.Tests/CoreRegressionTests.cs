@@ -575,6 +575,60 @@ public sealed class CoreRegressionTests
     }
 
     [Fact]
+    public async Task CommandPluginDiscoversToolsAndKeepsManifestPolicies()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"iris-command-discovery-{Guid.NewGuid():N}");
+        string folder = Path.Combine(root, "contacts");
+        Directory.CreateDirectory(folder);
+        File.WriteAllText(Path.Combine(folder, "module.ps1"), """
+            $request = ConvertFrom-Json -InputObject ([Console]::In.ReadLine())
+            if ($request.action -eq 'tools/list') {
+                $toolSchema = @{ type = 'object'; properties = @{ query = @{ type = 'string' } }; required = @('query') }
+                $response = @{ type = 'tools'; tools = @(@{ name = 'lookup_contact'; description = 'Find a contact by name.'; schema = $toolSchema }) }
+            } else {
+                $response = @{ type = 'result'; text = 'Found Ada.' }
+            }
+            [Console]::Out.WriteLine(($response | ConvertTo-Json -Compress -Depth 20))
+            """);
+        File.WriteAllText(Path.Combine(folder, "plugin.json"), """
+            {
+              "schema": 1,
+              "id": "contacts",
+              "name": "Contacts",
+              "transport": "command",
+              "command": ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "module.ps1"],
+              "disabled": false,
+              "discoverTools": true,
+              "asksPermission": ["contacts.read"],
+              "tools": [{ "name": "lookup_contact", "permission": "contacts.read", "background": true }]
+            }
+            """);
+
+        try
+        {
+            using PluginHost host = new(new EventBus(), root);
+            host.Load();
+            await host.PrepareEnabledAsync(CancellationToken.None);
+
+            PluginManifest plugin = Assert.Single(host.Loaded);
+            PluginTool tool = Assert.Single(plugin.Tools);
+            Assert.Equal("lookup_contact", tool.Name);
+            Assert.Equal("contacts.read", tool.Permission);
+            Assert.True(tool.Background);
+            Assert.Contains("query", tool.Schema);
+
+            PluginResult result = await host.CallAsync(plugin, tool, "{\"query\":\"Ada\"}", "test-turn",
+                CancellationToken.None);
+            Assert.True(result.Ok, result.Error);
+            Assert.Equal("Found Ada.", result.Text);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task ModuleRouterFindsRelevantToolsBeyondTheFirstEightDeclarations()
     {
         EventBus events = new();
