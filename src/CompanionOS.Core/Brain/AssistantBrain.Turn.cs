@@ -294,7 +294,7 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
         }
     }
 
-    private void OnUserRequested(string request) => _ = HandleVoiceRequestAsync(request);
+    private void OnUserRequested(RecognizedVoiceRequest request) => _ = HandleVoiceRequestAsync(request);
 
     private void OnUserInterrupted()
     {
@@ -302,12 +302,12 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
         _voice.StopSpeaking();
     }
 
-    private void OnUserCalledHer()
+    private void OnUserCalledHer(string interactionId)
     {
         _lastActivity = DateTimeOffset.Now;
         _voice.OpenConversationWindow();
         _mind.MoveTo(MindState.Listening, "called by name");
-        _ = HandleUserCallAsync();
+        _ = HandleUserCallAsync(interactionId);
     }
 
     /// <summary>
@@ -315,21 +315,22 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
     /// user a bounded listening window. No screen capture, model load or background scan occurs
     /// here. This is the desktop equivalent of an Android assistant becoming present on call.
     /// </summary>
-    private async Task HandleUserCallAsync()
+    private async Task HandleUserCallAsync(string interactionId)
     {
+        using IDisposable correlationScope = IrisEvent.BeginCorrelationScope(interactionId);
         // Do not speak over a film or song. Waiting for the tiny Windows media operation here
         // also makes the visual call state and the audible greeting arrive as one interaction.
-        await BeginVoiceAttentionAsync("called by name", TimeSpan.FromSeconds(28)).ConfigureAwait(false);
+        await BeginVoiceAttentionAsync("called by name", TimeSpan.FromSeconds(28), interactionId).ConfigureAwait(false);
         await PlayGreetingAsync().ConfigureAwait(false);
     }
 
-    private async Task BeginVoiceAttentionAsync(string reason, TimeSpan holdFor)
+    private async Task BeginVoiceAttentionAsync(string reason, TimeSpan holdFor, string interactionId)
     {
         _events.Publish(new AttentionRequestedEvent
         {
             Reason = reason,
             HoldFor = holdFor,
-            TurnId = IrisEvent.CurrentCorrelationId ?? string.Empty
+            TurnId = interactionId
         });
         await _perception.PauseMediaForVoiceAsync().ConfigureAwait(false);
 
@@ -351,13 +352,15 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
         }, timeoutToken);
     }
 
-    private async Task HandleVoiceRequestAsync(string request)
+    private async Task HandleVoiceRequestAsync(RecognizedVoiceRequest request)
     {
-        await BeginVoiceAttentionAsync("voice request", TimeSpan.FromSeconds(45)).ConfigureAwait(false);
+        using IDisposable correlationScope = IrisEvent.BeginCorrelationScope(request.InteractionId);
+        await BeginVoiceAttentionAsync("voice request", TimeSpan.FromSeconds(45), request.InteractionId)
+            .ConfigureAwait(false);
         _voiceAttentionTimeout?.Cancel();
         try
         {
-            await SendMessageAsync(request, "voice").ConfigureAwait(false);
+            await SendMessageAsync(request.Text, "voice", interactionId: request.InteractionId).ConfigureAwait(false);
         }
         finally
         {

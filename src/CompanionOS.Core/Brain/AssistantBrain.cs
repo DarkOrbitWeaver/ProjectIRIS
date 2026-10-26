@@ -130,7 +130,8 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
     /// Returns the answer text; the interface normally follows the events instead.
     /// </summary>
     public async Task<string> SendMessageAsync(string userText, string origin = "text",
-        string? attachedImageDataUri = null, CancellationToken cancellationToken = default)
+        string? attachedImageDataUri = null, CancellationToken cancellationToken = default,
+        string? interactionId = null)
     {
         if (string.IsNullOrWhiteSpace(userText) && string.IsNullOrWhiteSpace(attachedImageDataUri))
         {
@@ -141,7 +142,9 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
         _voice.OpenConversationWindow();
 
         await _turnGate.WaitAsync(cancellationToken).ConfigureAwait(false);
-        string turnId = IrisEvent.CurrentCorrelationId ?? Guid.NewGuid().ToString("N")[..8];
+        string turnId = string.IsNullOrWhiteSpace(interactionId)
+            ? IrisEvent.CurrentCorrelationId ?? Guid.NewGuid().ToString("N")[..8]
+            : interactionId.Trim();
         using IDisposable correlationScope = IrisEvent.BeginCorrelationScope(turnId);
         try
         {

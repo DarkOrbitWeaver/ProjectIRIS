@@ -5,6 +5,9 @@ using CompanionOS.Core.Events;
 
 namespace CompanionOS.Core.Voice;
 
+/// <summary>A recognized utterance and the stable ID that follows it through the companion.</summary>
+public sealed record RecognizedVoiceRequest(string Text, string InteractionId);
+
 /// <summary>
 /// Her ears and her mouth, wired together.
 ///
@@ -309,13 +312,13 @@ public sealed class VoicePipeline : IAsyncDisposable
     }
 
     /// <summary>Raised with a finished recognised request. Handled on a background thread.</summary>
-    public event Action<string>? UserRequested;
+    public event Action<RecognizedVoiceRequest>? UserRequested;
 
     /// <summary>Raised the moment the user speaks while she is talking, for barge-in.</summary>
     public event Action? UserInterrupted;
 
     /// <summary>Raised when the user only called her name.</summary>
-    public event Action? UserCalledHer;
+    public event Action<string>? UserCalledHer;
 
     /// <summary>Prepares engines and starts listening if the ears are enabled.</summary>
     public async Task StartAsync(CancellationToken cancellationToken = default)
@@ -829,6 +832,7 @@ public sealed class VoicePipeline : IAsyncDisposable
         // connect recognition, wake matching, tool work, and the spoken reply without
         // ever persisting the transcript or microphone samples.
         using IDisposable correlationScope = IrisEvent.BeginCorrelationScope();
+        string interactionId = IrisEvent.CurrentCorrelationId!;
         await _recognitionGate.WaitAsync().ConfigureAwait(false);
         try
         {
@@ -865,7 +869,7 @@ public sealed class VoicePipeline : IAsyncDisposable
                 Text = transcript,
                 IsFinal = true,
                 IsUser = true,
-                TurnId = IrisEvent.CurrentCorrelationId ?? string.Empty
+                TurnId = interactionId
             });
             // Speech text belongs in the visible conversation, not persistent diagnostics.
             CompanionLog.Info("Voice", $"Recognized speech ({transcript.Length} characters; transcript kept in conversation only).");
@@ -876,7 +880,7 @@ public sealed class VoicePipeline : IAsyncDisposable
             if (!ears.RequireWakePhrase || conversationOpen)
             {
                 OpenConversationWindow();
-                UserRequested?.Invoke(transcript);
+                UserRequested?.Invoke(new RecognizedVoiceRequest(transcript, interactionId));
                 return;
             }
 
@@ -893,11 +897,11 @@ public sealed class VoicePipeline : IAsyncDisposable
             OpenConversationWindow();
             if (string.IsNullOrWhiteSpace(remainder) || _wakeMatcher.IsGreetingOnly(remainder))
             {
-                UserCalledHer?.Invoke();
+                UserCalledHer?.Invoke(interactionId);
                 return;
             }
 
-            UserRequested?.Invoke(remainder);
+            UserRequested?.Invoke(new RecognizedVoiceRequest(remainder, interactionId));
         }
         catch (Exception exception)
         {
