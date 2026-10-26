@@ -113,8 +113,10 @@ Remaining work:
    and media text are omitted. Still connect voice-input confidence, memory provenance, tool
    outcomes, speech, cancellation, and recovery into that same inspectable turn record.
 2. Recognized requests now pass their interaction ID explicitly into the turn coordinator;
-   transcript, attention, and speech events carry the same ID. Still connect listening state,
-   wake decisions, media-pause ownership, and tool progress into the same inspectable record.
+   transcript, attention, and speech events carry the same ID. Media pause/resume transitions are
+   serialized, ownership is cleared on a terminal decision, results are logged under the turn, and
+   an unconfirmed resume shows a recovery notice. Still connect listening state and wake decisions
+   into the same inspectable record; verify media behavior against real Windows players.
    Tool activity now has one start/finish pair and chat entries are associated with their turn;
    completed tools return the activity card to result review. Cancellation and failure close the
    associated module overlay as well as active chat/tool UI, and cancellation marks the journal

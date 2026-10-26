@@ -222,6 +222,75 @@ public sealed class CoreRegressionTests
         Assert.Contains("No active Windows media session", mediaHealth.Detail);
     }
 
+    [Fact]
+    public async Task ConcurrentVoiceAttentionPausesMediaOnlyOnce()
+    {
+        SettingsStore settings = CreatePerceptionTestSettings();
+        FakeMediaSessionSensor media = new() { PauseResult = true, PauseDelayMilliseconds = 40 };
+        using PerceptionEngine perception = new(settings, new EventBus(), media);
+
+        bool[] results = await Task.WhenAll(
+            perception.PauseMediaForVoiceAsync(),
+            perception.PauseMediaForVoiceAsync());
+
+        Assert.Equal(1, media.PauseCalls);
+        Assert.Single(results, paused => paused);
+        Assert.Single(results, paused => !paused);
+    }
+
+    [Fact]
+    public async Task DisablingAutoResumeClearsPauseOwnershipForTheNextInteraction()
+    {
+        SettingsStore settings = CreatePerceptionTestSettings();
+        FakeMediaSessionSensor media = new() { PauseResult = true, PlayResult = true };
+        using PerceptionEngine perception = new(settings, new EventBus(), media);
+
+        Assert.True(await perception.PauseMediaForVoiceAsync());
+        settings.Current.Voice.ResumeMediaAfterVoiceTurn = false;
+        Assert.False(await perception.ResumeMediaAfterVoiceAsync());
+
+        settings.Current.Voice.ResumeMediaAfterVoiceTurn = true;
+        Assert.True(await perception.PauseMediaForVoiceAsync());
+        Assert.True(await perception.ResumeMediaAfterVoiceAsync());
+        Assert.Equal(2, media.PauseCalls);
+        Assert.Equal(1, media.PlayCalls);
+    }
+
+    [Fact]
+    public async Task CancelledResumeAttemptPreservesOwnershipForLaterRetry()
+    {
+        SettingsStore settings = CreatePerceptionTestSettings();
+        FakeMediaSessionSensor media = new() { PauseResult = true, PlayResult = true };
+        using PerceptionEngine perception = new(settings, new EventBus(), media);
+        Assert.True(await perception.PauseMediaForVoiceAsync());
+        using CancellationTokenSource cancellation = new();
+        cancellation.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            perception.ResumeMediaAfterVoiceAsync(cancellation.Token));
+
+        Assert.True(await perception.ResumeMediaAfterVoiceAsync());
+        Assert.Equal(1, media.PlayCalls);
+    }
+
+    [Fact]
+    public async Task FailedMediaResumeSurfacesARecoveryNotice()
+    {
+        SettingsStore settings = CreatePerceptionTestSettings();
+        FakeMediaSessionSensor media = new() { PauseResult = true, PlayResult = false };
+        EventBus events = new();
+        List<NoticeEvent> notices = [];
+        using IDisposable subscription = events.Subscribe<NoticeEvent>(notices.Add);
+        using PerceptionEngine perception = new(settings, events, media);
+
+        Assert.True(await perception.PauseMediaForVoiceAsync());
+        Assert.False(await perception.ResumeMediaAfterVoiceAsync());
+
+        Assert.Contains(notices, notice => notice.Severity == NoticeSeverity.Warning &&
+            notice.Message.Contains("media resumed", StringComparison.OrdinalIgnoreCase));
+        Assert.Equal(1, media.PlayCalls);
+    }
+
     private static SettingsStore CreatePerceptionTestSettings()
     {
         SettingsStore settings = new();
@@ -1680,6 +1749,15 @@ public sealed class CoreRegressionTests
     {
         private readonly MediaSessionReadResult[] _results = results;
         private int _readCount;
+        private int _pauseCalls;
+        private int _playCalls;
+
+        public bool PauseResult { get; set; }
+        public bool PlayResult { get; set; }
+        public int PauseDelayMilliseconds { get; set; }
+        public int PlayDelayMilliseconds { get; set; }
+        public int PauseCalls => Volatile.Read(ref _pauseCalls);
+        public int PlayCalls => Volatile.Read(ref _playCalls);
 
         public Task<MediaSessionReadResult> ReadWithStatusAsync()
         {
@@ -1687,8 +1765,25 @@ public sealed class CoreRegressionTests
             return Task.FromResult(_results[index]);
         }
 
-        public Task<bool> TryPauseAsync() => Task.FromResult(false);
-        public Task<bool> TryPlayAsync() => Task.FromResult(false);
+        public async Task<bool> TryPauseAsync()
+        {
+            Interlocked.Increment(ref _pauseCalls);
+            if (PauseDelayMilliseconds > 0)
+            {
+                await Task.Delay(PauseDelayMilliseconds);
+            }
+            return PauseResult;
+        }
+
+        public async Task<bool> TryPlayAsync()
+        {
+            Interlocked.Increment(ref _playCalls);
+            if (PlayDelayMilliseconds > 0)
+            {
+                await Task.Delay(PlayDelayMilliseconds);
+            }
+            return PlayResult;
+        }
     }
 
     private sealed class TestAssistantModule(string id, string name, string purpose,

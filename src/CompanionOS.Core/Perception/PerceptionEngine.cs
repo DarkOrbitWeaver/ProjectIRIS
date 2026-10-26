@@ -23,6 +23,7 @@ public sealed class PerceptionEngine : IDisposable
     private readonly WindowsNative.CpuLoadSampler _cpuSampler = new();
     private readonly IMediaSessionSensor _mediaSensor;
     private readonly object _snapshotLock = new();
+    private readonly SemaphoreSlim _mediaOwnershipGate = new(1, 1);
 
     private Timer? _ambientTimer;
     private SituationSnapshot _current = new();
@@ -303,40 +304,108 @@ public sealed class PerceptionEngine : IDisposable
     /// </summary>
     public async Task<bool> PauseMediaForVoiceAsync(CancellationToken cancellationToken = default)
     {
-        if (!_settings.Current.Voice.PauseMediaWhenListening ||
-            Interlocked.CompareExchange(ref _mediaPausedForVoice, 0, 0) != 0)
+        await _mediaOwnershipGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
         {
-            return false;
-        }
+            if (!_settings.Current.Voice.PauseMediaWhenListening ||
+                Interlocked.CompareExchange(ref _mediaPausedForVoice, 0, 0) != 0)
+            {
+                return false;
+            }
 
-        cancellationToken.ThrowIfCancellationRequested();
-        bool paused = await _mediaSensor.TryPauseAsync().ConfigureAwait(false);
-        if (paused)
+            cancellationToken.ThrowIfCancellationRequested();
+            bool paused;
+            try
+            {
+                paused = await _mediaSensor.TryPauseAsync().ConfigureAwait(false);
+            }
+            catch (Exception exception)
+            {
+                CompanionLog.Warning("Senses", $"Could not pause media for voice: {exception.Message}");
+                IrisEvent.Log("Senses", "media.pause_failed", LogLevel.Warning,
+                    data: new Dictionary<string, string?> { ["reason"] = "sensor_error" });
+                return false;
+            }
+
+            if (paused)
+            {
+                Interlocked.Exchange(ref _mediaPausedForVoice, 1);
+                _events.Publish(new SensesEvent { SenseName = "media", Summary = "Paused by Iris while listening." });
+                IrisEvent.Log("Senses", "media.paused_for_voice", LogLevel.Info,
+                    data: new Dictionary<string, string?> { ["pause_owned"] = "true" });
+            }
+            else
+            {
+                IrisEvent.Log("Senses", "media.pause_unconfirmed", LogLevel.Debug);
+            }
+
+            return paused;
+        }
+        finally
         {
-            Interlocked.Exchange(ref _mediaPausedForVoice, 1);
-            _events.Publish(new SensesEvent { SenseName = "media", Summary = "Paused by Iris while listening." });
+            _mediaOwnershipGate.Release();
         }
-
-        return paused;
     }
 
     /// <summary>Returns only media Iris paused for the current voice interaction.</summary>
     public async Task<bool> ResumeMediaAfterVoiceAsync(CancellationToken cancellationToken = default)
     {
-        if (!_settings.Current.Voice.ResumeMediaAfterVoiceTurn ||
-            Interlocked.Exchange(ref _mediaPausedForVoice, 0) == 0)
+        await _mediaOwnershipGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
         {
-            return false;
-        }
+            if (Interlocked.CompareExchange(ref _mediaPausedForVoice, 0, 0) == 0)
+            {
+                return false;
+            }
 
-        cancellationToken.ThrowIfCancellationRequested();
-        bool resumed = await _mediaSensor.TryPlayAsync().ConfigureAwait(false);
-        if (resumed)
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!_settings.Current.Voice.ResumeMediaAfterVoiceTurn)
+            {
+                Interlocked.Exchange(ref _mediaPausedForVoice, 0);
+                IrisEvent.Log("Senses", "media.resume_skipped", LogLevel.Info,
+                    data: new Dictionary<string, string?> { ["reason"] = "resume_disabled" });
+                return false;
+            }
+
+            bool resumed;
+            try
+            {
+                resumed = await _mediaSensor.TryPlayAsync().ConfigureAwait(false);
+            }
+            catch (Exception exception)
+            {
+                resumed = false;
+                CompanionLog.Warning("Senses", $"Could not resume media after voice: {exception.Message}");
+            }
+
+            // The decision is terminal even when Windows cannot confirm playback. Keeping
+            // stale ownership could make a later conversation unexpectedly start media.
+            Interlocked.Exchange(ref _mediaPausedForVoice, 0);
+            if (resumed)
+            {
+                _events.Publish(new SensesEvent { SenseName = "media", Summary = "Resumed after Iris finished." });
+                IrisEvent.Log("Senses", "media.resumed_after_voice", LogLevel.Info,
+                    data: new Dictionary<string, string?> { ["pause_owned"] = "true" });
+            }
+            else
+            {
+                _events.Publish(new SensesEvent
+                {
+                    SenseName = "media",
+                    Summary = "Iris could not confirm that media resumed. Check the player if it is still paused."
+                });
+                IrisEvent.Log("Senses", "media.resume_unconfirmed", LogLevel.Warning);
+                _events.PublishNotice(
+                    "I couldn't confirm that your media resumed. Check the player if it is still paused.",
+                    NoticeSeverity.Warning);
+            }
+
+            return resumed;
+        }
+        finally
         {
-            _events.Publish(new SensesEvent { SenseName = "media", Summary = "Resumed after Iris finished." });
+            _mediaOwnershipGate.Release();
         }
-
-        return resumed;
     }
 
     /// <summary>Teaches her that an executable is a game (or that it is not).</summary>
