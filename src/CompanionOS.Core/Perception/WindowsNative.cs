@@ -12,14 +12,16 @@ namespace CompanionOS.Core.Perception;
 /// in front, how long the keyboard has been quiet, how much memory is free. No input
 /// is synthesised and nothing is changed, so this file can never surprise the user.
 ///
-/// Each call is wrapped so a Windows update or a protected window cannot throw into
-/// her thinking loop; a failed probe simply returns a neutral value.
+/// Each call is wrapped so a Windows update or protected window cannot throw into
+/// her thinking loop. Compatibility reads return neutral values; Try reads preserve
+/// availability so the prompt can report unknown instead of treating a fallback as fact.
 /// </summary>
 public static class WindowsNative
 {
     /// <summary>What is in front of the user right now.</summary>
     public sealed class ForegroundWindowInfo
     {
+        public bool IsAvailable { get; init; }
         public string WindowTitle { get; init; } = string.Empty;
         public string ProcessName { get; init; } = string.Empty;
         public string ApplicationName { get; init; } = string.Empty;
@@ -54,6 +56,7 @@ public static class WindowsNative
 
             return new ForegroundWindowInfo
             {
+                IsAvailable = true,
                 WindowTitle = titleBuilder.ToString(),
                 ProcessName = processName,
                 ApplicationName = applicationName,
@@ -70,60 +73,89 @@ public static class WindowsNative
     /// <summary>Seconds since the last keyboard or mouse input.</summary>
     public static double ReadIdleSeconds()
     {
+        return TryReadIdleSeconds(out double idleSeconds) ? idleSeconds : 0;
+    }
+
+    public static bool TryReadIdleSeconds(out double idleSeconds)
+    {
+        idleSeconds = 0;
         try
         {
             LastInputInfo lastInput = new() { Size = (uint)Marshal.SizeOf<LastInputInfo>() };
             if (!GetLastInputInfo(ref lastInput))
             {
-                return 0;
+                return false;
             }
 
-            return (Environment.TickCount64 - lastInput.Time) / 1000.0;
+            idleSeconds = (Environment.TickCount64 - lastInput.Time) / 1000.0;
+            return true;
         }
         catch
         {
-            return 0;
+            return false;
         }
     }
 
     /// <summary>Physical memory in megabytes.</summary>
     public static (double UsedMegabytes, double TotalMegabytes) ReadMemoryUsage()
     {
+        return TryReadMemoryUsage(out double used, out double total) ? (used, total) : (0, 0);
+    }
+
+    public static bool TryReadMemoryUsage(out double usedMegabytes, out double totalMegabytes)
+    {
+        usedMegabytes = 0;
+        totalMegabytes = 0;
         try
         {
             MemoryStatus memoryStatus = new() { Length = (uint)Marshal.SizeOf<MemoryStatus>() };
-            if (!GlobalMemoryStatusEx(ref memoryStatus))
+            if (!GlobalMemoryStatusEx(ref memoryStatus) || memoryStatus.TotalPhysical == 0)
             {
-                return (0, 0);
+                return false;
             }
 
-            double total = memoryStatus.TotalPhysical / 1024.0 / 1024.0;
+            totalMegabytes = memoryStatus.TotalPhysical / 1024.0 / 1024.0;
             double available = memoryStatus.AvailablePhysical / 1024.0 / 1024.0;
-            return (total - available, total);
+            usedMegabytes = totalMegabytes - available;
+            return true;
         }
         catch
         {
-            return (0, 0);
+            return false;
         }
     }
 
     /// <summary>Battery percentage and whether mains power is connected.</summary>
     public static (int Percent, bool OnAcPower) ReadPower()
     {
+        return TryReadPower(out int percent, out bool? onAcPower)
+            ? (percent < 0 ? 100 : percent, onAcPower ?? true)
+            : (100, true);
+    }
+
+    public static bool TryReadPower(out int batteryPercent, out bool? onAcPower)
+    {
+        batteryPercent = -1;
+        onAcPower = null;
         try
         {
             if (!GetSystemPowerStatus(out SystemPowerStatus status))
             {
-                return (100, true);
+                return false;
             }
 
-            bool onAc = status.AlternateLineStatus == 1;
-            int percent = status.BatteryLifePercent == 255 ? 100 : status.BatteryLifePercent;
-            return (percent, onAc);
+            onAcPower = status.AlternateLineStatus switch
+            {
+                0 => false,
+                1 => true,
+                _ => null
+            };
+            batteryPercent = status.BatteryLifePercent == 255 ? -1 : status.BatteryLifePercent;
+            return true;
         }
         catch
         {
-            return (100, true);
+            return false;
         }
     }
 
@@ -143,11 +175,17 @@ public static class WindowsNative
 
         public double ReadPercent()
         {
+            return TryReadPercent(out double percent) ? percent : 0;
+        }
+
+        public bool TryReadPercent(out double percent)
+        {
+            percent = 0;
             try
             {
                 if (!GetSystemTimes(out FileTime idle, out FileTime kernel, out FileTime user))
                 {
-                    return 0;
+                    return false;
                 }
 
                 ulong idleTicks = ToUInt64(idle);
@@ -160,7 +198,7 @@ public static class WindowsNative
                     _previousKernel = kernelTicks;
                     _previousUser = userTicks;
                     _hasPreviousSample = true;
-                    return 0;
+                    return false;
                 }
 
                 ulong idleDelta = idleTicks - _previousIdle;
@@ -175,15 +213,16 @@ public static class WindowsNative
                 ulong totalDelta = kernelDelta + userDelta;
                 if (totalDelta == 0)
                 {
-                    return 0;
+                    return false;
                 }
 
                 double busy = (double)(totalDelta - idleDelta) / totalDelta;
-                return Math.Clamp(busy * 100.0, 0, 100);
+                percent = Math.Clamp(busy * 100.0, 0, 100);
+                return true;
             }
             catch
             {
-                return 0;
+                return false;
             }
         }
 

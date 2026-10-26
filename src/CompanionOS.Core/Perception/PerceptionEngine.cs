@@ -21,7 +21,7 @@ public sealed class PerceptionEngine : IDisposable
     private readonly SettingsStore _settings;
     private readonly EventBus _events;
     private readonly WindowsNative.CpuLoadSampler _cpuSampler = new();
-    private readonly MediaSessionSensor _mediaSensor = new();
+    private readonly IMediaSessionSensor _mediaSensor;
     private readonly object _snapshotLock = new();
 
     private Timer? _ambientTimer;
@@ -38,10 +38,11 @@ public sealed class PerceptionEngine : IDisposable
     private int _mediaRefreshInProgress;
     private int _mediaPausedForVoice;
 
-    public PerceptionEngine(SettingsStore settings, EventBus events)
+    public PerceptionEngine(SettingsStore settings, EventBus events, IMediaSessionSensor? mediaSensor = null)
     {
         _settings = settings;
         _events = events;
+        _mediaSensor = mediaSensor ?? new MediaSessionSensor();
     }
 
     /// <summary>Raised whenever the ambient snapshot changes.</summary>
@@ -273,10 +274,10 @@ public sealed class PerceptionEngine : IDisposable
             lines.Add($"Ambient machine state was checked {FormatAge(observationAge)} ago and is current.");
         }
 
-        if (ambientIsCurrent && senses.WatchActiveWindow)
+        if (ambientIsCurrent && senses.WatchActiveWindow && snapshot.ForegroundAvailable)
         {
             string application = string.IsNullOrWhiteSpace(snapshot.ActiveApplicationName)
-                ? "the desktop"
+                ? "an unidentified foreground window"
                 : snapshot.ActiveApplicationName;
             lines.Add($"Foreground: {application}" +
                       (string.IsNullOrWhiteSpace(snapshot.ActiveWindowTitle)
@@ -284,23 +285,40 @@ public sealed class PerceptionEngine : IDisposable
                           : $" — window \"{Shorten(snapshot.ActiveWindowTitle, 90)}\"."));
         }
 
-        if (ambientIsCurrent && senses.WatchMediaSession && !string.IsNullOrWhiteSpace(snapshot.MediaTitle))
+        if (ambientIsCurrent && senses.WatchActiveWindow && !snapshot.ForegroundAvailable)
         {
-            string state = string.IsNullOrWhiteSpace(snapshot.MediaPlaybackStatus)
-                ? string.Empty
-                : $" ({snapshot.MediaPlaybackStatus.ToLowerInvariant()})";
-            string artist = string.IsNullOrWhiteSpace(snapshot.MediaArtist) ? string.Empty : $" by {snapshot.MediaArtist}";
-            lines.Add($"Media: \"{snapshot.MediaTitle}\"{artist}{state}.");
+            lines.Add("Foreground window information is unavailable.");
         }
 
-        if (ambientIsCurrent && senses.WatchSystemStats && snapshot.RamTotalMegabytes > 0)
+        if (senses.WatchMediaSession)
         {
-            lines.Add($"Machine: CPU {snapshot.CpuPercent:0}%, RAM {snapshot.RamUsedMegabytes / 1024:0.0} of " +
-                      $"{snapshot.RamTotalMegabytes / 1024:0.0} GB used, battery {snapshot.BatteryPercent}% " +
-                      $"({(snapshot.IsOnAcPower ? "on mains" : "on battery")}).");
+            DescribeMediaState(lines, snapshot, sensorsRunning, staleAfter, DateTimeOffset.Now);
         }
 
-        if (ambientIsCurrent && senses.WatchIdleState && snapshot.IdleSeconds >= 60)
+        if (ambientIsCurrent && senses.WatchSystemStats)
+        {
+            List<string> machineDetails = [];
+            machineDetails.Add(snapshot.CpuAvailable
+                ? $"CPU {snapshot.CpuPercent:0}%"
+                : "CPU load unavailable");
+            machineDetails.Add(snapshot.MemoryAvailable
+                ? $"RAM {snapshot.RamUsedMegabytes / 1024:0.0} of {snapshot.RamTotalMegabytes / 1024:0.0} GB used"
+                : "RAM usage unavailable");
+            machineDetails.Add(!snapshot.PowerAvailable
+                ? "power status unavailable"
+                : snapshot.BatteryPercent >= 0
+                    ? $"battery {snapshot.BatteryPercent}% ({PowerSourceDescription(snapshot.IsOnAcPower)})"
+                    : snapshot.IsOnAcPower is { } onAcPower
+                        ? $"{PowerSourceDescription(onAcPower)}; battery percentage unavailable"
+                        : "battery and power-source details unavailable");
+            lines.Add($"Machine: {string.Join(", ", machineDetails)}.");
+        }
+
+        if (ambientIsCurrent && senses.WatchIdleState && !snapshot.IdleAvailable)
+        {
+            lines.Add("Idle duration is unavailable.");
+        }
+        else if (ambientIsCurrent && senses.WatchIdleState && snapshot.IdleSeconds >= 60)
         {
             lines.Add($"Boss has been idle for about {snapshot.IdleSeconds / 60:0} minutes.");
         }
@@ -347,6 +365,65 @@ public sealed class PerceptionEngine : IDisposable
         return $"{seconds} second{(seconds == 1 ? string.Empty : "s")}";
     }
 
+    private static string PowerSourceDescription(bool? onAcPower) => onAcPower switch
+    {
+        true => "on mains",
+        false => "on battery",
+        null => "power source unknown"
+    };
+
+    private static void DescribeMediaState(List<string> lines, SituationSnapshot snapshot, bool sensorsRunning,
+        TimeSpan staleAfter, DateTimeOffset now)
+    {
+        if (snapshot.MediaObservedAt is not { } observedAt)
+        {
+            lines.Add("Media session state is unknown; no successful read has completed.");
+            return;
+        }
+
+        TimeSpan age = now - observedAt;
+        if (age < TimeSpan.Zero)
+        {
+            age = TimeSpan.Zero;
+        }
+
+        if (!sensorsRunning)
+        {
+            lines.Add($"Media sensing is stopped; its last read was {FormatAge(age)} ago and is not current.");
+            return;
+        }
+
+        if (!snapshot.MediaObservationAvailable)
+        {
+            lines.Add("Windows media session information is unavailable; do not assume the last known track is current.");
+            return;
+        }
+
+        if (age > staleAfter)
+        {
+            lines.Add($"Media session information is stale; its last successful read was {FormatAge(age)} ago.");
+            return;
+        }
+
+        if (!snapshot.MediaSessionPresent)
+        {
+            lines.Add($"No active Windows media session was found {FormatAge(age)} ago.");
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(snapshot.MediaTitle))
+        {
+            lines.Add("An active Windows media session did not provide a track title.");
+            return;
+        }
+
+        string state = string.IsNullOrWhiteSpace(snapshot.MediaPlaybackStatus)
+            ? string.Empty
+            : $" ({snapshot.MediaPlaybackStatus.ToLowerInvariant()})";
+        string artist = string.IsNullOrWhiteSpace(snapshot.MediaArtist) ? string.Empty : $" by {snapshot.MediaArtist}";
+        lines.Add($"Media: \"{snapshot.MediaTitle}\"{artist}{state}.");
+    }
+
     public void Dispose()
     {
         Stop();
@@ -371,25 +448,35 @@ public sealed class PerceptionEngine : IDisposable
             WindowsNative.ForegroundWindowInfo window = needsForegroundWindow
                 ? WindowsNative.ReadForegroundWindow()
                 : new WindowsNative.ForegroundWindowInfo();
-            (double usedRam, double totalRam) = senses.WatchSystemStats
-                ? WindowsNative.ReadMemoryUsage()
-                : (0, 0);
-            (int batteryPercent, bool onAcPower) = senses.WatchSystemStats
-                ? WindowsNative.ReadPower()
-                : (100, true);
-            double cpuPercent = senses.WatchSystemStats ? _cpuSampler.ReadPercent() : 0;
-            double idleSeconds = senses.WatchIdleState ? WindowsNative.ReadIdleSeconds() : 0;
+            double usedRam = 0;
+            double totalRam = 0;
+            bool memoryAvailable = senses.WatchSystemStats &&
+                                   WindowsNative.TryReadMemoryUsage(out usedRam, out totalRam);
+            int batteryPercent = -1;
+            bool? onAcPower = null;
+            bool powerAvailable = senses.WatchSystemStats &&
+                                  WindowsNative.TryReadPower(out batteryPercent, out onAcPower);
+            double cpuPercent = 0;
+            bool cpuAvailable = senses.WatchSystemStats && _cpuSampler.TryReadPercent(out cpuPercent);
+            double idleSeconds = 0;
+            bool idleAvailable = senses.WatchIdleState && WindowsNative.TryReadIdleSeconds(out idleSeconds);
 
             string mediaTitle;
             string mediaArtist;
             string mediaApplication;
             string mediaPlaybackStatus;
+            bool mediaObservationAvailable;
+            bool mediaSessionPresent;
+            DateTimeOffset? mediaObservedAt;
             lock (_snapshotLock)
             {
                 mediaTitle = _current.MediaTitle;
                 mediaArtist = _current.MediaArtist;
                 mediaApplication = _current.MediaApplication;
                 mediaPlaybackStatus = _current.MediaPlaybackStatus;
+                mediaObservationAvailable = _current.MediaObservationAvailable;
+                mediaSessionPresent = _current.MediaSessionPresent;
+                mediaObservedAt = _current.MediaObservedAt;
             }
 
             SituationSnapshot snapshot = new()
@@ -399,17 +486,25 @@ public sealed class PerceptionEngine : IDisposable
                 ActiveApplicationName = string.IsNullOrWhiteSpace(window.ApplicationName)
                     ? window.ProcessName
                     : char.ToUpperInvariant(window.ApplicationName[0]) + window.ApplicationName[1..],
-                IdleSeconds = idleSeconds,
-                IsUserIdle = idleSeconds >= 120,
+                ForegroundAvailable = !needsForegroundWindow || window.IsAvailable,
+                IdleSeconds = idleAvailable ? idleSeconds : 0,
+                IdleAvailable = idleAvailable,
+                IsUserIdle = idleAvailable && idleSeconds >= 120,
                 CpuPercent = cpuPercent,
-                RamUsedMegabytes = usedRam,
-                RamTotalMegabytes = totalRam,
+                CpuAvailable = cpuAvailable,
+                RamUsedMegabytes = memoryAvailable ? usedRam : 0,
+                RamTotalMegabytes = memoryAvailable ? totalRam : 0,
+                MemoryAvailable = memoryAvailable,
                 BatteryPercent = batteryPercent,
                 IsOnAcPower = onAcPower,
+                PowerAvailable = powerAvailable,
                 MediaTitle = mediaTitle,
                 MediaArtist = mediaArtist,
                 MediaApplication = mediaApplication,
                 MediaPlaybackStatus = mediaPlaybackStatus,
+                MediaObservationAvailable = mediaObservationAvailable,
+                MediaSessionPresent = mediaSessionPresent,
+                MediaObservedAt = mediaObservedAt,
                 VisionMode = senses.VisionMode,
                 CapturedAt = DateTimeOffset.Now
             };
@@ -453,7 +548,7 @@ public sealed class PerceptionEngine : IDisposable
 
         try
         {
-            MediaSessionSnapshot? media = await _mediaSensor.ReadAsync().ConfigureAwait(false);
+            MediaSessionReadResult read = await _mediaSensor.ReadWithStatusAsync().ConfigureAwait(false);
             if (!_isRunning)
             {
                 return;
@@ -465,7 +560,17 @@ public sealed class PerceptionEngine : IDisposable
                 snapshot = Clone(_current);
             }
 
-            if (media is null || !media.HasContent)
+            snapshot.MediaObservedAt = DateTimeOffset.Now;
+            snapshot.MediaObservationAvailable = read.IsAvailable;
+            snapshot.MediaSessionPresent = read.IsAvailable && read.Session is not null;
+
+            if (!read.IsAvailable)
+            {
+                PublishAndStore(snapshot);
+                return;
+            }
+
+            if (read.Session is null || !read.Session.HasContent)
             {
                 snapshot.MediaTitle = string.Empty;
                 snapshot.MediaArtist = string.Empty;
@@ -475,10 +580,10 @@ public sealed class PerceptionEngine : IDisposable
                 return;
             }
 
-            snapshot.MediaTitle = media.Title;
-            snapshot.MediaArtist = media.Artist;
-            snapshot.MediaApplication = ExtractApplicationName(media.ApplicationId);
-            snapshot.MediaPlaybackStatus = media.PlaybackStatus;
+            snapshot.MediaTitle = read.Session.Title;
+            snapshot.MediaArtist = read.Session.Artist;
+            snapshot.MediaApplication = ExtractApplicationName(read.Session.ApplicationId);
+            snapshot.MediaPlaybackStatus = read.Session.PlaybackStatus;
 
             string mediaSignature = snapshot.MediaTitle + "|" + snapshot.MediaPlaybackStatus;
             if (mediaSignature != _lastMediaSignature)
@@ -509,9 +614,24 @@ public sealed class PerceptionEngine : IDisposable
         lock (_snapshotLock)
         {
             changed = _current.ActiveWindowTitle != snapshot.ActiveWindowTitle ||
+                      _current.ActiveProcessName != snapshot.ActiveProcessName ||
+                      _current.ActiveApplicationName != snapshot.ActiveApplicationName ||
                       _current.MediaTitle != snapshot.MediaTitle ||
+                      _current.MediaArtist != snapshot.MediaArtist ||
+                      _current.MediaApplication != snapshot.MediaApplication ||
                       _current.MediaPlaybackStatus != snapshot.MediaPlaybackStatus ||
-                      Math.Abs(_current.IdleSeconds - snapshot.IdleSeconds) > 30;
+                      _current.ForegroundAvailable != snapshot.ForegroundAvailable ||
+                      _current.IdleAvailable != snapshot.IdleAvailable ||
+                      _current.CpuAvailable != snapshot.CpuAvailable ||
+                      _current.MemoryAvailable != snapshot.MemoryAvailable ||
+                      _current.PowerAvailable != snapshot.PowerAvailable ||
+                      _current.BatteryPercent != snapshot.BatteryPercent ||
+                      _current.IsOnAcPower != snapshot.IsOnAcPower ||
+                      _current.MediaObservationAvailable != snapshot.MediaObservationAvailable ||
+                      _current.MediaSessionPresent != snapshot.MediaSessionPresent ||
+                      Math.Abs(_current.IdleSeconds - snapshot.IdleSeconds) > 30 ||
+                      Math.Abs(_current.CpuPercent - snapshot.CpuPercent) >= 1 ||
+                      Math.Abs(_current.RamUsedMegabytes - snapshot.RamUsedMegabytes) >= 16;
             _current = snapshot;
             _hasAmbientObservation = true;
         }
@@ -583,17 +703,25 @@ public sealed class PerceptionEngine : IDisposable
         ActiveWindowTitle = source.ActiveWindowTitle,
         ActiveProcessName = source.ActiveProcessName,
         ActiveApplicationName = source.ActiveApplicationName,
+        ForegroundAvailable = source.ForegroundAvailable,
         IdleSeconds = source.IdleSeconds,
+        IdleAvailable = source.IdleAvailable,
         IsUserIdle = source.IsUserIdle,
         CpuPercent = source.CpuPercent,
+        CpuAvailable = source.CpuAvailable,
         RamUsedMegabytes = source.RamUsedMegabytes,
         RamTotalMegabytes = source.RamTotalMegabytes,
+        MemoryAvailable = source.MemoryAvailable,
         BatteryPercent = source.BatteryPercent,
         IsOnAcPower = source.IsOnAcPower,
+        PowerAvailable = source.PowerAvailable,
         MediaTitle = source.MediaTitle,
         MediaArtist = source.MediaArtist,
         MediaApplication = source.MediaApplication,
         MediaPlaybackStatus = source.MediaPlaybackStatus,
+        MediaObservationAvailable = source.MediaObservationAvailable,
+        MediaSessionPresent = source.MediaSessionPresent,
+        MediaObservedAt = source.MediaObservedAt,
         VisionMode = source.VisionMode,
         CapturedAt = source.CapturedAt
     };
@@ -609,17 +737,25 @@ public sealed class SituationSnapshot
     public string ActiveWindowTitle { get; set; } = string.Empty;
     public string ActiveProcessName { get; set; } = string.Empty;
     public string ActiveApplicationName { get; set; } = string.Empty;
+    public bool ForegroundAvailable { get; set; }
     public double IdleSeconds { get; set; }
+    public bool IdleAvailable { get; set; }
     public bool IsUserIdle { get; set; }
     public double CpuPercent { get; set; }
+    public bool CpuAvailable { get; set; }
     public double RamUsedMegabytes { get; set; }
     public double RamTotalMegabytes { get; set; }
-    public int BatteryPercent { get; set; } = 100;
-    public bool IsOnAcPower { get; set; } = true;
+    public bool MemoryAvailable { get; set; }
+    public int BatteryPercent { get; set; } = -1;
+    public bool? IsOnAcPower { get; set; }
+    public bool PowerAvailable { get; set; }
     public string MediaTitle { get; set; } = string.Empty;
     public string MediaArtist { get; set; } = string.Empty;
     public string MediaApplication { get; set; } = string.Empty;
     public string MediaPlaybackStatus { get; set; } = string.Empty;
+    public bool MediaObservationAvailable { get; set; }
+    public bool MediaSessionPresent { get; set; }
+    public DateTimeOffset? MediaObservedAt { get; set; }
     public string VisionMode { get; set; } = "ondemand";
     public DateTimeOffset CapturedAt { get; set; } = DateTimeOffset.Now;
 }

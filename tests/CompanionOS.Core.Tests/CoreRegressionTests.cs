@@ -97,6 +97,71 @@ public sealed class CoreRegressionTests
         Assert.DoesNotContain("Machine: CPU", stoppedPrompt);
     }
 
+    [Fact]
+    public async Task FailedMediaProbeDoesNotPresentThePreviousTrackAsCurrent()
+    {
+        SettingsStore settings = CreatePerceptionTestSettings();
+        FakeMediaSessionSensor media = new(
+            new MediaSessionReadResult(true, new MediaSessionSnapshot
+            {
+                Title = "Last known track",
+                Artist = "Known artist",
+                PlaybackStatus = "Playing"
+            }),
+            new MediaSessionReadResult(false, null, "simulated media service failure"));
+        using PerceptionEngine perception = new(settings, new EventBus(), media);
+        TaskCompletionSource mediaUnavailable = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        perception.SituationUpdated += snapshot =>
+        {
+            if (snapshot.MediaObservedAt is not null && !snapshot.MediaObservationAvailable)
+            {
+                mediaUnavailable.TrySetResult();
+            }
+        };
+
+        perception.Start();
+        await mediaUnavailable.Task.WaitAsync(TimeSpan.FromSeconds(6));
+
+        string prompt = perception.DescribeForPrompt();
+        Assert.Contains("Windows media session information is unavailable", prompt);
+        Assert.DoesNotContain("Last known track", prompt);
+    }
+
+    [Fact]
+    public async Task SuccessfulMediaProbeReportsWhenNoSessionIsPlaying()
+    {
+        SettingsStore settings = CreatePerceptionTestSettings();
+        FakeMediaSessionSensor media = new(new MediaSessionReadResult(true, null));
+        using PerceptionEngine perception = new(settings, new EventBus(), media);
+        TaskCompletionSource noSessionObserved = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        perception.SituationUpdated += snapshot =>
+        {
+            if (snapshot.MediaObservedAt is not null && snapshot.MediaObservationAvailable &&
+                !snapshot.MediaSessionPresent)
+            {
+                noSessionObserved.TrySetResult();
+            }
+        };
+
+        perception.Start();
+        await noSessionObserved.Task.WaitAsync(TimeSpan.FromSeconds(3));
+
+        Assert.Contains("No active Windows media session was found", perception.DescribeForPrompt());
+    }
+
+    private static SettingsStore CreatePerceptionTestSettings()
+    {
+        SettingsStore settings = new();
+        settings.Current.Senses.StatsIntervalMilliseconds = 1000;
+        settings.Current.Senses.WatchActiveWindow = false;
+        settings.Current.Senses.WatchMediaSession = true;
+        settings.Current.Senses.WatchSystemStats = false;
+        settings.Current.Senses.WatchIdleState = false;
+        settings.Current.System.GamingModeEnabled = false;
+        settings.Current.System.GamingAutoDetect = false;
+        return settings;
+    }
+
     [Theory]
     [InlineData("{\"schema\":1,\"id\":\"sample\",\"name\":\"Sample\",\"transport\":\"builtin\"}", true)]
     [InlineData("{\"schema\":1,\"id\":\"sample\",\"name\":\"Sample\",\"transport\":\"builtin\",\"disabled\":true}", true)]
@@ -1503,6 +1568,21 @@ public sealed class CoreRegressionTests
                 }
             }
         }
+    }
+
+    private sealed class FakeMediaSessionSensor(params MediaSessionReadResult[] results) : IMediaSessionSensor
+    {
+        private readonly MediaSessionReadResult[] _results = results;
+        private int _readCount;
+
+        public Task<MediaSessionReadResult> ReadWithStatusAsync()
+        {
+            int index = Math.Min(Interlocked.Increment(ref _readCount) - 1, _results.Length - 1);
+            return Task.FromResult(_results[index]);
+        }
+
+        public Task<bool> TryPauseAsync() => Task.FromResult(false);
+        public Task<bool> TryPlayAsync() => Task.FromResult(false);
     }
 
     private sealed class TestAssistantModule(string id, string name, string purpose,

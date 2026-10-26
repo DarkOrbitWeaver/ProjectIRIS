@@ -20,14 +20,25 @@ public sealed class MediaSessionSnapshot
     public bool HasContent => !string.IsNullOrWhiteSpace(Title);
 }
 
+/// <summary>Separates a successful "nothing is playing" read from a failed Windows query.</summary>
+public sealed record MediaSessionReadResult(bool IsAvailable, MediaSessionSnapshot? Session, string? Error = null);
+
+/// <summary>The media sensing and pause/resume operations used by the perception engine.</summary>
+public interface IMediaSessionSensor
+{
+    Task<MediaSessionReadResult> ReadWithStatusAsync();
+    Task<bool> TryPauseAsync();
+    Task<bool> TryPlayAsync();
+}
+
 /// <summary>
 /// Windows' own media transport controls, which is how Iris knows what Spotify,
 /// Chrome, VLC or any other player is doing without touching a single app.
 ///
-/// Every call is defensive: protected sessions and players that do not publish
-/// metadata simply produce an empty snapshot instead of an error.
+/// Reads distinguish a successful empty session from a failed Windows query, so Iris
+/// can clear or qualify old track information instead of presenting it as current.
 /// </summary>
-public sealed class MediaSessionSensor
+public sealed class MediaSessionSensor : IMediaSessionSensor
 {
     private GlobalSystemMediaTransportControlsSessionManager? _manager;
 
@@ -52,12 +63,12 @@ public sealed class MediaSessionSensor
         }
     }
 
-    /// <summary>Reads the current session, or null when nothing is playing.</summary>
-    public async Task<MediaSessionSnapshot?> ReadAsync()
+    /// <summary>Reads the current session and preserves whether Windows answered successfully.</summary>
+    public async Task<MediaSessionReadResult> ReadWithStatusAsync()
     {
         if (!await EnsureConnectedAsync().ConfigureAwait(false))
         {
-            return null;
+            return new MediaSessionReadResult(false, null, "Windows media session service is unavailable.");
         }
 
         try
@@ -65,14 +76,14 @@ public sealed class MediaSessionSensor
             GlobalSystemMediaTransportControlsSession? session = _manager!.GetCurrentSession();
             if (session is null)
             {
-                return null;
+                return new MediaSessionReadResult(true, null);
             }
 
             var properties = await session.TryGetMediaPropertiesAsync();
             var playbackInfo = session.GetPlaybackInfo();
             var timeline = session.GetTimelineProperties();
 
-            return new MediaSessionSnapshot
+            MediaSessionSnapshot snapshot = new()
             {
                 Title = properties?.Title ?? string.Empty,
                 Artist = properties?.Artist ?? string.Empty,
@@ -82,13 +93,19 @@ public sealed class MediaSessionSensor
                 Position = timeline?.Position ?? TimeSpan.Zero,
                 Duration = timeline?.EndTime ?? TimeSpan.Zero
             };
+            return new MediaSessionReadResult(true, snapshot);
         }
         catch (Exception exception)
         {
             CompanionLog.Trace("Senses", $"Media session unreadable: {exception.Message}");
-            return null;
+            _manager = null;
+            return new MediaSessionReadResult(false, null, "The active Windows media session could not be read.");
         }
     }
+
+    /// <summary>Compatibility helper; null means no readable active session or an unavailable sensor.</summary>
+    public async Task<MediaSessionSnapshot?> ReadAsync() =>
+        (await ReadWithStatusAsync().ConfigureAwait(false)).Session;
 
     /// <summary>Pauses or resumes whatever is playing. Used by her music controls.</summary>
     public async Task<bool> TryTogglePlaybackAsync()
