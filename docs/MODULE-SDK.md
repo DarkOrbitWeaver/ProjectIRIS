@@ -9,6 +9,9 @@ permission, activity, and shell contracts so each integration feels like part of
 
 - Built-in C# modules implement `IAssistantModule` and register with `ModuleHost`.
 - External folders may declare a `plugin.json` using `command` or MCP stdio transport.
+- External modules default to disabled unless their manifest explicitly sets `"disabled": false`;
+  enabling them is a user action and takes effect after Iris restarts. Existing manifests that
+  omitted the field now require that explicit enable step.
 - External tools are adapted into the same dynamic router and execution boundary. MCP tools
   are currently repeated in the manifest rather than discovered from `tools/list`.
 - Every external tool asks for approval on each call. Manifest permission labels are shown as

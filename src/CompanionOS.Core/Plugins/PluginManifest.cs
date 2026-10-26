@@ -51,7 +51,7 @@ public sealed class PluginManifest
     /// <summary>Whether this external process is allowed to join Iris at next launch.
     /// Built-in modules use the runtime switch; folder plugins deliberately require a
     /// restart so no unreviewed executable begins running mid-session.</summary>
-    public bool Disabled { get; set; }
+    public bool Disabled { get; set; } = true;
     public List<PluginTool> Tools { get; init; } = new();
 
     public string Folder { get; set; } = string.Empty;
@@ -113,6 +113,18 @@ public sealed class PluginManifest
                 }
             }
 
+            bool disabledByDefault = true;
+            if (root.TryGetProperty("disabled", out JsonElement disabledElement))
+            {
+                if (disabledElement.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+                {
+                    rejectionReason = "'disabled' must be a boolean; new external modules default to disabled";
+                    return false;
+                }
+
+                disabledByDefault = disabledElement.ValueKind == JsonValueKind.True;
+            }
+
             PluginManifest parsed = new()
             {
                 Schema = root.TryGetProperty("schema", out JsonElement schema) ? schema.GetInt32() : 0,
@@ -124,7 +136,7 @@ public sealed class PluginManifest
                 Command = command,
                 WorkingDirectory = root.TryGetProperty("workingDirectory", out JsonElement workingDirectory) ? workingDirectory.GetString() ?? "." : ".",
                 AsksPermission = asks,
-                Disabled = root.TryGetProperty("disabled", out JsonElement disabled) && disabled.ValueKind == JsonValueKind.True,
+                Disabled = disabledByDefault,
                 Tools = tools,
                 Folder = folder
             };

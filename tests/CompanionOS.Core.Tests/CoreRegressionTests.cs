@@ -7,6 +7,7 @@ using CompanionOS.Core.Modules;
 using CompanionOS.Core.Mind;
 using CompanionOS.Core.Voice;
 using CompanionOS.Core.Modules.BuiltIn;
+using CompanionOS.Core.Plugins;
 using CompanionOS.Modules;
 using System.Net;
 using System.Net.Sockets;
@@ -18,6 +19,51 @@ namespace CompanionOS.Core.Tests;
 
 public sealed class CoreRegressionTests
 {
+    [Theory]
+    [InlineData("{\"schema\":1,\"id\":\"sample\",\"name\":\"Sample\",\"transport\":\"builtin\"}", true)]
+    [InlineData("{\"schema\":1,\"id\":\"sample\",\"name\":\"Sample\",\"transport\":\"builtin\",\"disabled\":true}", true)]
+    [InlineData("{\"schema\":1,\"id\":\"sample\",\"name\":\"Sample\",\"transport\":\"builtin\",\"disabled\":false}", false)]
+    public void ExternalModuleManifestRequiresExplicitEnablement(string json, bool expectedDisabled)
+    {
+        string folder = Path.Combine(Path.GetTempPath(), $"iris-plugin-manifest-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(folder);
+        try
+        {
+            File.WriteAllText(Path.Combine(folder, "plugin.json"), json);
+
+            bool loaded = PluginManifest.TryLoad(folder, out PluginManifest? manifest, out string reason);
+
+            Assert.True(loaded, reason);
+            Assert.NotNull(manifest);
+            Assert.Equal(expectedDisabled, manifest.Disabled);
+        }
+        finally
+        {
+            Directory.Delete(folder, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void ExternalModuleManifestRejectsNonBooleanEnablementState()
+    {
+        string folder = Path.Combine(Path.GetTempPath(), $"iris-plugin-manifest-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(folder);
+        try
+        {
+            File.WriteAllText(Path.Combine(folder, "plugin.json"),
+                "{\"schema\":1,\"id\":\"sample\",\"name\":\"Sample\",\"transport\":\"builtin\",\"disabled\":\"false\"}");
+
+            bool loaded = PluginManifest.TryLoad(folder, out _, out string reason);
+
+            Assert.False(loaded);
+            Assert.Contains("disabled", reason, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            Directory.Delete(folder, recursive: true);
+        }
+    }
+
     [Theory]
     [InlineData("IRIS", true, "")]
     [InlineData("Hey, Iris!", true, "")]
