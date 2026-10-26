@@ -43,6 +43,7 @@ public sealed class SpeechAudioPlayer : IDisposable
     /// </summary>
     public async Task<bool> PlayAsync(SpeechAudio audio, double volume, CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         if (audio.Bytes.Length == 0)
         {
             return false;

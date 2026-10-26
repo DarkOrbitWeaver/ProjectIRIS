@@ -1681,6 +1681,19 @@ public sealed class CoreRegressionTests
     }
 
     [Fact]
+    public async Task PreCancelledAudioDoesNotStartPlayback()
+    {
+        using SpeechAudioPlayer player = new();
+        using CancellationTokenSource cancellation = new();
+        cancellation.Cancel();
+        SpeechAudio clip = new() { Bytes = [1, 2, 3], Format = "wav" };
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            player.PlayAsync(clip, 1.0, cancellation.Token));
+        Assert.False(player.IsPlaying);
+    }
+
+    [Fact]
     public void PocketVoicePickerKeepsSixLocalProfilesWithoutStartingTheEngine()
     {
         CompanionSettings settings = new();

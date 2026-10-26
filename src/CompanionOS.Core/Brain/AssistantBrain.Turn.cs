@@ -407,7 +407,7 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
         else if (shouldLeaveGaming)
         {
             _ = SetOperatingModeAsync(OperatingMode.Awake, CancellationToken.None);
-            _ = _voice.SpeakReflexAsync("gamingEnd");
+            _ = SpeakReflexInBackgroundAsync("gamingEnd");
         }
 
         _ = snapshot;

@@ -225,7 +225,7 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
                 TurnId = turnId,
                 Text = exception.Message
             });
-            _ = _voice.SpeakReflexAsync("error");
+            _ = SpeakReflexInBackgroundAsync("error");
             _mind.MoveTo(MindState.Idle, "recovered");
             return string.Empty;
         }
@@ -241,6 +241,27 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
     {
         _voice.StopSpeaking();
         _currentTurnSource?.Cancel();
+    }
+
+    /// <summary>Observes reflex playback launched from callbacks that cannot await it.</summary>
+    private async Task SpeakReflexInBackgroundAsync(string category, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await _voice.SpeakReflexAsync(category, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // Cancellation is a normal end state for a detached acknowledgement.
+        }
+        catch (OperationCanceledException exception)
+        {
+            CompanionLog.Trace("Voice", $"Background reflex '{category}' was cancelled: {exception.Message}");
+        }
+        catch (Exception exception)
+        {
+            CompanionLog.Warning("Voice", $"Background reflex '{category}' failed: {exception.Message}");
+        }
     }
 
     /// <summary>Sleeps, wakes or steps aside for a game.</summary>
@@ -433,7 +454,7 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
         // The instant acknowledgement: cached audio, played before the model answers.
         if (routedTools.Count > 0)
         {
-            _ = _voice.SpeakReflexAsync("acknowledge", cancellationToken);
+            _ = SpeakReflexInBackgroundAsync("acknowledge", cancellationToken);
         }
 
         _journal.RecordAnswerStarted(turnId);

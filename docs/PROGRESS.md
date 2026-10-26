@@ -30,7 +30,8 @@ behavior that has been exercised.
   open/close/failure/loss events tie capture sessions to voice decisions. Missing synthesized
   audio or rejected playback also produces correlated failure feedback while preserving text.
   Cached reflex phrases now publish the same speaking state as generated replies, report rejected
-  output, and release the settings-event subscription when the pipeline is disposed.
+  output, and release the settings-event subscription when the pipeline is disposed. Background
+  reflex calls observe cancellation and a pre-cancelled audio request cannot start playback.
   Target-device voice behavior remains unverified.
 - **Awareness:** low-cost Windows foreground, media, idle, CPU/RAM, and battery observations;
   optional screen capture; game detection; and sleep/gaming resource handoff are implemented.

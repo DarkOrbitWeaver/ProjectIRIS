@@ -774,9 +774,10 @@ public sealed class VoicePipeline : IAsyncDisposable
         }
     }
 
-    /// <summary>Plays a cached phrase immediately. Returns false when that category is not ready.</summary>
+    /// <summary>Plays a cached phrase immediately; false means it was unavailable or output did not start.</summary>
     public async Task<bool> SpeakReflexAsync(string category, CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         if (IsMuted || !IsVoiceOnline || !_settings.Current.Voice.ReflexPhrasesEnabled)
         {
             ScheduleVoiceReprobe();
