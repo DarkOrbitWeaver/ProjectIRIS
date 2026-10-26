@@ -230,6 +230,8 @@ public sealed class ModuleSurfaceStateChangedEvent : CompanionEvent
     public required string ElementId { get; init; }
     /// <summary>Foreground turn or background task that produced this UI update.</summary>
     public string TurnId { get; init; } = string.Empty;
+    /// <summary>Optional task-scoped visibility for the whole overlay surface.</summary>
+    public bool? IsSurfaceVisible { get; init; }
     public string? Label { get; init; }
     public string? Value { get; init; }
     public bool? IsVisible { get; init; }

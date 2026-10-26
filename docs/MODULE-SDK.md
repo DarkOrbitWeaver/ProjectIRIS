@@ -103,18 +103,22 @@ intermediate work and a structured final result on stdout, one JSON object per l
 {"type":"result","ok":true,"text":"Found Alex in contacts."}
 ```
 
-They may also update a declared surface element using only the host's native controls:
+They may also update a declared surface element or control the current task's overlay visibility,
+using only the host's native controls:
 
 ```json
 {"type":"ui","surface":"compose","element":"contacts","options":[{"value":"user-42","label":"Alex"}],"value":"user-42"}
+{"type":"ui","surface":"activity","visible":false}
 ```
 
 The host scopes this update to the calling plugin and active turn/task, validates both IDs and the
 element type, and caps successful updates at 128 per tool call. The shell ignores a delayed overlay
-patch if a newer task has already bound that surface. `label`, `value`, `visible`, and `enabled` can update
-declared controls; `options` is accepted only for a select declared with `dynamic: true`. Modules
-cannot supply markup or executable UI code. A button action still goes through the ordinary tool
-router and permission gate.
+patch if a newer task has already bound that surface. With no `element`, `visible` shows or hides
+the declared overlay for the current task. A user's explicit hide remains in force for that task.
+With an `element`, `label`, `value`, `visible`, and `enabled` can update the declared control;
+`options` is accepted only for a select declared with `dynamic: true`. Modules cannot supply markup
+or executable UI code. A button action still goes through the ordinary tool router and permission
+gate.
 
 Progress numbers are optional; omit them when there is no honest total. `result.ok` defaults to
 true and `result.text` is returned to Iris. The module process is isolated from Iris's UI process,
@@ -124,10 +128,10 @@ the existing module enablement and capability approval still matter.
 ## What the public SDK still needs
 
 The current mechanism is not yet the complete extensibility promise. Controls are native and
-state can update during a command call, and module-local PNG branding is supported. Overlays are
-activity-attached, and modules cannot persist UI state across restarts. They
-cannot yet provide main tabs, rich typed forms, or explicit show/hide component APIs. The next SDK work must define and
-implement:
+state can update during a command call, and module-local PNG branding is supported. Overlay
+visibility can be controlled for its current task, but surfaces are still activity-attached and
+modules cannot persist UI state across tasks or restarts. They cannot yet provide main tabs or rich
+typed forms. The next SDK work must define and implement:
 
 1. A versioned manifest and authoring kit with stronger validation, lifecycle hooks, installation
    review, guided update/removal, publisher details, and actionable in-app diagnostics. Explicit
@@ -139,7 +143,8 @@ implement:
 3. A declarative UI contract that grows the current schema into stateful cards, typed forms,
    branded icons, buttons, and multiple independently controlled overlays. Iris owns rendering,
    focus, accessibility, placement, and visibility policy; modules publish state and named
-   actions instead of loading arbitrary UI code into the shell.
+   actions instead of loading arbitrary UI code into the shell. Task-scoped overlay visibility is
+   implemented; persistent visibility and state across tasks remain open.
 4. A shared activity lifecycle for queued, running, waiting, completed, partial, failed, and
    cancelled work. Events must carry stable task and module IDs, current step, optional truthful
    progress, wait reason, and available controls. Chat, overlays, notices, and diagnostics must

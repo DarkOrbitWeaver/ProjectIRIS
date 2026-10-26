@@ -86,8 +86,9 @@ complete until all stages below are shipped:
    tools can require fresh approval on every call. Remaining work includes applying that policy
    consistently to built-in actions and OS-level process isolation.
 3. **Hosted module UI:** validated declarative surfaces, inputs, buttons, icons, and multiple
-   independently controlled overlays are implemented. Persistent module state, richer typed forms,
-   and explicit show/hide controls remain. Iris owns rendering and focus policy while modules
+   independently controlled overlays are implemented. Modules can show or hide a declared overlay
+   for its current task; a user hide takes priority. Persistent visibility/state across tasks or
+   restarts and richer typed forms remain. Iris owns rendering and focus policy while modules
    provide data and actions.
 4. **Activity contract:** correlated start, step, progress, wait, result, error, and cancel states
    shared by chat, the activity card, notifications, and diagnostics. Percentage remains optional.

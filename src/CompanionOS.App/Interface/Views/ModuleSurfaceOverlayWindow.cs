@@ -31,12 +31,15 @@ internal sealed class ModuleSurfaceOverlayWindow : Window
     private DispatcherTimer? _completedTimer;
     private string _boundTurnId = string.Empty;
     private string _hiddenTurnId = string.Empty;
+    private string _moduleHiddenTurnId = string.Empty;
     private double _progressFraction;
 
     public string ModuleId => _surface.ModuleId;
     public string SurfaceId => _surface.Id;
+    public string BoundWorkId => _boundTurnId;
     public bool IsCompletionHold => _completedTimer?.IsEnabled == true;
-    public bool IsHiddenFor(string turnId) => _hiddenTurnId == turnId;
+    public bool IsHiddenFor(string turnId) => !string.IsNullOrEmpty(turnId) &&
+        (_hiddenTurnId == turnId || _moduleHiddenTurnId == turnId);
 
     public ModuleSurfaceOverlayWindow(ShellModel model, ModuleSurface surface)
     {
@@ -240,7 +243,7 @@ internal sealed class ModuleSurfaceOverlayWindow : Window
             _progressFraction = 0;
         }
         _status.Text = ClipDisplayText(message);
-        return _hiddenTurnId != turnId;
+        return !IsHiddenFor(turnId);
     }
 
     public void ApplyState(ModuleSurfaceStateChangedEvent update)
@@ -248,7 +251,29 @@ internal sealed class ModuleSurfaceOverlayWindow : Window
         if (!string.Equals(update.ModuleId, ModuleId, StringComparison.OrdinalIgnoreCase) ||
             !string.Equals(update.SurfaceId, SurfaceId, StringComparison.OrdinalIgnoreCase) ||
             (!string.IsNullOrEmpty(update.TurnId) &&
-             !string.Equals(update.TurnId, _boundTurnId, StringComparison.Ordinal)) ||
+             !string.Equals(update.TurnId, _boundTurnId, StringComparison.Ordinal)))
+        {
+            return;
+        }
+
+        if (update.IsSurfaceVisible is { } surfaceVisible)
+        {
+            if (surfaceVisible)
+            {
+                if (string.Equals(_moduleHiddenTurnId, update.TurnId, StringComparison.Ordinal))
+                {
+                    _moduleHiddenTurnId = string.Empty;
+                }
+            }
+            else
+            {
+                _moduleHiddenTurnId = update.TurnId;
+                _completedTimer?.Stop();
+                Hide();
+            }
+        }
+
+        if (string.IsNullOrEmpty(update.ElementId) ||
             !_elementControls.TryGetValue(update.ElementId, out Control? control))
         {
             return;

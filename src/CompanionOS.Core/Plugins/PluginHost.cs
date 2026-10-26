@@ -728,15 +728,51 @@ public sealed class PluginHost : IDisposable
     private void TryPublishSurfaceState(JsonElement root, PluginManifest plugin, string turnId,
         ref int surfaceUpdateCount)
     {
-        if (!TryReadBoundedString(root, "surface", 64, out string surfaceId) ||
-            !TryReadBoundedString(root, "element", 64, out string elementId))
+        if (!TryReadBoundedString(root, "surface", 64, out string surfaceId))
         {
             return;
         }
 
         PluginSurfaceManifest? surface = plugin.Surfaces.FirstOrDefault(candidate =>
             string.Equals(candidate.Id, surfaceId, StringComparison.OrdinalIgnoreCase));
-        PluginSurfaceElementManifest? element = surface?.Elements.FirstOrDefault(candidate =>
+        if (surface is null)
+        {
+            return;
+        }
+
+        bool? visible = TryReadOptionalBoolean(root, "visible", out bool visibleValue, out bool visibleInvalid)
+            ? visibleValue : null;
+        if (visibleInvalid)
+        {
+            return;
+        }
+
+        bool hasElement = root.TryGetProperty("element", out _);
+        if (!hasElement)
+        {
+            if (visible is null)
+            {
+                return;
+            }
+
+            surfaceUpdateCount++;
+            _events.Publish(new ModuleSurfaceStateChangedEvent
+            {
+                ModuleId = $"plugin:{plugin.Id}",
+                SurfaceId = $"plugin:{plugin.Id}:{surfaceId}",
+                ElementId = string.Empty,
+                TurnId = turnId,
+                IsSurfaceVisible = visible
+            });
+            return;
+        }
+
+        if (!TryReadBoundedString(root, "element", 64, out string elementId))
+        {
+            return;
+        }
+
+        PluginSurfaceElementManifest? element = surface.Elements.FirstOrDefault(candidate =>
             string.Equals(candidate.Id, elementId, StringComparison.OrdinalIgnoreCase));
         if (element is null)
         {
@@ -762,11 +798,9 @@ public sealed class PluginHost : IDisposable
             }
         }
 
-        bool? visible = TryReadOptionalBoolean(root, "visible", out bool visibleValue, out bool visibleInvalid)
-            ? visibleValue : null;
         bool? enabled = TryReadOptionalBoolean(root, "enabled", out bool enabledValue, out bool enabledInvalid)
             ? enabledValue : null;
-        if (visibleInvalid || enabledInvalid)
+        if (enabledInvalid)
         {
             return;
         }

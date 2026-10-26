@@ -689,6 +689,7 @@ public sealed class OverlayWindow : Window
         {
             window.ApplyState(payload);
         }
+        SyncModuleSurfaceOverlays();
     }
 
     /// <summary>Looks up the module surface only when the registry changes. Progress is
@@ -878,7 +879,7 @@ public sealed class OverlayWindow : Window
             {
                 ShowModuleSurfaceOverlay(window, stackIndex++);
             }
-            else if (completed && mayShow)
+            else if (completed && mayShow && !window.IsHiddenFor(window.BoundWorkId))
             {
                 ShowModuleSurfaceOverlay(window, stackIndex++);
             }

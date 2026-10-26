@@ -763,6 +763,7 @@ public sealed class CoreRegressionTests
             [Console]::Out.WriteLine('{"type":"progress","message":"Finding contact","progress":1,"total":2}')
             [Console]::Out.WriteLine('{"type":"ui","surface":"contacts","element":"undeclared","value":"ignore"}')
             [Console]::Out.WriteLine('{"type":"ui","surface":"contacts","element":"recipient","options":[{"value":"ada","label":"Ada"}],"value":"ada","visible":true}')
+            [Console]::Out.WriteLine('{"type":"ui","surface":"contacts","visible":false}')
             [Console]::Out.WriteLine('{"type":"result","text":"Found Ada"}')
             """);
         EventBus events = new();
@@ -801,7 +802,8 @@ public sealed class CoreRegressionTests
             Assert.Equal("Finding contact", update.Message);
             Assert.Equal(1, update.Progress);
             Assert.Equal(2, update.Total);
-            ModuleSurfaceStateChangedEvent surfaceUpdate = Assert.Single(surfaceUpdates);
+            Assert.Equal(2, surfaceUpdates.Count);
+            ModuleSurfaceStateChangedEvent surfaceUpdate = surfaceUpdates[0];
             Assert.Equal("plugin:telegram", surfaceUpdate.ModuleId);
             Assert.Equal("plugin:telegram:contacts", surfaceUpdate.SurfaceId);
             Assert.Equal("recipient", surfaceUpdate.ElementId);
@@ -809,6 +811,10 @@ public sealed class CoreRegressionTests
             Assert.Equal("ada", surfaceUpdate.Value);
             Assert.True(surfaceUpdate.IsVisible);
             Assert.Equal("Ada", Assert.Single(surfaceUpdate.Options!).Label);
+            ModuleSurfaceStateChangedEvent surfaceVisibility = surfaceUpdates[1];
+            Assert.Equal("task-123", surfaceVisibility.TurnId);
+            Assert.Empty(surfaceVisibility.ElementId);
+            Assert.False(surfaceVisibility.IsSurfaceVisible);
         }
         finally
         {
