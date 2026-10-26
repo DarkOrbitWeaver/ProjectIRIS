@@ -39,6 +39,7 @@ public sealed class VoicePipeline : IAsyncDisposable
     private DateTimeOffset _nextVoiceReprobe = DateTimeOffset.MinValue;
     private DateTimeOffset _conversationOpenUntil = DateTimeOffset.MinValue;
     private DateTimeOffset _lastLevelPublished = DateTimeOffset.MinValue;
+    private DateTimeOffset _nextRecognitionFailureNotice = DateTimeOffset.MinValue;
     private bool _isDisposed;
 
     public VoicePipeline(SettingsStore settings, EventBus events, PersonaStore personaStore)
@@ -834,35 +835,66 @@ public sealed class VoicePipeline : IAsyncDisposable
         using IDisposable correlationScope = IrisEvent.BeginCorrelationScope();
         string interactionId = IrisEvent.CurrentCorrelationId!;
         await _recognitionGate.WaitAsync().ConfigureAwait(false);
+        string stage = "wake_gate";
+        int recognizedCharacters = 0;
         try
         {
             // The cheap question first. While she is expecting an answer, everything is
             // transcribed; the rest of the time a sentence has to look worth the CPU.
-            bool expectsAnswer = !_settings.Current.Ears.RequireWakePhrase || IsConversationOpen;
-            if (!expectsAnswer && WakeGate.IsAvailable &&
+            EarsSettings ears = _settings.Current.Ears;
+            bool conversationWasOpen = IsConversationOpen;
+            bool wakeGateAvailable = WakeGate.IsAvailable;
+            if (!Recognizer.IsAvailable)
+            {
+                LogSegmentDecision("recognizer_unavailable", "preflight", ears.RequireWakePhrase,
+                    conversationWasOpen, wakeGateAvailable, recognizedCharacters,
+                    failureCode: Recognizer.EngineName switch
+                    {
+                        "whisper" => "model_missing",
+                        "http" => "endpoint_not_configured",
+                        _ => "recognizer_suspended"
+                    });
+                NotifyRecognitionUnavailable();
+                return;
+            }
+
+            bool expectsAnswer = !ears.RequireWakePhrase || conversationWasOpen;
+            if (!expectsAnswer && wakeGateAvailable &&
                 WakeGate.Check(segment, CancellationToken.None) == WakeGateVerdict.Skip)
             {
-                CompanionLog.Trace("Voice", "Wake gate rejected a segment before transcription.");
+                LogSegmentDecision("wake_gate_rejected", stage, ears.RequireWakePhrase,
+                    conversationWasOpen, wakeGateAvailable, recognizedCharacters);
                 return;
             }
 
+            stage = "transcription";
             long transcribeStarted = System.Diagnostics.Stopwatch.GetTimestamp();
-            string transcript = await Recognizer.TranscribeAsync(segment, CancellationToken.None)
+            SpeechRecognitionResult recognition = await Recognizer.TranscribeAsync(segment, CancellationToken.None)
                 .ConfigureAwait(false);
+            double transcribeDurationMs = System.Diagnostics.Stopwatch.GetElapsedTime(transcribeStarted).TotalMilliseconds;
+            string transcript = recognition.Text;
 
-            if (string.IsNullOrWhiteSpace(transcript))
+            if (recognition.Outcome != SpeechRecognitionOutcome.Recognized || string.IsNullOrWhiteSpace(transcript))
             {
-                IrisEvent.Log("Voice", "transcribe.empty", LogLevel.Trace);
+                string outcome = recognition.Outcome switch
+                {
+                    SpeechRecognitionOutcome.NoSpeech => "no_speech",
+                    SpeechRecognitionOutcome.Unavailable => "recognizer_unavailable",
+                    SpeechRecognitionOutcome.Failed => "recognizer_failed",
+                    SpeechRecognitionOutcome.Cancelled => "recognizer_cancelled",
+                    _ => "recognizer_returned_empty"
+                };
+                LogSegmentDecision(outcome, stage, ears.RequireWakePhrase, conversationWasOpen,
+                    wakeGateAvailable, recognizedCharacters, transcribeDurationMs, recognition.FailureCode);
+                if (recognition.Outcome is SpeechRecognitionOutcome.Unavailable or SpeechRecognitionOutcome.Failed)
+                {
+                    NotifyRecognitionUnavailable();
+                }
                 return;
             }
 
-            IrisEvent.Log("Voice", "transcribe.done", LogLevel.Trace,
-                durationMs: System.Diagnostics.Stopwatch.GetElapsedTime(transcribeStarted).TotalMilliseconds,
-                data: new Dictionary<string, string?>
-                {
-                    ["chars"] = transcript.Length.ToString(),
-                    ["recognized"] = Recognizer.EngineName
-                });
+            _nextRecognitionFailureNotice = DateTimeOffset.MinValue;
+            recognizedCharacters = transcript.Length;
 
             _events.Publish(new TranscriptEvent
             {
@@ -874,43 +906,89 @@ public sealed class VoicePipeline : IAsyncDisposable
             // Speech text belongs in the visible conversation, not persistent diagnostics.
             CompanionLog.Info("Voice", $"Recognized speech ({transcript.Length} characters; transcript kept in conversation only).");
 
-            EarsSettings ears = _settings.Current.Ears;
-            bool conversationOpen = IsConversationOpen;
-
-            if (!ears.RequireWakePhrase || conversationOpen)
+            stage = "addressing";
+            VoiceAddressingDecision addressing = VoiceAddressingPolicy.Decide(
+                transcript, ears.RequireWakePhrase, conversationWasOpen, _wakeMatcher);
+            switch (addressing.Outcome)
             {
-                OpenConversationWindow();
-                UserRequested?.Invoke(new RecognizedVoiceRequest(transcript, interactionId));
-                return;
+                case VoiceAddressingOutcome.WakeMiss:
+                    // Not addressed to her; stay silent and let the audio decay.
+                    LogSegmentDecision("wake_miss", stage, ears.RequireWakePhrase, conversationWasOpen,
+                        wakeGateAvailable, recognizedCharacters, transcribeDurationMs);
+                    return;
+                case VoiceAddressingOutcome.CalledWithoutRequest:
+                    OpenConversationWindow();
+                    LogSegmentDecision("called_without_request", stage, ears.RequireWakePhrase,
+                        conversationWasOpen, wakeGateAvailable, recognizedCharacters, transcribeDurationMs);
+                    UserCalledHer?.Invoke(interactionId);
+                    return;
+                case VoiceAddressingOutcome.OpenConversationRequest:
+                    OpenConversationWindow();
+                    LogSegmentDecision("request_in_open_conversation", stage, ears.RequireWakePhrase,
+                        conversationWasOpen, wakeGateAvailable, recognizedCharacters, transcribeDurationMs);
+                    UserRequested?.Invoke(new RecognizedVoiceRequest(addressing.RequestText, interactionId));
+                    return;
+                case VoiceAddressingOutcome.WakeRequest:
+                    OpenConversationWindow();
+                    LogSegmentDecision("wake_request", stage, ears.RequireWakePhrase, conversationWasOpen,
+                        wakeGateAvailable, recognizedCharacters, transcribeDurationMs);
+                    UserRequested?.Invoke(new RecognizedVoiceRequest(addressing.RequestText, interactionId));
+                    return;
+                default:
+                    throw new ArgumentOutOfRangeException(nameof(addressing.Outcome), addressing.Outcome,
+                        "Unknown voice addressing outcome.");
             }
-
-            if (!_wakeMatcher.TryMatch(transcript, out string remainder))
-            {
-                // Not addressed to her; stay silent and let the audio decay.
-                IrisEvent.Log("Voice", "wake.miss", LogLevel.Trace,
-                    data: new Dictionary<string, string?> { ["chars"] = transcript.Length.ToString() });
-                return;
-            }
-
-            IrisEvent.Log("Voice", "wake.hit", LogLevel.Trace);
-
-            OpenConversationWindow();
-            if (string.IsNullOrWhiteSpace(remainder) || _wakeMatcher.IsGreetingOnly(remainder))
-            {
-                UserCalledHer?.Invoke(interactionId);
-                return;
-            }
-
-            UserRequested?.Invoke(new RecognizedVoiceRequest(remainder, interactionId));
         }
         catch (Exception exception)
         {
+            IrisEvent.Log("Voice", "voice.segment.failed", LogLevel.Warning,
+                data: new Dictionary<string, string?>
+                {
+                    ["stage"] = stage,
+                    ["error_type"] = exception.GetType().Name,
+                    ["recognized_chars"] = recognizedCharacters.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                });
             CompanionLog.Warning("Voice", $"A spoken segment could not be handled: {exception.Message}");
         }
         finally
         {
             _recognitionGate.Release();
         }
+    }
+
+    /// <summary>Records the outcome of a speech segment without retaining its transcript or audio.</summary>
+    private void LogSegmentDecision(string outcome, string stage, bool requiresWakePhrase,
+        bool conversationWasOpen, bool wakeGateAvailable, int recognizedCharacters, double? durationMs = null,
+        string failureCode = "")
+    {
+        IrisEvent.Log("Voice", "voice.segment.decision", LogLevel.Trace, durationMs: durationMs,
+            data: new Dictionary<string, string?>
+            {
+                ["outcome"] = outcome,
+                ["stage"] = stage,
+                ["requires_wake_phrase"] = requiresWakePhrase.ToString(),
+                ["conversation_was_open"] = conversationWasOpen.ToString(),
+                ["wake_gate_available"] = wakeGateAvailable.ToString(),
+                ["recognizer"] = Recognizer.EngineName,
+                ["recognizer_available"] = Recognizer.IsAvailable.ToString(),
+                ["recognition_attempted"] = (stage is "transcription" or "addressing").ToString(),
+                ["failure_code"] = failureCode,
+                ["recognized_chars"] = recognizedCharacters.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            });
+    }
+
+    private void NotifyRecognitionUnavailable()
+    {
+        DateTimeOffset now = DateTimeOffset.Now;
+        if (now < _nextRecognitionFailureNotice)
+        {
+            return;
+        }
+
+        _nextRecognitionFailureNotice = now.AddSeconds(30);
+        _events.PublishNotice(
+            "I couldn't transcribe that. Check Settings → Voice to see whether the speech recognizer is available.",
+            NoticeSeverity.Warning);
     }
 
     private double CurrentThreshold()

@@ -119,8 +119,14 @@ Remaining work:
 2. Recognized requests now pass their interaction ID explicitly into the turn coordinator;
    transcript, attention, and speech events carry the same ID. Media pause/resume transitions are
    serialized, ownership is cleared on a terminal decision, results are logged under the turn, and
-   an unconfirmed resume shows a recovery notice. Still connect listening state and wake decisions
-   into the same inspectable record; verify media behavior against real Windows players.
+   an unconfirmed resume shows a recovery notice. Each completed voice segment now emits a
+   correlated, transcript-free outcome (wake-gate reject, no speech, wake miss, call, or routed
+   request) with recognizer availability, addressing policy, and recognition duration. ASR reports
+   no speech separately from an unavailable or failed runtime; failures create a rate-limited
+   user notice and diagnostics omit transcript, audio, and endpoint details. The conversation-open
+   state is held stable through recognition so a slow ASR pass cannot expire the follow-up it is
+   processing. Still connect microphone open/closed and capture failures into the same inspectable
+   record; verify wake and media behavior on the target PC.
    Tool activity now has one start/finish pair and chat entries are associated with their turn;
    completed tools return the activity card to result review. Cancellation and failure close the
    associated module overlay as well as active chat/tool UI, and cancellation marks the journal

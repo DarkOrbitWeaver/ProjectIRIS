@@ -19,7 +19,10 @@ behavior that has been exercised.
   instructions now distinguish ambient metadata from actual screen images.
 - **Voice:** microphone capture, speech segmentation, Whisper or configured HTTP recognition,
   wake matching, interruption, one locked voice profile, cached reflex phrases, and the managed
-  local Pocket TTS default are implemented. Missing voice output is meant to fail honestly.
+  local Pocket TTS default are implemented. Voice segments now record a correlated,
+  transcript-free outcome; ASR distinguishes silence from missing or failed recognizers and shows
+  a rate-limited recovery notice. Conversation state is held stable through recognition. Missing
+  voice output is meant to fail honestly.
 - **Awareness:** low-cost Windows foreground, media, idle, CPU/RAM, and battery observations;
   optional screen capture; game detection; and sleep/gaming resource handoff are implemented.
   Screen vision is on demand or explicitly shared, not constant video; disabling vision now
@@ -88,7 +91,7 @@ works on the target PC under real microphone, speaker, model, display, game, and
 
 ## Verification checkpoint
 
-The current worktree builds with zero warnings/errors and the core suite passes 70/70 tests. New
+The current worktree builds with zero warnings/errors and the core suite passes 72/72 tests. New
 regressions verify that `vision: off` blocks forced capture, that Iris does not claim passive
 screen access, that ambient context is withheld until observed and when sensing has stopped, and
 that a failed media probe never presents the previous track as current. Sensor-health checks
@@ -97,7 +100,10 @@ from the same snapshot used to build the prompt; and an intentional cancellation
 journal turn without hiding a later interrupted turn, and synchronous tools publish one start and
 one finish event. Media ownership regressions cover concurrent voice calls, a setting change
 while paused, cancellation before resume, visible recovery on a failed resume, direct-versus-
-associated memory recall explanations, and the privacy-safe correlated recall audit. No model was
+associated memory recall explanations, the privacy-safe correlated recall audit, stable voice
+addressing through slow recognition, and missing-Whisper-model classification. Voice outcome
+instrumentation builds with the app; live microphone and wake behavior remain target-PC
+acceptance work. No model was
 loaded and the app was not launched for this
 snapshot. The automated suite is still narrower than the product acceptance matrix; real-device
 audio, visual/layout, multi-display, and sustained resource behavior remain unverified here.

@@ -7,6 +7,21 @@ using Whisper.net;
 
 namespace CompanionOS.Core.Voice;
 
+public enum SpeechRecognitionOutcome
+{
+    Recognized,
+    NoSpeech,
+    Unavailable,
+    Failed,
+    Cancelled
+}
+
+/// <summary>Recognized words or an explicit reason recognition produced no usable text.</summary>
+public sealed record SpeechRecognitionResult(
+    SpeechRecognitionOutcome Outcome,
+    string Text = "",
+    string FailureCode = "");
+
 /// <summary>Anything that can turn recorded speech into text.</summary>
 public interface ISpeechRecognizer : IDisposable
 {
@@ -16,8 +31,8 @@ public interface ISpeechRecognizer : IDisposable
     /// <summary>False when the model or server is missing.</summary>
     bool IsAvailable { get; }
 
-    /// <summary>Transcribes 16 kHz mono float samples. Returns empty text when nothing was said.</summary>
-    Task<string> TranscribeAsync(float[] samples, CancellationToken cancellationToken);
+    /// <summary>Transcribes 16 kHz mono float samples and distinguishes silence from runtime failure.</summary>
+    Task<SpeechRecognitionResult> TranscribeAsync(float[] samples, CancellationToken cancellationToken);
 }
 
 /// <summary>
@@ -68,11 +83,16 @@ public sealed class WhisperNetRecognizer : ISpeechRecognizer
 
     public bool IsAvailable => File.Exists(_modelPath);
 
-    public async Task<string> TranscribeAsync(float[] samples, CancellationToken cancellationToken)
+    public async Task<SpeechRecognitionResult> TranscribeAsync(float[] samples, CancellationToken cancellationToken)
     {
         if (samples.Length == 0)
         {
-            return string.Empty;
+            return new SpeechRecognitionResult(SpeechRecognitionOutcome.NoSpeech);
+        }
+
+        if (!IsAvailable)
+        {
+            return new SpeechRecognitionResult(SpeechRecognitionOutcome.Unavailable, FailureCode: "model_missing");
         }
 
         try
@@ -114,16 +134,20 @@ public sealed class WhisperNetRecognizer : ISpeechRecognizer
                 }
             }
 
-            return transcript.ToString().Trim();
+            string text = transcript.ToString().Trim();
+            return string.IsNullOrWhiteSpace(text)
+                ? new SpeechRecognitionResult(SpeechRecognitionOutcome.NoSpeech)
+                : new SpeechRecognitionResult(SpeechRecognitionOutcome.Recognized, text);
         }
         catch (OperationCanceledException)
         {
-            return string.Empty;
+            return new SpeechRecognitionResult(SpeechRecognitionOutcome.Cancelled);
         }
         catch (Exception exception)
         {
-            CompanionLog.Warning("Voice", $"Whisper could not transcribe: {exception.Message}");
-            return string.Empty;
+            CompanionLog.Warning("Voice", $"Whisper could not transcribe ({exception.GetType().Name}).");
+            return new SpeechRecognitionResult(SpeechRecognitionOutcome.Failed,
+                FailureCode: exception.GetType().Name);
         }
     }
 
@@ -206,11 +230,17 @@ public sealed class HttpSpeechRecognizer : ISpeechRecognizer
 
     public bool IsAvailable => !string.IsNullOrWhiteSpace(_settings.HttpEndpoint);
 
-    public async Task<string> TranscribeAsync(float[] samples, CancellationToken cancellationToken)
+    public async Task<SpeechRecognitionResult> TranscribeAsync(float[] samples, CancellationToken cancellationToken)
     {
         if (samples.Length == 0)
         {
-            return string.Empty;
+            return new SpeechRecognitionResult(SpeechRecognitionOutcome.NoSpeech);
+        }
+
+        if (!IsAvailable)
+        {
+            return new SpeechRecognitionResult(SpeechRecognitionOutcome.Unavailable,
+                FailureCode: "endpoint_not_configured");
         }
 
         try
@@ -245,23 +275,34 @@ public sealed class HttpSpeechRecognizer : ISpeechRecognizer
             if (!response.IsSuccessStatusCode)
             {
                 CompanionLog.Warning("Voice", $"Transcription server answered {(int)response.StatusCode}.");
-                return string.Empty;
+                return new SpeechRecognitionResult(SpeechRecognitionOutcome.Failed,
+                    FailureCode: $"http_{(int)response.StatusCode}");
             }
 
             string json = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
             using JsonDocument document = JsonDocument.Parse(json);
-            return document.RootElement.TryGetProperty("text", out JsonElement textElement)
-                ? (textElement.GetString() ?? string.Empty).Trim()
-                : string.Empty;
+            if (!document.RootElement.TryGetProperty("text", out JsonElement textElement))
+            {
+                return new SpeechRecognitionResult(SpeechRecognitionOutcome.Failed,
+                    FailureCode: "response_missing_text");
+            }
+
+            string text = (textElement.GetString() ?? string.Empty).Trim();
+            return string.IsNullOrWhiteSpace(text)
+                ? new SpeechRecognitionResult(SpeechRecognitionOutcome.NoSpeech)
+                : new SpeechRecognitionResult(SpeechRecognitionOutcome.Recognized, text);
         }
         catch (OperationCanceledException)
         {
-            return string.Empty;
+            return new SpeechRecognitionResult(SpeechRecognitionOutcome.Cancelled);
         }
         catch (Exception exception)
         {
-            CompanionLog.Warning("Voice", $"Transcription request failed: {exception.Message}");
-            return string.Empty;
+            // Exception messages can contain the configured endpoint, including credentials
+            // embedded in its query string. The correlated event records only the error type.
+            CompanionLog.Warning("Voice", $"Transcription request failed ({exception.GetType().Name}).");
+            return new SpeechRecognitionResult(SpeechRecognitionOutcome.Failed,
+                FailureCode: exception.GetType().Name);
         }
     }
 
@@ -320,8 +361,9 @@ public sealed class SuspendedRecognizer : ISpeechRecognizer
 
     public bool IsAvailable => false;
 
-    public Task<string> TranscribeAsync(float[] samples, CancellationToken cancellationToken) =>
-        Task.FromResult(string.Empty);
+    public Task<SpeechRecognitionResult> TranscribeAsync(float[] samples, CancellationToken cancellationToken) =>
+        Task.FromResult(new SpeechRecognitionResult(SpeechRecognitionOutcome.Unavailable,
+            FailureCode: "ears_suspended"));
 
     public void Dispose()
     {

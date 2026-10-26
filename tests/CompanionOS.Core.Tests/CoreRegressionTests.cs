@@ -1154,6 +1154,32 @@ public sealed class CoreRegressionTests
     }
 
     [Fact]
+    public void VoiceAddressingUsesConversationStateCapturedBeforeSlowRecognition()
+    {
+        WakePhraseMatcher matcher = new(new Persona());
+        bool conversationWasOpenWhenSegmentStarted = true;
+
+        VoiceAddressingDecision decision = VoiceAddressingPolicy.Decide(
+            "play the next song", requiresWakePhrase: true, conversationWasOpenWhenSegmentStarted, matcher);
+
+        Assert.Equal(VoiceAddressingOutcome.OpenConversationRequest, decision.Outcome);
+        Assert.Equal("play the next song", decision.RequestText);
+    }
+
+    [Fact]
+    public async Task MissingLocalSpeechModelIsReportedAsUnavailableNotSilence()
+    {
+        using WhisperNetRecognizer recognizer = new(
+            Path.Combine(Path.GetTempPath(), $"missing-iris-whisper-{Guid.NewGuid():N}.bin"), "en");
+
+        SpeechRecognitionResult result = await recognizer.TranscribeAsync([0.1f, -0.1f], CancellationToken.None);
+
+        Assert.Equal(SpeechRecognitionOutcome.Unavailable, result.Outcome);
+        Assert.Equal("model_missing", result.FailureCode);
+        Assert.Empty(result.Text);
+    }
+
+    [Fact]
     public void MusicScanFindsSupportedTracksWithoutFollowingAnUnboundedTree()
     {
         string root = Path.Combine(Path.GetTempPath(), $"iris-music-scan-{Guid.NewGuid():N}");
