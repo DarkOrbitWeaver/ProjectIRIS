@@ -113,6 +113,11 @@ public sealed class PluginModuleAdapter : IAssistantModule, IModuleSurfaceProvid
             invocation.TurnId,
             cancellationToken).ConfigureAwait(false);
 
+        if (result.IsOutcomeUncertain)
+        {
+            return ToolResult.Uncertain(string.IsNullOrWhiteSpace(result.Error) ? result.Text : result.Error);
+        }
+
         return result.Ok
             ? ToolResult.Ok(string.IsNullOrWhiteSpace(result.Text) ? "The plugin completed." : result.Text,
                 displayText: result.Text)

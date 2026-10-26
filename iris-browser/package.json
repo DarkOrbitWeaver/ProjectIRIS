@@ -1,0 +1,15 @@
+{
+  "name": "iris-browser",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Iris browser module: MCP server plus Chrome extension bridge.",
+  "dependencies": {
+    "ws": "8.22.0"
+  },
+  "scripts": {
+    "test": "node selftest.js && node extension-test.js"
+  },
+  "devDependencies": {
+    "jsdom": "30.1.3"
+  }
+}

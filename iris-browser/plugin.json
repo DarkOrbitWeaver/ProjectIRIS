@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "id": "browser",
+  "name": "Browser",
+  "version": "0.1.0",
+  "description": "Read and act on the active Chrome tab through the Iris Browser extension, with a visible attention border.",
+  "icon": "web",
+  "transport": "mcp",
+  "command": ["node", "server.js"],
+  "workingDirectory": ".",
+  "disabled": true,
+  "discoverTools": true,
+  "asksPermission": ["browser.read", "browser.act"],
+  "tools": [
+    { "name": "browser_pair", "permission": "browser.act", "alwaysConfirm": true },
+    { "name": "browser_status", "permission": "browser.read" },
+    { "name": "browser_read_page", "permission": "browser.read" },
+    { "name": "browser_focus", "permission": "browser.read" },
+    { "name": "browser_attend", "permission": "browser.read" },
+    { "name": "browser_scroll", "permission": "browser.read" },
+    { "name": "browser_navigate", "permission": "browser.act", "alwaysConfirm": true },
+    { "name": "browser_click", "permission": "browser.act", "alwaysConfirm": true },
+    { "name": "browser_type", "permission": "browser.act", "alwaysConfirm": true }
+  ]
+}

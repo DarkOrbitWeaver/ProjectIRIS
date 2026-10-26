@@ -1,0 +1,14 @@
+{
+  "manifest_version": 3,
+  "name": "Iris Browser",
+  "version": "0.1.0",
+  "description": "Lets Iris read and act on the active tab, with a visible attention border.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA0Anx5UVFrpaxvDm/74mR/pw4PA/70HwzW7+c1G2k2O62Ricja4eUeieRRTSAVLIurYwXEQsitZNDQ2Biti+TaJQ2Nlvc82sgCasG50vIUJFmVt1fjzhVDKNIAKrD8moZFeNKr17n7dO6IX5AuA+cS4gdNcl1koCEEjkw4ah18MVnDYhDUJApmLvzB22zc9/zRRsGgNSfRdNATna7kNdWsVt/TnKZBAlbqs10IEEHl+MMXfHLCssIrXY7SS77JwuECZeHBxzwv7q/Ru6KRIGWHHPPzoz0NZO+E7W0rl1sygj5Ht88pp1O1zaXfupruAJx9OjZN/kA2MGixzdtl99m/QIDAQAB",
+  "permissions": ["storage", "tabs", "scripting", "alarms"],
+  "host_permissions": ["http://*/*", "https://*/*"],
+  "background": { "service_worker": "background.js" },
+  "action": { "default_title": "Iris Browser", "default_popup": "popup.html" },
+  "content_scripts": [
+    { "matches": ["http://*/*", "https://*/*"], "js": ["content.js"], "run_at": "document_idle" }
+  ]
+}

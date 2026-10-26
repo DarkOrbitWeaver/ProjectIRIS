@@ -762,4 +762,4 @@ public sealed record PluginSurfaceElementManifest(
 public sealed record PluginSurfaceOptionManifest(string Value, string Label);
 
 /// <summary>What a plugin run returns; failure carries the plugin's own words.</summary>
-public record PluginResult(bool Ok, string Text, string? Error = null);
+public record PluginResult(bool Ok, string Text, string? Error = null, bool IsOutcomeUncertain = false);

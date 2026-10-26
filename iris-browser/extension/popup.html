@@ -1,0 +1,17 @@
+<!doctype html>
+<meta charset="utf-8">
+<style>
+  body { font: 13px system-ui, sans-serif; width: 260px; margin: 12px; }
+  label { display: block; margin: 10px 0 4px; font-weight: 600; }
+  input[type=text] { width: 100%; box-sizing: border-box; padding: 4px; }
+  button { margin-top: 6px; }
+  #status { margin-top: 10px; font-weight: 600; }
+</style>
+<label><input type="checkbox" id="enabled"> Let Iris use this browser</label>
+<label for="code">Pairing code from Iris</label>
+<input type="text" id="code" inputmode="numeric" maxlength="6" placeholder="6 digits">
+<button id="pair">Pair</button>
+<label for="color">Attention border</label>
+<input type="color" id="color"> <input type="range" id="width" min="1" max="8">
+<div id="status"></div>
+<script src="popup.js"></script>

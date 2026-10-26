@@ -349,7 +349,7 @@ public sealed class PluginHost : IDisposable
     /// <summary>
     /// Calls a plugin tool. Builtins do not flow through here (their modules own them);
     /// "command" spawns a process per call; "mcp" keeps one warm connection per plugin
-    /// and speaks JSON-RPC. Never throws: errors come back as PluginResult with words.
+    /// and speaks JSON-RPC. Operational errors come back as PluginResult; caller cancellation propagates.
     /// </summary>
     public async Task<PluginResult> CallAsync(PluginManifest plugin, PluginTool tool,
         string argumentsJson, string turnId, CancellationToken cancellationToken)
@@ -379,10 +379,14 @@ public sealed class PluginHost : IDisposable
 
             return new PluginResult(false, "", $"'{plugin.Name}' is a builtin-shaped plugin; call its module instead.");
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
         catch (Exception exception)
         {
             CompanionLog.Warning("Plugins", $"Call failed in '{plugin.Name}' /'{tool.Name}': {exception.Message}");
-            return new PluginResult(false, "", exception.Message);
+            return new PluginResult(false, "", exception.Message, exception is TimeoutException);
         }
     }
 
@@ -961,8 +965,12 @@ public sealed class PluginHost : IDisposable
             cancellationToken).ConfigureAwait(false);
 
         bool isError = lat.TryGetProperty("isError", out JsonElement errorElement) && errorElement.ValueKind == JsonValueKind.True;
+        bool outcomeUncertain = lat.TryGetProperty("structuredContent", out JsonElement structured) &&
+                                structured.ValueKind == JsonValueKind.Object &&
+                                structured.TryGetProperty("isOutcomeUncertain", out JsonElement uncertainElement) &&
+                                uncertainElement.ValueKind == JsonValueKind.True;
         string text = RedactSecrets(ExtractText(lat), connection.SecretValues.Values);
-        return new PluginResult(!isError, text, isError ? "The plugin reported this call as an error." : null);
+        return new PluginResult(!isError, text, isError ? text : null, outcomeUncertain);
     }
 
     private async Task<McpConnection> GetMcpAsync(PluginManifest plugin, CancellationToken cancellationToken)
