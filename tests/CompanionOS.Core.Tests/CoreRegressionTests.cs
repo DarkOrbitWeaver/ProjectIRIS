@@ -2207,6 +2207,68 @@ public sealed class CoreRegressionTests
     }
 
     [Fact]
+    public async Task ToolReceiptDiaryStaysOutOfIntuitionButRemainsSearchable()
+    {
+        string databasePath = Path.Combine(Path.GetTempPath(), $"iris-tasklog-{Guid.NewGuid():N}.db");
+        try
+        {
+            await using MemoryGraph graph = new(databasePath);
+            await graph.InitializeAsync();
+            EventBus events = new();
+            SynapticMemoryEngine memory = new(graph, new SettingsStore(), events);
+
+            MemoryNode anchor = await graph.UpsertNodeAsync(
+                "hollowlight playlist", "The boss's late-night music.", MemoryLayer.Semantic, "conversation");
+            RecalledMemory episode = await memory.RecordEpisodeAsync(
+                "Did: play hollowlight — play music: done", SynapticMemoryEngine.TaskLogProvenance,
+                title: "Did: play music");
+
+            // RecordEpisodeAsync linked the receipt to the knowledge it is about, so the
+            // only way the diary could flood a fresh turn is through exactly that edge.
+            IReadOnlyList<MemorySynapse> synapses = graph.SnapshotSynapses();
+            Assert.Contains(synapses, synapse =>
+                synapse.FromNodeId == episode.NodeId && synapse.ToNodeId == anchor.Id);
+
+            // The automatic intuition activates the knowledge, never the receipt — not
+            // even when the walk arrives through the topic edge above.
+            ActivationResult activation = await memory.ActivateAsync("hollowlight playlist");
+            Assert.Contains(activation.Activated, item => item.Node.Id == anchor.Id);
+            Assert.DoesNotContain(activation.Activated,
+                item => item.Node.Provenance == SynapticMemoryEngine.TaskLogProvenance);
+
+            // A narration line is not an intuition seed. Whatever lights up can only be
+            // real knowledge that shares her genuine words ("late-night music") — the
+            // receipt itself must never re-enter the prompt.
+            ActivationResult replay = await memory.ActivateAsync("Did: play music");
+            Assert.DoesNotContain(replay.Activated,
+                item => item.Node.Provenance == SynapticMemoryEngine.TaskLogProvenance);
+
+            // But deliberate recall is exactly where the diary shines: recall_memory is
+            // her looking up her own honest history at will.
+            IReadOnlyList<RecalledMemory> recall =
+                await memory.RecallAsync("Did: play music", 5, CancellationToken.None);
+            Assert.Contains(recall, item => item.NodeId == episode.NodeId);
+        }
+        finally
+        {
+            foreach (string path in new[] { databasePath, databasePath + "-wal", databasePath + "-shm" })
+            {
+                try
+                {
+                    if (File.Exists(path))
+                    {
+                        File.Delete(path);
+                    }
+                }
+                catch
+                {
+                    // The test result is already decided; cleanup is best effort.
+                }
+            }
+        }
+    }
+
+    [Fact]
     public async Task MemoryRecallExplainsDirectMatchesAndTheAssociationThatActivatedRelatedNodes()
     {
         string databasePath = Path.Combine(Path.GetTempPath(), $"iris-recall-{Guid.NewGuid():N}.db");

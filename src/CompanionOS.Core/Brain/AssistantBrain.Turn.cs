@@ -312,7 +312,11 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
             : $"Tried: {request} — it did not go through ({outcomes})";
         string labels = string.Join(", ", toolLedger.Take(2).Select(LabelOfLedgerEntry));
         string headline = toolsSucceeded ? $"Did: {labels}" : $"Tried: {labels}";
-        _ = _memory.RecordEpisodeAsync(summary, "conversation", title: headline)
+        // These are her activity diary, not world knowledge: the dedicated provenance
+        // keeps them out of the automatic intuition seeds (SynapticMemoryEngine filters
+        // task_log there) while recall_memory can still search them whenever she wants
+        // her own history.
+        _ = _memory.RecordEpisodeAsync(summary, SynapticMemoryEngine.TaskLogProvenance, title: headline)
             .ContinueWith(_ => { }, TaskScheduler.Default);
     }
 

@@ -57,6 +57,17 @@ public sealed class SynapticMemoryEngine : IMemoryAccess
     public MemoryGraph Graph => _graph;
 
     /// <summary>
+    /// Episodes the brain writes about its own tool turns. They are honest history
+    /// ("Did: …"/"Tried: …") and stay searchable in her diary, but they are not world
+    /// knowledge: they never seed or absorb activation, so task narration cannot
+    /// frame a fresh turn as a replay of old tool calls.
+    /// </summary>
+    public const string TaskLogProvenance = "task_log";
+
+    private static bool IsTaskLog(MemoryNode node) =>
+        string.Equals(node.Provenance, TaskLogProvenance, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
     /// Runs spreading activation for one user sentence:
     /// find seeds by similarity, then walk outward, inward and across danger links,
     /// letting each hop lose a little energy so distant trivia never floods the prompt.
@@ -64,8 +75,15 @@ public sealed class SynapticMemoryEngine : IMemoryAccess
     public async Task<ActivationResult> ActivateAsync(string? userMessage, CancellationToken cancellationToken = default)
     {
         MemorySettings settings = _settings.Current.Memory;
-        IReadOnlyList<(MemoryNode Node, double Score)> matches =
-            _graph.SearchNodes(userMessage, Math.Max(1, settings.SeedCount));
+
+        // Seeds come from similarity, so her own tool narration ("Did: play
+        // hollowlight — play music: done") would otherwise light up every turn and
+        // frame life as a replay of old task receipts. The diary itself stays —
+        // recall_memory searches it whenever she genuinely wants her own history.
+        List<(MemoryNode Node, double Score)> matches = _graph
+            .SearchNodes(userMessage, Math.Max(1, settings.SeedCount))
+            .Where(match => !IsTaskLog(match.Node))
+            .ToList();
 
         if (matches.Count == 0)
         {
@@ -100,7 +118,13 @@ public sealed class SynapticMemoryEngine : IMemoryAccess
                 foreach (MemorySynapse synapse in edges)
                 {
                     string neighbourId = synapse.FromNodeId == nodeId ? synapse.ToNodeId : synapse.FromNodeId;
-                    if (!_graph.ContainsNode(neighbourId))
+                    MemoryNode? neighbour = _graph.FindById(neighbourId);
+
+                    // Task-log episodes never absorb activation energy or surface in the
+                    // intuition block, whichever way the walk arrives at them — the reverse
+                    // edge from a topic anchor would otherwise pull "Did: …" receipts into
+                    // every turn's prompt.
+                    if (neighbour is null || IsTaskLog(neighbour))
                     {
                         continue;
                     }
@@ -406,12 +430,59 @@ public sealed class SynapticMemoryEngine : IMemoryAccess
                     cancellationToken: cancellationToken)
                 .ConfigureAwait(false);
 
-            // Topic anchors: memories this episode is actually about. Facts and core
-            // nodes pair with it; an episode never dangles on another arbitrary episode,
-            // the narrative chain is the only episode-to-episode line.
-            IReadOnlyList<(MemoryNode Node, double Score)> anchors = _graph.SearchNodes(episodeTitle, 5);
+            // Topic anchors: memories this episode is actually about. The diary headline
+            // names the hand ("play music"), the episode detail carries the topic it
+            // touched ("hollowlight") — so anchors are searched over both, and a
+            // distinctive topic word from an anchor's title appearing in the episode's
+            // own words counts as a direct mention, the same trust SearchNodes gives
+            // exact title hits: tool words otherwise swamp the cosine of a real topic.
+            // Facts and core nodes pair with it; an episode never dangles on another
+            // arbitrary episode, the narrative chain is the only episode-to-episode line.
+            List<(MemoryNode Node, double Score)> candidates = new();
+
+            void MergeAnchorCandidates(IReadOnlyList<(MemoryNode Node, double Score)> found)
+            {
+                foreach ((MemoryNode anchorNode, double score) in found)
+                {
+                    int index = candidates.FindIndex(pair => pair.Node.Id == anchorNode.Id);
+                    if (index < 0)
+                    {
+                        candidates.Add((anchorNode, score));
+                    }
+                    else if (candidates[index].Score < score)
+                    {
+                        candidates[index] = (anchorNode, score);
+                    }
+                }
+            }
+
+            MergeAnchorCandidates(_graph.SearchNodes(episodeTitle, 5));
+            MergeAnchorCandidates(_graph.SearchNodes(summary, 5));
+
+            IReadOnlyList<string> episodeWords = TextVectorizer.Tokenize($"{episodeTitle} {summary}");
+            foreach (MemoryNode candidate in _graph.SnapshotNodes())
+            {
+                if (candidate.Layer == MemoryLayer.Episodic)
+                {
+                    continue;
+                }
+
+                string mention = TextVectorizer.Tokenize(candidate.Title)
+                    .Where(word => word.Length >= 5)
+                    .FirstOrDefault(word => episodeWords.Contains(word), string.Empty);
+                if (mention.Length == 0)
+                {
+                    continue;
+                }
+
+                // The longer the shared topic word, the stronger the claim this episode
+                // is genuinely about that memory.
+                double mentionScore = mention.Length >= 8 ? 0.6 : 0.5;
+                MergeAnchorCandidates(new[] { (candidate, mentionScore) });
+            }
+
             int anchored = 0;
-            foreach ((MemoryNode anchor, double score) in anchors)
+            foreach ((MemoryNode anchor, double score) in candidates.OrderByDescending(pair => pair.Score))
             {
                 if (anchored >= 3 || score < 0.45 ||
                     anchor.Id == node.Id ||
@@ -481,7 +552,7 @@ public sealed class SynapticMemoryEngine : IMemoryAccess
         // recorded as a fact) and "Heard: …" (raw transcript debris, often ASR junk like
         // "Heard: - Where is?" — not something said, just something the ears caught).
         bool IsStoryWithoutTruth(MemoryNode node) =>
-            node.Provenance == "conversation" &&
+            (node.Provenance == "conversation" || node.Provenance == TaskLogProvenance) &&
             (node.Content.StartsWith("Requested: ", StringComparison.OrdinalIgnoreCase) ||
              node.Content.StartsWith("Heard: ", StringComparison.OrdinalIgnoreCase));
 

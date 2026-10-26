@@ -66,6 +66,17 @@ by a roleplay profile or by a model having a strange day.
 view. A memory fades because it stopped mattering, not because a counter hit zero.
 **Cost:** the graph grows; consolidation has to prune it.
 
+### 10. Task receipts are diary, not intuition
+**Why:** every tool turn used to be recorded with the same provenance as real knowledge,
+so "Did: play hollowlight — play music: done" lit up as an intuition seed on later turns
+and framed her mind as a replay of old task calls. Brain-authored receipts now carry a
+dedicated provenance (`task_log`): activation never seeds or walks through them
+(`SynapticMemoryEngine.IsTaskLog` guards seeds and the spreading walk), while
+`recall_memory` still searches the honest "Did:/Tried:" history whenever she wants it.
+**Cost:** the activity log no longer feeds behaviour automatically; lessons drawn from
+work have to become knowledge on purpose (remember/corrections) — which is where
+knowledge belongs anyway.
+
 ---
 
 ## Modules
