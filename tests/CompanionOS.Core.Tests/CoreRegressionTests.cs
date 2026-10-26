@@ -77,9 +77,11 @@ public sealed class CoreRegressionTests
                   "id": "telegram",
                   "name": "Telegram",
                   "transport": "builtin",
+                  "asksPermission": ["contacts.read", "messages.send"],
                   "tools": [{
                     "name": "send_message",
                     "description": "Send a message.",
+                    "permission": "messages.send",
                     "schema": {"type":"object","properties":{"recipient":{"type":"string"},"message":{"type":"string"}}}
                   }],
                   "surfaces": [{
@@ -105,6 +107,48 @@ public sealed class CoreRegressionTests
             Assert.Equal("sidebar", surface.Slot);
             Assert.Equal(3, surface.Elements.Count);
             Assert.Equal("send_message", surface.Elements[^1].ToolName);
+        }
+        finally
+        {
+            Directory.Delete(folder, recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData("messages.send", "contacts.read", "undeclared permission scope")]
+    [InlineData("bad scope", "bad scope", "invalid or duplicated")]
+    [InlineData("", "", "invalid or duplicated")]
+    public void ExternalModuleManifestRejectsInvalidOrUndeclaredPermissionScopes(
+        string toolPermission, string declaredPermission, string expectedReason)
+    {
+        string folder = Path.Combine(Path.GetTempPath(), $"iris-plugin-permission-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(folder);
+        try
+        {
+            object manifest = new
+            {
+                schema = 1,
+                id = "sample",
+                name = "Sample",
+                transport = "builtin",
+                asksPermission = new[] { declaredPermission },
+                tools = new[]
+                {
+                    new
+                    {
+                        name = "send",
+                        description = "Send a message.",
+                        permission = toolPermission,
+                        schema = new { type = "object", properties = new { } }
+                    }
+                }
+            };
+            File.WriteAllText(Path.Combine(folder, "plugin.json"), JsonSerializer.Serialize(manifest));
+
+            bool loaded = PluginManifest.TryLoad(folder, out _, out string reason);
+
+            Assert.False(loaded);
+            Assert.Contains(expectedReason, reason, StringComparison.OrdinalIgnoreCase);
         }
         finally
         {

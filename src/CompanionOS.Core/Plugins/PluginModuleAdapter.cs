@@ -31,7 +31,10 @@ public sealed class PluginModuleAdapter : IAssistantModule, IModuleSurfaceProvid
                 ToolTier.SystemCritical,
                 string.IsNullOrWhiteSpace(tool.Schema) ? "{\"type\":\"object\"}" : tool.Schema,
                 tool.Name,
-                tool.Description))
+                tool.Description)
+            {
+                PermissionScope = tool.Permission
+            })
             .ToList();
     }
 

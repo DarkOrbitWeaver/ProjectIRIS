@@ -48,6 +48,9 @@ public sealed class ModuleTool
 
     public ToolTier Tier { get; }
 
+    /// <summary>External capability label shown at approval time; this is not an OS sandbox.</summary>
+    public string? PermissionScope { get; init; }
+
     /// <summary>JSON Schema for the arguments object.</summary>
     public string ParametersJson { get; }
 

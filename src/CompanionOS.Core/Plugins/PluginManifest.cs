@@ -76,31 +76,61 @@ public sealed class PluginManifest
             using JsonDocument document = JsonDocument.Parse(File.ReadAllText(file));
             JsonElement root = document.RootElement;
             List<PluginTool> tools = [];
-            if (root.TryGetProperty("tools", out JsonElement toolsElement) &&
-                toolsElement.ValueKind == JsonValueKind.Array)
+            if (root.TryGetProperty("tools", out JsonElement toolsElement))
             {
+                if (toolsElement.ValueKind != JsonValueKind.Array)
+                {
+                    rejectionReason = "'tools' must be an array";
+                    return false;
+                }
+
                 foreach (JsonElement tool in toolsElement.EnumerateArray())
                 {
+                    if (tool.ValueKind != JsonValueKind.Object)
+                    {
+                        rejectionReason = "each tool declaration must be an object";
+                        return false;
+                    }
+
+                    string? permission = null;
+                    if (tool.TryGetProperty("permission", out JsonElement permissionElement))
+                    {
+                        if (permissionElement.ValueKind == JsonValueKind.String)
+                        {
+                            permission = permissionElement.GetString();
+                        }
+                        else if (permissionElement.ValueKind != JsonValueKind.Null)
+                        {
+                            rejectionReason = "tool 'permission' must be a string or null";
+                            return false;
+                        }
+                    }
+
                     tools.Add(new PluginTool(
                         Name: tool.TryGetProperty("name", out JsonElement nameElement) ? nameElement.GetString() ?? "" : "",
                         Description: tool.TryGetProperty("description", out JsonElement descriptionElement) ? descriptionElement.GetString() ?? "" : "",
-                        Permission: tool.TryGetProperty("permission", out JsonElement permissionElement) && permissionElement.ValueKind == JsonValueKind.String
-                            ? permissionElement.GetString()
-                            : null,
+                        Permission: permission,
                         Schema: tool.TryGetProperty("schema", out JsonElement schemaElement) ? schemaElement.GetRawText() : "{}"));
                 }
             }
 
             List<string> asks = [];
-            if (root.TryGetProperty("asksPermission", out JsonElement asksElement) &&
-                asksElement.ValueKind == JsonValueKind.Array)
+            if (root.TryGetProperty("asksPermission", out JsonElement asksElement))
             {
+                if (asksElement.ValueKind != JsonValueKind.Array)
+                {
+                    rejectionReason = "'asksPermission' must be an array of capability names";
+                    return false;
+                }
+
                 foreach (JsonElement ask in asksElement.EnumerateArray())
                 {
-                    if (ask.ValueKind == JsonValueKind.String)
+                    if (ask.ValueKind != JsonValueKind.String)
                     {
-                        asks.Add(ask.GetString() ?? "");
+                        rejectionReason = "each 'asksPermission' entry must be a string";
+                        return false;
                     }
+                    asks.Add(ask.GetString() ?? "");
                 }
             }
 
@@ -222,6 +252,10 @@ public sealed class PluginManifest
             }
 
             if (!ValidateSurfaces(parsed, out rejectionReason))
+            {
+                return false;
+            }
+            if (!ValidatePermissions(parsed, out rejectionReason))
             {
                 return false;
             }
@@ -347,6 +381,45 @@ public sealed class PluginManifest
         rejectionReason = string.Empty;
         return true;
     }
+
+    private static bool ValidatePermissions(PluginManifest plugin, out string rejectionReason)
+    {
+        HashSet<string> declared = new(StringComparer.OrdinalIgnoreCase);
+        foreach (string scope in plugin.AsksPermission)
+        {
+            if (!IsPermissionScope(scope) || !declared.Add(scope))
+            {
+                rejectionReason = $"permission scope '{scope}' is invalid or duplicated";
+                return false;
+            }
+        }
+
+        foreach (PluginTool tool in plugin.Tools)
+        {
+            if (string.IsNullOrWhiteSpace(tool.Name) || string.IsNullOrWhiteSpace(tool.Description))
+            {
+                rejectionReason = "every tool needs a name and description";
+                return false;
+            }
+            if (tool.Permission is not null && !IsPermissionScope(tool.Permission))
+            {
+                rejectionReason = $"tool '{tool.Name}' has invalid permission scope '{tool.Permission}'";
+                return false;
+            }
+            if (!string.IsNullOrWhiteSpace(tool.Permission) && !declared.Contains(tool.Permission))
+            {
+                rejectionReason = $"tool '{tool.Name}' requests undeclared permission scope '{tool.Permission}'";
+                return false;
+            }
+        }
+
+        rejectionReason = string.Empty;
+        return true;
+    }
+
+    private static bool IsPermissionScope(string value) =>
+        value.Length is > 0 and <= 96 && char.IsAsciiLetter(value[0]) &&
+        value.All(character => char.IsAsciiLetterOrDigit(character) || character is '.' or '_' or '-');
 
     private static bool ValidateStringInputs(PluginSurfaceManifest surface, PluginTool tool,
         HashSet<string> inputNames, out string rejectionReason)

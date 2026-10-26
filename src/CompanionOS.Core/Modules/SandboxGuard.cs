@@ -23,13 +23,15 @@ public sealed class PermissionRequest
     private readonly TaskCompletionSource<PermissionDecision> _answerSource =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-    public PermissionRequest(string moduleId, string moduleName, string toolName, string question, ToolTier tier)
+    public PermissionRequest(string moduleId, string moduleName, string toolName, string question, ToolTier tier,
+        string? permissionScope = null)
     {
         ModuleId = moduleId;
         ModuleName = moduleName;
         ToolName = toolName;
         Question = question;
         Tier = tier;
+        PermissionScope = permissionScope;
     }
 
     public Guid Id { get; } = Guid.NewGuid();
@@ -38,6 +40,7 @@ public sealed class PermissionRequest
     public string ToolName { get; }
     public string Question { get; }
     public ToolTier Tier { get; }
+    public string? PermissionScope { get; }
     public DateTimeOffset RequestedAt { get; } = DateTimeOffset.Now;
 
     /// <summary>Completes the request. Later answers are ignored.</summary>
@@ -80,11 +83,15 @@ public sealed class SandboxGuard
     public async Task<bool> AuthorizeAsync(string moduleId, string moduleName, ModuleTool tool,
         string plainEnglishAction, CancellationToken cancellationToken)
     {
+        string auditAction = string.IsNullOrWhiteSpace(tool.PermissionScope)
+            ? plainEnglishAction
+            : $"[{tool.PermissionScope}] {plainEnglishAction}";
+
         if (tool.Tier == ToolTier.Reflex)
         {
             IrisEvent.Log("Sandbox", "permission.auto", LogLevel.Trace,
                 data: new Dictionary<string, string?> { ["tool"] = tool.Name, ["module"] = moduleId, ["tier"] = "reflex" });
-            await _audit.RecordAsync(moduleId, tool.Name, tool.Tier, "auto", plainEnglishAction, cancellationToken)
+            await _audit.RecordAsync(moduleId, tool.Name, tool.Tier, "auto", auditAction, cancellationToken)
                 .ConfigureAwait(false);
             return true;
         }
@@ -95,7 +102,7 @@ public sealed class SandboxGuard
             {
                 IrisEvent.Log("Sandbox", "permission.granted", LogLevel.Trace,
                     data: new Dictionary<string, string?> { ["tool"] = tool.Name, ["module"] = moduleId, ["tier"] = "scoped" });
-                await _audit.RecordAsync(moduleId, tool.Name, tool.Tier, "granted", plainEnglishAction, cancellationToken)
+                await _audit.RecordAsync(moduleId, tool.Name, tool.Tier, "granted", auditAction, cancellationToken)
                     .ConfigureAwait(false);
                 return true;
             }
@@ -105,17 +112,24 @@ public sealed class SandboxGuard
         {
             IrisEvent.Log("Sandbox", "permission.granted", LogLevel.Trace,
                 data: new Dictionary<string, string?> { ["tool"] = tool.Name, ["module"] = moduleId, ["tier"] = "system-critical" });
-            await _audit.RecordAsync(moduleId, tool.Name, tool.Tier, "granted", plainEnglishAction, cancellationToken)
+            await _audit.RecordAsync(moduleId, tool.Name, tool.Tier, "granted", auditAction, cancellationToken)
                 .ConfigureAwait(false);
             return true;
         }
 
-        PermissionRequest request = new(moduleId, moduleName, tool.Name, plainEnglishAction, tool.Tier);
+        PermissionRequest request = new(moduleId, moduleName, tool.Name,
+            string.IsNullOrWhiteSpace(tool.PermissionScope)
+                ? plainEnglishAction
+                : $"{plainEnglishAction} Requested access: {tool.PermissionScope}.",
+            tool.Tier, tool.PermissionScope);
         _events.Publish(new PermissionRequestedEvent { Request = request });
         IrisEvent.Log("Sandbox", "permission.asked", LogLevel.Info,
             data: new Dictionary<string, string?>
             {
-                ["tool"] = tool.Name, ["module"] = moduleId, ["tier"] = tool.Tier.ToString()
+                ["tool"] = tool.Name,
+                ["module"] = moduleId,
+                ["tier"] = tool.Tier.ToString(),
+                ["scope"] = tool.PermissionScope
             });
 
         PermissionDecision decision;
@@ -150,10 +164,11 @@ public sealed class SandboxGuard
             {
                 ["tool"] = tool.Name,
                 ["module"] = moduleId,
-                ["decision"] = outcome
+                ["decision"] = outcome,
+                ["scope"] = tool.PermissionScope
             });
 
-        await _audit.RecordAsync(moduleId, tool.Name, tool.Tier, outcome, plainEnglishAction, cancellationToken)
+        await _audit.RecordAsync(moduleId, tool.Name, tool.Tier, outcome, auditAction, cancellationToken)
             .ConfigureAwait(false);
 
         return decision != PermissionDecision.Deny;

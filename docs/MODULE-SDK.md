@@ -21,8 +21,12 @@ permission, activity, and shell contracts so each integration feels like part of
   as a model-selected tool. All inputs in one surface are string fields shared by its buttons
   and must match each target tool's JSON schema. Semantic icon keys use Iris's built-in glyph set;
   a module's icon also appears in the activity card.
-- Every external tool asks for approval on each call. Manifest permission labels are shown as
-  information only; they do not grant or enforce individual capabilities yet.
+- External tools use Iris's existing system-critical permission gate. A first call asks for
+  approval; a saved "always allow" grant can authorize later calls to that tool without another
+  prompt. A tool may name one capability in `permission`, and the manifest must also list that
+  scope in `asksPermission`. Iris shows the scope in the permission prompt and audit trail. The
+  scope is currently descriptive metadata: it does not enforce OS isolation or independently
+  grant/revoke access across tools. External processes still run with the current user's OS access.
 - MCP tools may send `notifications/progress` after Iris supplies `_meta.progressToken` with
   `tools/call`. Iris correlates those messages to the plugin, tool, and conversation and
   publishes `ModuleProgressEvent`. Intermediate updates are throttled to avoid UI event floods.
@@ -45,7 +49,8 @@ work must define and implement:
    hooks, installation review, enable/disable/update/removal, and actionable diagnostics.
 2. Permission scopes that are explicit, reviewable, revocable, and enforced by Iris. Read
    access to contacts must be distinct from sending messages; consequential actions must still
-   have user control.
+   have user control. Current `permission` labels document and display intent; they are not yet
+   independent grants or OS-enforced capabilities.
 3. A declarative UI contract that grows the current sidebar schema into stateful cards, typed
    forms, branded icons, buttons, and independently controlled overlays. Iris owns rendering,
    focus, accessibility, placement, and visibility policy; modules publish state and named
@@ -92,6 +97,7 @@ allow-list. The module stays disabled until the user explicitly enables it.
   "transport": "mcp",
   "command": ["node", "server.js"],
   "disabled": true,
+  "asksPermission": ["messages.send"],
   "tools": [
     {
       "name": "send_message",
