@@ -1,24 +1,23 @@
 # Roadmap
 
-Each milestone ends at a state you can live in daily. "Done" means the code in this repository
-does it; "next" means it does not yet.
+Each milestone describes shipped implementation and remaining acceptance work. A class, screen, or green build alone does not mean the feature is ready for daily use; release readiness is defined by `docs/END-GOAL.md` and target-machine verification.
 
-## M1 — Immortal skeleton · done
+## M1 - Immortal skeleton: foundation shipped
 
 Avalonia shell, chat with batched streaming, status orb, overlay, OpenAI-compatible brain,
 llama-server lifecycle, sleep and wake, atomic settings, WAL memory, turn journal.
 
-## M2 — Synaptic memory · done
+## M2 - Synaptic memory: foundation shipped
 
 Four layers, fifteen link types with polarity, spreading activation, plain-English intuition
 block, decay, consolidation, live graph view with inspector, export.
 
-## M3 — Module engine · done
+## M3 - Module engine: foundation shipped; platform growth continues in M8
 
 `IAssistantModule`, dynamic routing with an eight-tool cap, three-tier sandbox with a
 15-second auto-deny and permanent audit trail, built-in modules: core tools, music player
 (library search across the user's real folders, playlists), system control (timers, notes,
-app launch, machine status, file search). Nothing is ever loaded from disk at runtime.
+app launch, machine status, file search). Built-ins are compiled into Iris; optional external modules run as separate processes under M8.
 
 Music indexing now runs off the UI thread with cancellation and explicit limits (64 roots,
 2,000 folders, 50,000 entries, 10,000 discovered tracks, depth 24, and a 4-second cooperative
@@ -27,22 +26,29 @@ cancelled or partial, reports partial/unavailable/link-skipped results in the pl
 and bounds folder browsing. This is a safety and responsiveness baseline; very large libraries
 still need a resumable incremental index and real-device playback validation.
 
-## M4 — Real-time voice · done
+## M4 - Voice conversation: implementation shipped; acceptance remains
 
-Offline Whisper or HTTP transcription, adaptive voice activity detection, wake matcher with
-tolerance for greetings and one-letter speech errors, one neural-only synthesis engine behind
-a locked `VoiceProfile`, cached reflex phrases, barge-in that stops audio immediately. There
-is no Windows-voice fallback: if the neural engine is not running, she does not speak and
-she reports it.
+Voice enters the same conversation coordinator as typed chat through Whisper or configured HTTP
+recognition. Default output is the managed local Pocket TTS worker behind a locked VoiceProfile;
+a configured HTTP speech endpoint is also supported. Cached reflexes and barge-in are implemented.
+There is no silent Windows voice fallback. Recognition and synthesis remain separate stages, not a
+single native audio model. Output quality, latency, device recovery, and real-room behavior need
+target-machine verification.
 
-**Still rough:** the current VAD is energy-based with a moving noise floor. A Silero VAD ONNX
-pass would make barge-in and end-of-speech detection sharper in noisy rooms.
+Still open: end-to-end microphone/speaker scenarios, noisy-room and barge-in tuning, measured warm
+and cold latency, and energy-based VAD accuracy. Add another runtime only if measured target-
+machine results justify its disk and resource cost.
 
-## M5 — Screen vision and gaming mode · done
+## M5 - Screen vision and gaming mode: implementation shipped; acceptance remains
 
-Ambient awareness (window, media, CPU, RAM, battery, idle), on-demand and live-share capture
-gated by a 64-bit difference hash, 896 px JPEG frames, game detection with learned
-exclusions, and a full GPU release when a game starts.
+Ambient awareness (window, media, CPU, RAM, battery, idle), on-demand screen capture, live-share
+capture gated by a 64-bit difference hash, 896 px JPEG frames, learned game exclusions, and GPU
+release on Gaming Mode are implemented.
+
+This is on-demand image context alongside speech recognition that produces text, not continuous
+audiovisual perception or a unified multimodal model. Source freshness, capture limitations,
+monitor/scaling edge cases, resource measurements, and target-machine transitions still need
+verification.
 
 ## M6 — Discovery modules · replaced
 
@@ -87,6 +93,36 @@ complete until all stages below are shipped:
 First-party integrations should dogfood the same public contracts. External code must remain
 process-isolated and explicitly reviewed; placing an arbitrary script or DLL in a folder must
 never silently grant it access to Iris or the user's accounts.
+
+## M9 - Integrated awareness and self-feedback: active
+
+Iris must behave as one companion across sensing, conversation, memory, voice, tools, and UI.
+The current code already routes spoken and typed requests through the same turn loop, includes
+available ambient context and recalled memory in the prompt, returns tool results for follow-up
+reasoning, and publishes typed events for UI and diagnostics. That is a connected foundation,
+not yet complete multimodal awareness or reliable autonomous planning.
+
+Remaining work:
+
+1. Give observations and subsystem status a source, timestamp/freshness, and explicit
+   unavailable/disabled/stale state; distinguish configured capability from something Iris
+   actually observed in this turn.
+2. Connect listening, recognition confidence, wake state, media-pause ownership, tool progress,
+   speech playback, cancellation, and recovery through correlated, inspectable turn/activity state.
+3. Show what memory informed a reply, with provenance and correction/forget controls; verify
+   memory writes, consolidation, conflicts, and long-session bounds.
+4. Make multi-step work inspectable and interruptible. Iris must verify each result, ask when
+   ambiguity or impact warrants it, and explain partial failure without inventing progress.
+5. Measure idle, voice, model, vision, music, and gaming resource use on target hardware; tune for
+   responsiveness while Iris yields to foreground work.
+6. Exercise cross-component failures: missing mic/speaker/model, stale or denied vision, offline
+   voice service, model/tool timeout, permission refusal, device loss, sleep/gaming, and cancel.
+   One unavailable sense must not take down unrelated capabilities.
+
+The current design is a low-resource multimodal pipeline (recognized speech text plus occasional
+captured images and structured machine context), not a claim of human awareness or a single
+native audio/video model. Evaluate runtime changes against target hardware and the dependency and
+storage budget.
 
 ## Also next, in order of value
 

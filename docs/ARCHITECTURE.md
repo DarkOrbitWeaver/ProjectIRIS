@@ -126,16 +126,9 @@ current contract and remaining platform work.
 battery), reads media sessions through Windows SMTC, and gates screen capture with a 64-bit
 difference hash so an unchanged screen costs nothing.
 
-`VoicePipeline` owns the audio path: microphone → adaptive VAD → Whisper or HTTP
-transcription → wake matcher → brain. On the way out: sentence splitter → HTTP or Windows
-synthesis → NAudio playback with a 50 ms loudness envelope that drives the orb.
+`VoicePipeline` owns the audio path: microphone input is segmented by adaptive VAD, transcribed by Whisper or HTTP, checked by the wake matcher, and passed to the brain. Replies are split into sentences and rendered by the managed Pocket TTS worker by default (or a configured HTTP speech endpoint), then played through NAudio; output amplitude drives the orb.
 
-Her voice identity is `VoiceProfile` (engine + speaker + rate + pitch), stored in settings
-and used to name the reflex cache, so an engine change rebuilds the cache instead of
-replaying yesterday's timbre. `VoiceSetupView` is where that identity is decided: it renders
-real previews through the same synthesizer and writes `Voice.ChosenByUser` when the user
-picks one by ear. `VoiceGallery` builds that shortlist and can be used without any audio
-device at all.
+Voice identity is `VoiceProfile` (engine, speaker, rate, and pitch), stored in settings. The chosen profile drives normal replies and cached reflexes. Pocket TTS is the managed local CPU default; a configured HTTP voice is an alternative. There is no Windows voice fallback: if the configured engine cannot render, Iris reports that she cannot speak.
 
 Three seams keep the microphone honest. `IWakeGate` (`UtteranceShapeWakeGate`: a minimum
 duration and a peak level) drops door slams before they cost a transcription pass;
