@@ -1491,6 +1491,56 @@ public sealed class CoreRegressionTests
         Assert.Equal(expectedClaim, SpeechPlanner.LooksLikeUnbackedClaim(answer));
     }
 
+    // The 20:25 run replaced her correct "what am I watching" answer with the receipt
+    // rescue, because the video's own words ("ASMR playlist playing …") met the old
+    // claim regex. Reality described aloud is information, not a claim of work.
+    [Theory]
+    [InlineData("You are watching an ASMR playlist playing and some stuff.", false)]
+    [InlineData("The video is paused on YouTube.", false)]
+    [InlineData("I think the song you're playing is great.", false)]
+    [InlineData("Let me check the library, boss.", true)]
+    [InlineData("I'll open the file now.", true)]
+    [InlineData("I just paused it, boss.", true)]
+    public void MediaStatesAreNotClaimsButPromisesWithoutWorkAre(
+        string answer, bool expectedClaim)
+    {
+        Assert.Equal(expectedClaim, SpeechPlanner.LooksLikeUnbackedClaim(answer));
+    }
+
+    [Theory]
+    [InlineData("play a song from our playlist", true)]
+    [InlineData("resume the music", true)]
+    [InlineData("whats am i watching rn", false)]
+    [InlineData("any", false)]
+    [InlineData("whats on your mind", false)]
+    public void ClearOrdersAreRecognizedAsActionRequests(string userText, bool expected)
+    {
+        Assert.Equal(expected, SpeechPlanner.IsActionRequest(userText));
+    }
+
+    [Theory]
+    [InlineData("You're watching the ASMR one — want me to play that?", true)]
+    [InlineData("Which playlist, boss?", true)]
+    [InlineData("You are watching an ASMR playlist.", false)]
+    [InlineData("Nothing got done that turn.", false)]
+    public void PermissionAskingIsSpottedButPlainAnswersPass(string answer, bool expected)
+    {
+        Assert.Equal(expected, SpeechPlanner.LooksLikeOfferInsteadOfAction(answer));
+    }
+
+    [Fact]
+    public void LongSpeechCollapsesToTheVerdictAndOneShortTag()
+    {
+        // The 20:15 records: 151 characters of monologue took nine seconds of speech.
+        string answer = "Sure boss, I can play something from your library right now without any problem. " +
+                        "If you want anything specific just tell me the name of the song or the artist. " +
+                        "I could also create a brand new playlist from the likes you saved yesterday.";
+
+        string spoken = SpeechPlanner.TrimForSpeech(answer, 240);
+
+        Assert.Equal("Sure boss, I can play something from your library right now without any problem.", spoken);
+    }
+
     [Theory]
     [InlineData("", true)]
     [InlineData("Boss.", true)]

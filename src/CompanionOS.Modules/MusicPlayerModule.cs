@@ -132,9 +132,9 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
     {
         new(
             "play_music",
-            "Play a track from her music library. Can take a description of what to play.",
+            "Play a track from her music library. \"A song\", \"anything\", \"any track\" and similar vague asks mean: call this WITHOUT a query and let the library pick; do not invent mood filters.",
             ToolTier.Reflex,
-            """{"type":"object","properties":{"query":{"type":"string","description":"Track, mood or artist. Leave empty to resume."}},"required":[]}""",
+            """{"type":"object","properties":{"query":{"type":"string","description":"Track or artist name. Optional — leave empty to play whatever the library serves."}},"required":[]}""",
             "play music", "play", "song", "track", "put on"),
 
         new("pause_music", "Pause the currently playing music.", ToolTier.Reflex,

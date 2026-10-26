@@ -544,14 +544,20 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
             {
                 answerText = turn.Text.Length > 0 ? turn.Text : roundText.ToString().Trim();
 
-                // The OS checks the model, not the other way round. A draft that announces
-                // completed work behind zero *succeeded* receipts gets exactly one retry:
-                // the draft is echoed back with a receipt check, and the model must call
-                // the tool or say plainly what did not happen. This covers both lies the
-                // run has met: announcing work with no tools run, and announcing a success
-                // right after a hand refused. And if her own words collapse instead
-                // ("Boss." and silence), the receipts answer for her.
-                if (SpeechPlanner.LooksLikeUnbackedClaim(answerText) && !anyToolSucceeded)
+                // Gates pay rent only where work was asked for. Chatter and informational
+                // turns ("what am I watching?") are never receipt-checked: on 20:25 the
+                // rescue replaced her *correct* answer because the gate ran everywhere.
+                // An action turn is one whose hands ran or failed, or whose request asks
+                // for an action — everything else ships exactly as she wrote it.
+                bool actionTurn = toolLedger.Count > 0 ||
+                    (routedTools.Count > 0 && SpeechPlanner.IsActionRequest(userText));
+                bool unbackedClaim = actionTurn &&
+                    SpeechPlanner.LooksLikeUnbackedClaim(answerText) && !anyToolSucceeded;
+                bool permissionStall = actionTurn && toolLedger.Count == 0 &&
+                    routedTools.Count > 0 && !unbackedClaim &&
+                    SpeechPlanner.IsActionRequest(userText) &&
+                    SpeechPlanner.LooksLikeOfferInsteadOfAction(answerText);
+                if (unbackedClaim || permissionStall)
                 {
                     if (!honestyRetryUsed)
                     {
@@ -577,7 +583,8 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
                                 : "RECEIPT CHECK: no tool has run in this turn yet — there is no confirmation on record " +
                                   "that anything was played, paused, added, opened, saved or sent. Your draft announced an " +
                                   "action as done. Either call the tool now and act on its result, or answer again " +
-                                  "honestly in one short sentence: say what has NOT happened yet, then offer to do it."
+                                  "honestly in one short sentence: say what has NOT happened yet, then offer to do it. " +
+                                  "A clear order is an instruction, not a question — do not ask permission; act."
                             : "RECEIPT CHECK: the hands you moved this turn did not complete their work: " +
                               string.Join("; ", toolLedger) + ". That is the truth on record. Answer again in one short honest " +
                               "sentence: say it did not go through and why; then offer the nearest working next step. " +

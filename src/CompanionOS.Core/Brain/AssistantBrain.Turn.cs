@@ -374,8 +374,9 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
             return $"That did not go through.{why} Want me to try another way?";
         }
 
-        return "Nothing has happened yet — that turn ended without this getting done. " +
-               "Say the word and I will go for it.";
+        // One sentence, one segment: the 104-character version of this line was 5.8
+        // seconds of speech for a turn that accomplished nothing.
+        return "Nothing got done that turn — say the word and I will go for it.";
     }
 
     /// <summary>Keeps the first sentence of a refusal — the honest "why", not a wall.</summary>

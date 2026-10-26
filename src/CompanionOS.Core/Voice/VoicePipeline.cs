@@ -919,10 +919,15 @@ public sealed class VoicePipeline : IAsyncDisposable
         string turnId = IrisEvent.CurrentCorrelationId ?? string.Empty;
         _events.Publish(new SpeechEvent { IsSpeaking = true, Text = text, TurnId = turnId });
 
+        // Synthesis is pipelined: while one sentence plays, the next synthesizes
+        // alongside. The serial loop spent a whole engine pass (~2-4 s of dead air)
+        // before every sentence boundary — the stutter the boss heard all evening.
+        (Task<SpeechAudio?> Task, long Started) prefetch = default;
         try
         {
-            foreach (string sentence in sentences)
+            for (int index = 0; index < sentences.Count; index++)
             {
+                string sentence = sentences[index];
                 cancellationToken.ThrowIfCancellationRequested();
 
                 if (Synthesizer is IStreamingSpeechSynthesizer streamingSynthesizer)
@@ -984,11 +989,28 @@ public sealed class VoicePipeline : IAsyncDisposable
                     continue;
                 }
 
-                long synthesisStarted = System.Diagnostics.Stopwatch.GetTimestamp();
-                SpeechAudio? audio = await Synthesizer
-                    .SynthesizeAsync(sentence, Profile, cancellationToken)
-                    .ConfigureAwait(false);
-                double synthesisMs = System.Diagnostics.Stopwatch.GetElapsedTime(synthesisStarted).TotalMilliseconds;
+                if (prefetch.Task is null)
+                {
+                    // First sentence on the file path (or re-entry after a failed one).
+                    prefetch = (Synthesizer.SynthesizeAsync(sentence, Profile, cancellationToken),
+                        System.Diagnostics.Stopwatch.GetTimestamp());
+                }
+
+                SpeechAudio? audio = await prefetch.Task.ConfigureAwait(false);
+                double synthesisMs = System.Diagnostics.Stopwatch.GetElapsedTime(prefetch.Started).TotalMilliseconds;
+
+                if (index + 1 < sentences.Count)
+                {
+                    // Hand the engine the next sentence before this one makes a sound:
+                    // the gap between spoken sentences collapses from a whole synthesis
+                    // pass to near zero.
+                    prefetch = (Synthesizer.SynthesizeAsync(sentences[index + 1], Profile, cancellationToken),
+                        System.Diagnostics.Stopwatch.GetTimestamp());
+                }
+                else
+                {
+                    prefetch = default;
+                }
 
                 if (audio is null)
                 {
@@ -1056,6 +1078,20 @@ public sealed class VoicePipeline : IAsyncDisposable
         }
         finally
         {
+            // Never leave an engine request unobserved: on interruption it is already
+            // cancelled; after a stopped turn its task is drained quietly.
+            if (prefetch.Task is not null)
+            {
+                try
+                {
+                    await prefetch.Task.ConfigureAwait(false);
+                }
+                catch
+                {
+                    // Drained: cancellation or a fault we chose not to use.
+                }
+            }
+
             IrisEvent.Log("Voice", "speech.turn_timing", LogLevel.Trace,
                 durationMs: System.Diagnostics.Stopwatch.GetElapsedTime(speakingStarted).TotalMilliseconds,
                 data: new Dictionary<string, string?>
