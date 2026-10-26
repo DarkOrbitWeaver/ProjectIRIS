@@ -48,9 +48,8 @@ exclusions, and a full GPU release when a game starts.
 
 The YouTube finder was removed rather than pretending to control a signed-in account. The
 external module path has since been reintroduced as manifest-declared command and MCP
-processes, routed through the same module host. This is a foundation, not yet the complete
-user-facing scripting platform: external modules cannot contribute hosted UI, their tool
-schemas are duplicated in the manifest, and permission grants are still coarse.
+processes, routed through the same module host. Its current contract and remaining gaps are
+tracked under M8 and in `docs/MODULE-SDK.md`.
 
 ## M7 — The body · next
 
@@ -62,21 +61,24 @@ body crash never touches her mind.
 ## M8 — Extensible module platform · active foundation
 
 Make adding integrations a core product capability, not a list of features compiled into Iris.
-The foundation now carries truthful MCP progress notifications into a shared, non-activating
-activity card; discovers paginated MCP tools with bounded startup cost; routes relevant tools
-from large catalogs; and lets external manifests contribute bounded sidebar forms and buttons.
-Named capability scopes have separate saved grants and Settings revocation. The platform is not
+The foundation now carries truthful MCP and command progress into shared activity UI; discovers
+MCP and command tools at startup with bounded cost; routes relevant tools from large catalogs;
+and lets external manifests contribute bounded sidebar forms, buttons, and up to three independent
+overlays. Named capability scopes have separate saved grants and Settings revocation. A runnable
+PowerShell starter module demonstrates discovery, native UI, and progress. The platform is not
 complete until all stages below are shipped:
 
-1. **Stable SDK and lifecycle:** dynamic MCP tool discovery currently works at startup; remaining
-   work includes command discovery, live refresh, clear install, update, disable, and removal
-   flows, plus a starter kit and validation diagnostics.
+1. **Stable SDK and lifecycle:** both transports discover schemas at startup. Remaining work
+   includes live refresh, clear install/update/removal flows, richer authoring tools, and actionable
+   validation diagnostics in the app. External modules can be enabled or disabled for the next
+   launch; they are not hot-loaded.
 2. **Permission capabilities:** named grants and revocation currently work at Iris's tool-call
    boundary. Remaining work includes OS-level process isolation and mandatory per-action review
    for consequential actions such as sending messages or changing accounts.
-3. **Hosted module UI:** validated declarative panels, inputs, buttons, icons, persistent state,
-   and multiple independently controlled overlays. One activity-attached overlay per module now
-   works; the shell owns rendering and focus policy while modules provide data and actions.
+3. **Hosted module UI:** validated declarative surfaces, inputs, buttons, icons, and multiple
+   independently controlled overlays are implemented. Persistent module state, richer typed forms,
+   and explicit show/hide controls remain. Iris owns rendering and focus policy while modules
+   provide data and actions.
 4. **Activity contract:** correlated start, step, progress, wait, result, error, and cancel states
    shared by chat, the activity card, notifications, and diagnostics. Percentage remains optional.
 5. **Safe scale:** bounded execution, cancellation, versions, resource declarations, failure

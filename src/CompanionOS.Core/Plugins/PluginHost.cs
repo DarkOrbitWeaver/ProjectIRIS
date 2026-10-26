@@ -8,6 +8,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
+using CompanionOS.Core.Configuration;
 using CompanionOS.Core.Diagnostics;
 using CompanionOS.Core.Events;
 using CompanionOS.Core.Modules;
@@ -48,9 +49,7 @@ public sealed class PluginHost : IDisposable
     public PluginHost(EventBus events, string? pluginsRoot = null)
     {
         _events = events;
-        _pluginsRoot = pluginsRoot ?? Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "CompanionOS", "plugins");
+        _pluginsRoot = pluginsRoot ?? CompanionPaths.ModulesDirectory;
     }
 
     /// <summary>Every plugin that loaded cleanly, in folder order.</summary>
@@ -62,9 +61,9 @@ public sealed class PluginHost : IDisposable
     public string Root => _pluginsRoot;
 
     /// <summary>
-    /// Starts opted-in MCP servers and reads their current tool schemas before the
-    /// module router is built. Discovery is bounded and failures leave that plugin
-    /// with no callable discovered tools rather than a stale schema.
+    /// Reads schemas from opted-in MCP and command modules before the router is built.
+    /// Discovery is bounded and failures leave the plugin without callable discovered
+    /// tools rather than retaining stale schemas.
     /// </summary>
     public async Task PrepareEnabledAsync(CancellationToken cancellationToken)
     {

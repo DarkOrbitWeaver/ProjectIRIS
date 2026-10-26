@@ -108,13 +108,14 @@ replaceable piece if you ever want real embeddings.
 Built-in modules are registered from `AppModules.CreateBuiltInModules`. External modules
 currently use a validated `plugin.json` manifest and a separate command or MCP process; they
 are adapted into the same router and sandbox, and arbitrary DLLs are not loaded into Iris.
-MCP plugins may discover tools at startup; external tools use the shared router and call
-boundary. Modules can contribute bounded sidebar cards and one activity-attached overlay with
-text, inputs, buttons, and vetted semantic icons; the shell displays truthful MCP progress in
-that module's overlay while its tool runs. Named scopes now produce
-separate remembered consent grants with Settings revocation. The extension path still lacks OS
-capability isolation, independent overlays and dynamic surface state, and a complete install and
-update workflow. See `MODULE-SDK.md` for the current contract and remaining platform work.
+MCP and command plugins may discover tools at startup; external tools use the shared router and
+permission boundary. Modules can contribute bounded sidebar cards and up to three independent
+overlays with text, inputs, buttons, validated select controls, and vetted semantic or local PNG
+icons. The shell displays truthful MCP or command progress and declared surface updates while
+their tools run. Named scopes have separate remembered consent grants with Settings revocation.
+The extension path still lacks OS capability isolation, persistent module UI state, hot refresh,
+install/update/removal flows, and a complete activity lifecycle. See `MODULE-SDK.md` for the
+current contract and remaining platform work.
 
 ---
 

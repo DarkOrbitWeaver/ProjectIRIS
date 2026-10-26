@@ -19,8 +19,7 @@ namespace CompanionOS.Core.Plugins;
 ///   • "command"  — each call spawns a process; JSON (one line, UTF-8) goes in on
 ///                  stdin, one JSON line comes back on stdout. Exit code 0 = success.
 ///   • "mcp"      — the plugin speaks the Model Context Protocol over stdio: initialize,
-///                  tools/call, and progress notifications. Tool definitions currently live
-///                  in this manifest; dynamic tools/list discovery is a planned SDK feature.
+///                  tools/call, tools/list discovery, and progress notifications.
 ///
 /// Schema (v1):
 /// {
@@ -58,9 +57,9 @@ public sealed class PluginManifest
     public List<string> Command { get; init; } = new();
     public string WorkingDirectory { get; init; } = ".";
     public List<string> AsksPermission { get; init; } = new();
-    /// <summary>For MCP only, obtain callable schemas from tools/list at startup.</summary>
+    /// <summary>Obtain callable schemas from MCP tools/list or the command tools/list handshake at startup.</summary>
     public bool DiscoverTools { get; init; }
-    /// <summary>Manifest-authored tool policy; retained separately when MCP schemas are discovered.</summary>
+    /// <summary>Manifest-authored permission and execution policy, retained when schemas are discovered.</summary>
     public List<PluginTool> DeclaredTools { get; init; } = new();
     public List<PluginSurfaceManifest> Surfaces { get; init; } = new();
     /// <summary>Whether this external process is allowed to join Iris at next launch.

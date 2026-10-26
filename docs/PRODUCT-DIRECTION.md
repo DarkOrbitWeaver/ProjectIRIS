@@ -84,10 +84,17 @@ Do not label a subsystem complete unless all five are true:
 
 ### Gate 4 — Grow safely
 
-- Add a capability manifest for every built-in module and a user-facing permission/grant view.
-- Define contracts for future integrations before implementation: lifecycle, data boundary,
-  overlay surface, failure behavior, test matrix and removal path.
-- Only then introduce avatar, richer voice, global hotkeys and third-party integrations.
+- Named capability grants and a user-facing revocation view now exist for external modules;
+  extend the same explicit policies to every built-in module and consequential action.
+- External command/MCP integrations already use a shared router, discovered tool schemas, native
+  surfaces, bounded overlays and activity. Complete their lifecycle, credential handling,
+  diagnostics, version compatibility, and removal path before claiming the scripting platform is
+  finished.
+- Keep defining each new integration by its data boundary, permission policy, UI/activity contract,
+  failure behavior and verification scenarios. The existing module path is a foundation, not a
+  reason to hardcode each future service into the app.
+- Avatar, richer voice, and global hotkeys remain separate product work; they must respect the
+  same hardware, focus, privacy and recovery rules.
 
 ## Current truth
 

@@ -81,11 +81,7 @@ src/
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | What comes next, in milestones |
 | [`docs/PRODUCT-DIRECTION.md`](docs/PRODUCT-DIRECTION.md) | The completion standard, contextual-overlay rules, and delivery gates |
 
-Read `ARCHITECTURE.md` first if you want to change something, then add a module in
-`src/CompanionOS.Modules/` and list it in `AppModules` — growing her is a build decision,
-by design.
-
----
+Read `ARCHITECTURE.md` first if you want to change core behavior. First-party C# modules still ship with the app; external integrations can be added as module folders without a core rewrite. See [`docs/MODULE-SDK.md`](docs/MODULE-SDK.md) and the runnable [`hello-command` example](examples/modules/hello-command/README.md).
 
 ## Her data
 
@@ -94,9 +90,7 @@ Everything she knows lives in **one folder**, never inside the repository:
 * Windows default: `%LOCALAPPDATA%\CompanionOS`
 * override with the `COMPANIONOS_HOME` environment variable
 
-No telemetry. No network calls except to your own local endpoints — the model, the ears
-and the voice are all your machine. There are no external plugins, no drop-in scripts and
-no self-installing modules: what ships in the box is what runs.
+No telemetry. The local model, ears, and voice run on your machine. External modules are opt-in folders under `%LOCALAPPDATA%\CompanionOS\modules` (or the configured data directory); Iris does not install or enable module code silently. An enabled external module runs as your Windows user, so review its code and requested capabilities first. See [`docs/MODULE-SDK.md`](docs/MODULE-SDK.md) for the current contract.
 
 ---
 

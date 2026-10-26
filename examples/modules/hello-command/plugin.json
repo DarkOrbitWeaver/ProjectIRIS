@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "id": "hello-command",
+  "name": "Hello example",
+  "version": "0.1.0",
+  "description": "A tiny example of discovered tools, native controls, and live progress.",
+  "icon": "body",
+  "transport": "command",
+  "command": ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", "module.ps1"],
+  "workingDirectory": ".",
+  "asksPermission": [],
+  "discoverTools": true,
+  "disabled": true,
+  "tools": [
+    { "name": "say_hello" }
+  ],
+  "surfaces": [
+    {
+      "id": "greeting",
+      "title": "Say hello",
+      "slot": "sidebar",
+      "icon": "body",
+      "elements": [
+        { "id": "name", "type": "input", "name": "name", "label": "Name", "placeholder": "Who should Iris greet?" },
+        { "id": "say-hello", "type": "button", "label": "Say hello", "tool": "say_hello" },
+        { "id": "reply", "type": "text", "label": "Ready when you are." }
+      ]
+    }
+  ]
+}
