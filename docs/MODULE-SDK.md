@@ -24,11 +24,15 @@ permission, activity, and shell contracts so each integration feels like part of
   manifest permission policy still pass through the conservative system-critical approval gate;
   they simply have no named scope attached to the prompt yet.
 - External modules may declare up to six sidebar surfaces, each with at most twenty native
-  elements: plain text, text inputs, and buttons bound to that module's declared tools. A
+  elements: plain text, text inputs, and buttons bound to that module's offered tools. A
   button action is checked against its owning module and then uses the same permission gate
   as a model-selected tool. All inputs in one surface are string fields shared by its buttons
   and must match each target tool's JSON schema. Semantic icon keys use Iris's built-in glyph set;
   a module's icon also appears in the activity card.
+- The request router keeps the model-facing list to at most eight tools, chooses no more than two
+  relevant external modules, and ranks a large module's tools against the current request rather
+  than taking the first entries. It caches a compact module fingerprint when registering the
+  module and keeps the full installed tool catalog out of the repeated system prompt.
 - External tools use Iris's existing system-critical permission gate. A first call asks for
   approval; a saved "always allow" grant can authorize later calls to that tool without another
   prompt. A tool may name one capability in `permission`, and the manifest must also list that

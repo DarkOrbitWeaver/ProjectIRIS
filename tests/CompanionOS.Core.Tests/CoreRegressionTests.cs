@@ -329,6 +329,44 @@ public sealed class CoreRegressionTests
         }
     }
 
+    [Fact]
+    public async Task ModuleRouterFindsRelevantToolsBeyondTheFirstEightDeclarations()
+    {
+        EventBus events = new();
+        string temp = Path.Combine(Path.GetTempPath(), $"iris-router-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(temp);
+        SandboxGuard sandbox = new(events,
+            new FileAuditTrail(Path.Combine(temp, "audit.jsonl")),
+            new PermissionGrantStore(Path.Combine(temp, "permissions.json")));
+        await using ModuleHost host = new(new SettingsStore(), events, sandbox, memory: null!);
+        List<ModuleTool> tools = Enumerable.Range(0, 24)
+            .Select(index => new ModuleTool($"calendar_{index}", $"Read calendar event metadata {index}.",
+                ToolTier.Reflex, "{}", "calendar", "event"))
+            .Append(new ModuleTool("send_telegram_message", "Send a message to a Telegram contact.",
+                ToolTier.SystemCritical, "{}", "telegram", "send", "message", "contact"))
+            .ToList();
+        TestAssistantModule module = new("telegram", "Telegram", "Send messages to contacts.", tools);
+
+        try
+        {
+            await host.RegisterAsync(module);
+
+            IReadOnlyList<ModuleTool> routed = host.RouteTools(
+                "Send a Telegram message to Alex", out IReadOnlyList<IAssistantModule> selected);
+
+            Assert.Contains(module, selected);
+            Assert.Contains(routed, tool => tool.Name == "send_telegram_message");
+            Assert.DoesNotContain(routed, tool => tool.Name == "calendar_0");
+            Assert.True(routed.Count <= ModuleHost.MaximumToolsPerTurn);
+            Assert.DoesNotContain("calendar_0", host.DescribeCapabilities());
+            Assert.True(host.DescribeCapabilities().Length < 200);
+        }
+        finally
+        {
+            Directory.Delete(temp, recursive: true);
+        }
+    }
+
     [Theory]
     [InlineData("IRIS", true, "")]
     [InlineData("Hey, Iris!", true, "")]
@@ -957,5 +995,19 @@ public sealed class CoreRegressionTests
                 }
             }
         }
+    }
+
+    private sealed class TestAssistantModule(string id, string name, string purpose,
+        IReadOnlyList<ModuleTool> tools) : IAssistantModule
+    {
+        public string Id => id;
+        public string DisplayName => name;
+        public string Purpose => purpose;
+        public string CapabilityDescription => string.Join(' ', tools.Select(tool => tool.Description));
+        public IReadOnlyList<ModuleTool> Tools => tools;
+        public Task InitializeAsync(ModuleContext context, CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task<ToolResult> ExecuteAsync(ToolInvocation invocation, CancellationToken cancellationToken) =>
+            Task.FromResult(ToolResult.Ok("test"));
+        public Task ShutdownAsync() => Task.CompletedTask;
     }
 }

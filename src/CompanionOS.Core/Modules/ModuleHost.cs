@@ -32,6 +32,7 @@ public sealed class ModuleHost : IAsyncDisposable
     private readonly object _registryLock = new();
     private readonly Dictionary<string, IAssistantModule> _modulesById = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, IAssistantModule> _toolOwners = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, float[]> _moduleRoutingVectors = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _disabledModuleIds = new(StringComparer.OrdinalIgnoreCase);
 
     public ModuleHost(SettingsStore settings, EventBus events, SandboxGuard sandbox, IMemoryAccess memory)
@@ -77,10 +78,22 @@ public sealed class ModuleHost : IAsyncDisposable
     public async Task RegisterAsync(IAssistantModule module, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(module);
+        float[] routingVector = BuildModuleRoutingVector(module);
 
         lock (_registryLock)
         {
+            if (_modulesById.TryGetValue(module.Id, out IAssistantModule? replaced))
+            {
+                foreach (ModuleTool oldTool in replaced.Tools)
+                {
+                    if (_toolOwners.TryGetValue(oldTool.Name, out IAssistantModule? owner) && owner.Id == module.Id)
+                    {
+                        _toolOwners.Remove(oldTool.Name);
+                    }
+                }
+            }
             _modulesById[module.Id] = module;
+            _moduleRoutingVectors[module.Id] = routingVector;
             foreach (ModuleTool tool in module.Tools)
             {
                 if (_toolOwners.ContainsKey(tool.Name))
@@ -116,6 +129,7 @@ public sealed class ModuleHost : IAsyncDisposable
             {
                 return;
             }
+            _moduleRoutingVectors.Remove(moduleId);
 
             foreach (ModuleTool tool in module.Tools)
             {
@@ -178,14 +192,17 @@ public sealed class ModuleHost : IAsyncDisposable
     /// </summary>
     public IReadOnlyList<ModuleTool> RouteTools(string userMessage, out IReadOnlyList<IAssistantModule> selectedModules)
     {
-        List<IAssistantModule> enabledModules;
+        List<(IAssistantModule Module, float[] RoutingVector)> enabledModules;
         lock (_registryLock)
         {
             enabledModules = _modulesById.Values
                 .Where(module => !_disabledModuleIds.Contains(module.Id))
+                .Select(module => (module, _moduleRoutingVectors.GetValueOrDefault(module.Id) ??
+                    BuildModuleRoutingVector(module)))
                 .ToList();
         }
 
+        float[] requestVector = TextVectorizer.Embed(userMessage);
         List<ModuleTool> routedTools = new();
         HashSet<string> addedToolNames = new(StringComparer.OrdinalIgnoreCase);
         List<IAssistantModule> chosenModules = new();
@@ -194,10 +211,10 @@ public sealed class ModuleHost : IAsyncDisposable
         // The old implementation exposed all eight core tools first, filling the entire
         // eight-tool budget and silently starving Music and System Control forever.
         // Select the most relevant core hands, then leave room for routed modules.
-        foreach (IAssistantModule module in enabledModules.Where(module => module.AlwaysAvailable))
+        foreach ((IAssistantModule module, _) in enabledModules.Where(item => item.Module.AlwaysAvailable))
         {
             chosenModules.Add(module);
-            foreach (ModuleTool tool in SelectCoreTools(module.Tools, userMessage))
+            foreach (ModuleTool tool in SelectCoreTools(module.Tools, userMessage, requestVector))
             {
                 if (addedToolNames.Add(tool.Name))
                 {
@@ -207,35 +224,48 @@ public sealed class ModuleHost : IAsyncDisposable
         }
 
         // 2. Score the rest against the sentence and take the best two.
-        float[] requestVector = TextVectorizer.Embed(userMessage);
         List<(IAssistantModule Module, double Score)> scored = new();
 
-        foreach (IAssistantModule module in enabledModules.Where(module => !module.AlwaysAvailable))
+        foreach ((IAssistantModule module, float[] capabilityVector) in enabledModules
+                     .Where(item => !item.Module.AlwaysAvailable))
         {
-            float[] capabilityVector = TextVectorizer.Embed(
-                module.DisplayName + " " + module.Purpose + " " + module.CapabilityDescription);
-
             double score = TextVectorizer.Cosine(requestVector, capabilityVector);
             scored.Add((module, score));
         }
 
-        foreach ((IAssistantModule module, double score) in scored
-                     .Where(pair => pair.Score >= 0.08)
-                     .OrderByDescending(pair => pair.Score)
-                     .Take(2))
+        List<IAssistantModule> routedModules = scored
+            .Where(pair => pair.Score >= 0.08)
+            .OrderByDescending(pair => pair.Score)
+            .Take(2)
+            .Select(pair => pair.Module)
+            .ToList();
+        chosenModules.AddRange(routedModules);
+
+        int remainingToolSlots = Math.Max(0, MaximumToolsPerTurn - routedTools.Count);
+        string[] words = userMessage.Split((char[]?)null,
+            StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        List<(ModuleTool Tool, double Score, int Index)> moduleTools = new();
+        int toolIndex = 0;
+        foreach (IAssistantModule module in routedModules)
         {
-            chosenModules.Add(module);
             foreach (ModuleTool tool in module.Tools)
             {
-                if (routedTools.Count >= MaximumToolsPerTurn)
-                {
-                    break;
-                }
+                int keywordHits = CountKeywordHits(tool, words);
+                double lexical = TextVectorizer.Cosine(requestVector,
+                    TextVectorizer.Embed(tool.Name + " " + tool.Description + " " +
+                                         string.Join(' ', tool.RoutingKeywords)));
+                moduleTools.Add((tool, keywordHits * 2.0 + lexical, toolIndex++));
+            }
+        }
 
-                if (addedToolNames.Add(tool.Name))
-                {
-                    routedTools.Add(tool);
-                }
+        foreach ((ModuleTool tool, _, _) in moduleTools
+                     .OrderByDescending(item => item.Score)
+                     .ThenBy(item => item.Index)
+                     .Take(remainingToolSlots))
+        {
+            if (addedToolNames.Add(tool.Name))
+            {
+                routedTools.Add(tool);
             }
         }
 
@@ -250,7 +280,7 @@ public sealed class ModuleHost : IAsyncDisposable
     }
 
     private static IReadOnlyList<ModuleTool> SelectCoreTools(
-        IReadOnlyList<ModuleTool> tools, string userMessage)
+        IReadOnlyList<ModuleTool> tools, string userMessage, float[] requestVector)
     {
         const int coreToolBudget = 4;
         if (tools.Count <= coreToolBudget)
@@ -258,17 +288,14 @@ public sealed class ModuleHost : IAsyncDisposable
             return tools;
         }
 
-        string[] words = userMessage
-            .Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        string[] words = userMessage.Split((char[]?)null,
+            StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
         return tools
             .Select((tool, index) =>
             {
-                int keywordHits = tool.RoutingKeywords.Count(keyword =>
-                    words.Any(word => word.Contains(keyword, StringComparison.OrdinalIgnoreCase) ||
-                                      keyword.Contains(word, StringComparison.OrdinalIgnoreCase)));
-                double lexical = TextVectorizer.Cosine(
-                    TextVectorizer.Embed(userMessage),
+                int keywordHits = CountKeywordHits(tool, words);
+                double lexical = TextVectorizer.Cosine(requestVector,
                     TextVectorizer.Embed(tool.Name + " " + tool.Description + " " +
                                          string.Join(' ', tool.RoutingKeywords)));
                 // Stable index tie-break keeps the tool list deterministic for equal scores.
@@ -279,6 +306,20 @@ public sealed class ModuleHost : IAsyncDisposable
             .Take(coreToolBudget)
             .Select(item => item.Tool)
             .ToList();
+    }
+
+    private static int CountKeywordHits(ModuleTool tool, string[] words) =>
+        tool.RoutingKeywords.Count(keyword =>
+            words.Any(word => word.Contains(keyword, StringComparison.OrdinalIgnoreCase) ||
+                              keyword.Contains(word, StringComparison.OrdinalIgnoreCase)));
+
+    private static float[] BuildModuleRoutingVector(IAssistantModule module)
+    {
+        // Repeated boilerplate from a large tool catalog used to drown out its useful
+        // terms. Keep each capability word once, then cache the result on registration.
+        string uniqueCapabilities = string.Join(' ', TextVectorizer.Tokenize(module.CapabilityDescription)
+            .Distinct(StringComparer.Ordinal));
+        return TextVectorizer.Embed(module.DisplayName + " " + module.Purpose + " " + uniqueCapabilities);
     }
 
     /// <summary>Runs one tool call through the sandbox and reports what happened.</summary>
@@ -394,18 +435,13 @@ public sealed class ModuleHost : IAsyncDisposable
         return result;
     }
 
-    /// <summary>Short capability map inserted into the prompt so she knows her own body.</summary>
-    public string DescribeCapabilities()
-    {
-        List<string> lines = new();
-        foreach (IAssistantModule module in Modules.Where(module => IsEnabled(module.Id)))
-        {
-            string toolNames = string.Join(", ", module.Tools.Select(tool => tool.Name));
-            lines.Add($"- {module.DisplayName}: {module.Purpose} (tools: {toolNames})");
-        }
-
-        return lines.Count == 0 ? string.Empty : string.Join(Environment.NewLine, lines);
-    }
+    /// <summary>
+    /// Tool definitions are already supplied separately to the model for each request.
+    /// Avoid copying every installed module and every tool name into every system prompt.
+    /// </summary>
+    public string DescribeCapabilities() =>
+        "Relevant tools are selected for each request. Use only tools supplied for this turn, " +
+        "and never claim a capability that is not available in its tool list.";
 
     /// <summary>Panels contributed by modules, for the shell to host.</summary>
     public IReadOnlyList<ModuleSurface> GetSurfaces()
