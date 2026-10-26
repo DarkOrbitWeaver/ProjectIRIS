@@ -283,7 +283,7 @@ public sealed class ModuleHost : IAsyncDisposable
 
     /// <summary>Runs one tool call through the sandbox and reports what happened.</summary>
     public async Task<ToolResult> ExecuteAsync(string toolName, JsonElement arguments, string turnId,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, string? requiredModuleId = null)
     {
         IAssistantModule? owner;
         ModuleTool? tool;
@@ -295,7 +295,8 @@ public sealed class ModuleHost : IAsyncDisposable
                 candidate.Name.Equals(toolName, StringComparison.OrdinalIgnoreCase));
         }
 
-        if (owner is null || tool is null)
+        if (owner is null || tool is null ||
+            (requiredModuleId is not null && !owner.Id.Equals(requiredModuleId, StringComparison.OrdinalIgnoreCase)))
         {
             IrisEvent.Log("Modules", "tool.unknown", LogLevel.Warning, message: $"No tool named '{toolName}'.",
                 data: new Dictionary<string, string?>
@@ -303,7 +304,9 @@ public sealed class ModuleHost : IAsyncDisposable
                     ["tool"] = toolName,
                     ["turn"] = turnId
                 });
-            return ToolResult.Fail($"I do not have a tool called '{toolName}'.");
+            return ToolResult.Fail(requiredModuleId is null
+                ? $"I do not have a tool called '{toolName}'."
+                : $"Module '{requiredModuleId}' does not provide the '{toolName}' action.");
         }
 
         if (!IsEnabled(owner.Id))
@@ -323,7 +326,9 @@ public sealed class ModuleHost : IAsyncDisposable
             Phase = ConversationPhase.ToolStarted,
             TurnId = turnId,
             Text = tool.ShortLabel,
-            Detail = owner.DisplayName
+            Detail = owner.DisplayName,
+            ModuleId = owner.Id,
+            IconKey = owner.IconKey
         });
 
         bool isAllowed = await _sandbox

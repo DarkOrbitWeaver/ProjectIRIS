@@ -79,7 +79,7 @@ public sealed partial class ShellModel : ObservableObject
                 break;
 
             case ConversationPhase.AssistantStarted:
-                BeginActivity(payload.TurnId, "Thinking", "Iris", "Preparing a response");
+                BeginActivity(payload.TurnId, "Thinking", "Iris", "Preparing a response", "body");
                 _streamBuffer.Clear();
                 _streamingEntry = new ChatEntry
                 {
@@ -115,7 +115,7 @@ public sealed partial class ShellModel : ObservableObject
                 break;
 
             case ConversationPhase.ToolStarted:
-                BeginActivity(payload.TurnId, payload.Text, payload.Detail ?? "Module", "Working");
+                BeginActivity(payload.TurnId, payload.Text, payload.Detail ?? "Module", "Working", payload.IconKey);
                 Messages.Add(new ChatEntry
                 {
                     Role = ChatRole.Tool,
@@ -151,15 +151,17 @@ public sealed partial class ShellModel : ObservableObject
 
         ActivityMessage = string.IsNullOrWhiteSpace(payload.Message) ? ActivityMessage : payload.Message;
         ActivityModule = payload.ModuleName;
+        ActivityIconKey = payload.IconKey;
         ActivityProgress = payload.Progress;
         ActivityTotal = payload.Total;
     }
 
-    private void BeginActivity(string turnId, string message, string module, string detail)
+    private void BeginActivity(string turnId, string message, string module, string detail, string iconKey)
     {
         ActivityTurnId = turnId;
         ActivityMessage = message;
         ActivityModule = module;
+        ActivityIconKey = iconKey;
         ActivityDetail = detail;
         ActivityProgress = null;
         ActivityTotal = null;

@@ -1,5 +1,6 @@
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.Shapes;
 using Avalonia.Layout;
 using Avalonia.Media;
 using CompanionOS.App.Interface.Controls;
@@ -17,6 +18,7 @@ internal sealed class ActivityOverlayWindow : Window
     private const double CardHeight = 104;
 
     private readonly TextBlock _module;
+    private readonly Path _moduleIcon;
     private readonly TextBlock _step;
     private readonly TextBlock _detail;
     private readonly Border _progressTrack;
@@ -41,6 +43,7 @@ internal sealed class ActivityOverlayWindow : Window
 
         _module = Label(Palette.FontCaption, Palette.TextFaintBrush, FontWeight.SemiBold);
         _module.LetterSpacing = 0.9;
+        _moduleIcon = (Path)IconGlyph.Make(ModuleIconGlyph.Resolve("body"), 15, Palette.AccentSoftBrush);
         _step = Label(Palette.FontEmphasis, Palette.TextPrimaryBrush, FontWeight.SemiBold);
         _detail = Label(Palette.FontBody, Palette.TextSecondaryBrush, FontWeight.Medium);
 
@@ -68,8 +71,15 @@ internal sealed class ActivityOverlayWindow : Window
         });
         _open = IconButton(IconGlyph.OverlayFrame, "Open Iris", openMainWindow);
 
+        StackPanel moduleHeading = new()
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 7,
+            VerticalAlignment = VerticalAlignment.Center,
+            Children = { _moduleIcon, _module }
+        };
         Grid header = new() { ColumnDefinitions = new ColumnDefinitions("*,Auto,Auto") };
-        header.Children.Add(_module);
+        header.Children.Add(moduleHeading);
         Grid.SetColumn(_open, 1);
         header.Children.Add(_open);
         Grid.SetColumn(_hide, 2);
@@ -104,6 +114,7 @@ internal sealed class ActivityOverlayWindow : Window
         }
 
         _module.Text = $"{model.ActivityModule.ToUpperInvariant()} · IN PROGRESS";
+        _moduleIcon.Data = Avalonia.Media.StreamGeometry.Parse(ModuleIconGlyph.Resolve(model.ActivityIconKey));
         _step.Text = model.ActivityMessage;
         _detail.Text = model.ActivityDetail;
         bool hasProgress = model.ActivityProgress is { } progress &&

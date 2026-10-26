@@ -65,6 +65,8 @@ public sealed class ConversationEvent : CompanionEvent
     public required string TurnId { get; init; }
     public string Text { get; init; } = string.Empty;
     public string? Detail { get; init; }
+    public string ModuleId { get; init; } = string.Empty;
+    public string IconKey { get; init; } = "body";
 }
 
 /// <summary>A memory node was created, strengthened or forgotten.</summary>
@@ -197,6 +199,7 @@ public sealed class ModuleProgressEvent : CompanionEvent
     public required string ToolName { get; init; }
     public required string TurnId { get; init; }
     public required string Message { get; init; }
+    public string IconKey { get; init; } = "body";
     public double? Progress { get; init; }
     public double? Total { get; init; }
 }

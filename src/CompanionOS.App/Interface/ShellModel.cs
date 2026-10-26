@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.Text;
+using System.Text.Json;
 using Avalonia.Threading;
 using CompanionOS.Core.Brain;
 using CompanionOS.Core.Common;
@@ -85,9 +86,11 @@ public sealed partial class ShellModel : ObservableObject
     private bool _isListening;
     private bool _isSpeaking;
     private bool _isTurnInProgress;
+    private bool _isSurfaceActionInProgress;
     private string _activityTurnId = string.Empty;
     private string _activityMessage = string.Empty;
     private string _activityModule = string.Empty;
+    private string _activityIconKey = "body";
     private string _activityDetail = string.Empty;
     private double? _activityProgress;
     private double? _activityTotal;
@@ -211,8 +214,16 @@ public sealed partial class ShellModel : ObservableObject
     public bool IsTurnInProgress
     {
         get => _isTurnInProgress;
-        private set => SetProperty(ref _isTurnInProgress, value);
+        private set
+        {
+            if (SetProperty(ref _isTurnInProgress, value))
+            {
+                OnPropertyChanged(nameof(HasActiveWork));
+            }
+        }
     }
+
+    public bool HasActiveWork => IsTurnInProgress || _isSurfaceActionInProgress;
 
     /// <summary>Current truthful work status, shared by chat and non-activating overlays.</summary>
     public string ActivityTurnId
@@ -231,6 +242,12 @@ public sealed partial class ShellModel : ObservableObject
     {
         get => _activityModule;
         private set => SetProperty(ref _activityModule, value);
+    }
+
+    public string ActivityIconKey
+    {
+        get => _activityIconKey;
+        private set => SetProperty(ref _activityIconKey, value);
     }
 
     public string ActivityDetail
@@ -305,6 +322,12 @@ public sealed partial class ShellModel : ObservableObject
     /// <summary>Sends one typed or attached message.</summary>
     public async Task SendAsync(string text, string? attachedImageDataUri = null)
     {
+        if (_isSurfaceActionInProgress)
+        {
+            _runtime.Events.PublishNotice("Iris is finishing the current module action.", NoticeSeverity.Info);
+            return;
+        }
+
         if (string.IsNullOrWhiteSpace(text) && attachedImageDataUri is null)
         {
             return;
@@ -323,6 +346,56 @@ public sealed partial class ShellModel : ObservableObject
         finally
         {
             IsTurnInProgress = false;
+        }
+    }
+
+    /// <summary>Runs a button action declared by a hosted module surface through the normal sandbox.</summary>
+    public async Task ExecuteModuleSurfaceActionAsync(ModuleSurface surface, ModuleSurfaceElement button,
+        IReadOnlyDictionary<string, string> inputs)
+    {
+        if (button.Type != ModuleSurfaceElementType.Button)
+        {
+            return;
+        }
+        if (HasActiveWork)
+        {
+            _runtime.Events.PublishNotice("Finish Iris's current task before starting another module action.",
+                NoticeSeverity.Info);
+            return;
+        }
+
+        string turnId = Guid.NewGuid().ToString("N");
+        OnUiThread(() =>
+        {
+            _isSurfaceActionInProgress = true;
+            OnPropertyChanged(nameof(HasActiveWork));
+            BeginActivity(turnId, button.Label, surface.ModuleName, "Starting", surface.IconKey);
+        });
+
+        try
+        {
+            JsonElement arguments = JsonSerializer.SerializeToElement(inputs);
+            ToolResult result = await _runtime.Modules.ExecuteAsync(button.ToolName, arguments, turnId,
+                CancellationToken.None, surface.ModuleId).ConfigureAwait(false);
+            string message = Trim(result.DisplayText ?? result.ModelText, 140);
+            if (!string.IsNullOrWhiteSpace(message))
+            {
+                _runtime.Events.PublishNotice(message,
+                    result.Succeeded ? NoticeSeverity.Success : NoticeSeverity.Warning);
+            }
+        }
+        catch (Exception exception)
+        {
+            _runtime.Events.PublishNotice($"{surface.ModuleName} failed: {exception.Message}", NoticeSeverity.Danger);
+        }
+        finally
+        {
+            OnUiThread(() =>
+            {
+                _isSurfaceActionInProgress = false;
+                OnPropertyChanged(nameof(HasActiveWork));
+                ClearActivity();
+            });
         }
     }
 

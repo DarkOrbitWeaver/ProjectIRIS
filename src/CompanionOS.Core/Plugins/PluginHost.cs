@@ -145,7 +145,7 @@ public sealed class PluginHost : IDisposable
         {
             if (plugin.Transport == "command")
             {
-                return await CallCommandAsync(plugin, argumentsJson, cancellationToken).ConfigureAwait(false);
+                return await CallCommandAsync(plugin, tool, argumentsJson, cancellationToken).ConfigureAwait(false);
             }
 
             if (plugin.Transport == "mcp")
@@ -162,15 +162,11 @@ public sealed class PluginHost : IDisposable
         }
     }
 
-    private async Task<PluginResult> CallCommandAsync(PluginManifest plugin,
+    private async Task<PluginResult> CallCommandAsync(PluginManifest plugin, PluginTool tool,
         string argumentsJson, CancellationToken cancellationToken)
     {
-        string fileName = plugin.Command[0];
-        if (!Path.IsPathRooted(fileName))
-        {
-            fileName = Path.GetFullPath(Path.Combine(plugin.Folder, fileName));
-        }
-        if (!File.Exists(fileName))
+        string fileName = PluginCommandPath.Resolve(plugin);
+        if (PluginCommandPath.IsPathLike(plugin.Command[0]) && !File.Exists(fileName))
         {
             return new PluginResult(false, "", $"Command file '{fileName}' does not exist.");
         }
@@ -200,6 +196,7 @@ public sealed class PluginHost : IDisposable
         string payload = JsonSerializer.Serialize(new
         {
             plugin = plugin.Id,
+            tool = tool.Name,
             arguments = JsonDocument.Parse(string.IsNullOrWhiteSpace(argumentsJson) ? "{}" : argumentsJson).RootElement.Clone()
         });
         await process.StandardInput.WriteLineAsync(payload).ConfigureAwait(false);
@@ -252,6 +249,7 @@ public sealed class PluginHost : IDisposable
                 ToolName = tool.Name,
                 TurnId = turnId,
                 Message = progress.Message ?? $"{tool.Name} is working",
+                IconKey = plugin.Icon,
                 Progress = progress.Progress,
                 Total = progress.Total
             }), cancellationToken).ConfigureAwait(false);
@@ -374,12 +372,8 @@ internal sealed class McpConnection : IDisposable
     {
         try
         {
-            string fileName = _plugin.Command[0];
-            if (!File.Exists(fileName) && !Path.IsPathRooted(fileName))
-            {
-                fileName = Path.GetFullPath(Path.Combine(_plugin.Folder, fileName));
-            }
-            if (!File.Exists(fileName))
+            string fileName = PluginCommandPath.Resolve(_plugin);
+            if (PluginCommandPath.IsPathLike(_plugin.Command[0]) && !File.Exists(fileName))
             {
                 Failed = $"Command file '{fileName}' does not exist.";
                 return;
@@ -652,3 +646,31 @@ internal sealed class McpConnection : IDisposable
 }
 
 internal readonly record struct McpProgressUpdate(double Progress, double? Total, string? Message);
+
+/// <summary>Resolves packaged executables relative to a module and bare runtime names via PATH.</summary>
+internal static class PluginCommandPath
+{
+    public static string Resolve(PluginManifest plugin)
+    {
+        string command = plugin.Command[0];
+        if (Path.IsPathRooted(command))
+        {
+            return command;
+        }
+
+        string local = Path.GetFullPath(Path.Combine(plugin.Folder, command));
+        if (File.Exists(local) || IsPathLike(command))
+        {
+            return local;
+        }
+
+        // A bare runtime such as "node" or "python" is intentionally resolved by
+        // Process.Start through PATH. Commands containing a path separator remain local
+        // to the plugin directory so a typo cannot unexpectedly select another file.
+        return command;
+    }
+
+    public static bool IsPathLike(string command) =>
+        Path.IsPathRooted(command) || command.Contains(Path.DirectorySeparatorChar) ||
+        command.Contains(Path.AltDirectorySeparatorChar);
+}

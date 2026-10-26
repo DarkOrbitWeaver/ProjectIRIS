@@ -575,7 +575,7 @@ public sealed class OverlayWindow : Window
 
     private void SyncActivityOverlay()
     {
-        bool hasMeaningfulWork = _model.IsTurnInProgress &&
+        bool hasMeaningfulWork = _model.HasActiveWork &&
                                  !string.IsNullOrWhiteSpace(_model.ActivityTurnId) &&
                                  DateTimeOffset.Now - _model.ActivityStartedAt >= TimeSpan.FromMilliseconds(650);
         bool canShow = IsVisible && hasMeaningfulWork && !_model.HasPendingPermission &&

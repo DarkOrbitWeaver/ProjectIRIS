@@ -108,9 +108,10 @@ Built-in modules are registered from `AppModules.CreateBuiltInModules`. External
 currently use a validated `plugin.json` manifest and a separate command or MCP process; they
 are adapted into the same router and sandbox, and arbitrary DLLs are not loaded into Iris.
 External tools all ask before running today. This is a basic extension path, not the finished
-SDK: plugins cannot yet contribute hosted panels or overlays, declare enforceable capability
-grants, or report progress through the shared activity event. See `MODULE-SDK.md` for the
-current contract and the remaining platform work.
+SDK: plugins can contribute bounded sidebar cards with text, inputs, buttons, and vetted
+semantic icons, but not independent overlays or dynamic surface state. Permission labels are
+not yet enforceable capability grants. See `MODULE-SDK.md` for the current contract and
+remaining platform work.
 
 ---
 

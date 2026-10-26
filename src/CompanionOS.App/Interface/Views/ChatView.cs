@@ -10,6 +10,7 @@ using CompanionOS.App.Interface.Controls;
 using CompanionOS.App.Interface.Theme;
 using CompanionOS.Core.Events;
 using CompanionOS.Core.Mind;
+using CompanionOS.Core.Modules;
 
 namespace CompanionOS.App.Interface.Views;
 
@@ -110,6 +111,7 @@ public sealed class ChatView : UserControl
             if (eventArgs.PropertyName is nameof(ShellModel.IsListening)
                 or nameof(ShellModel.IsSpeaking)
                 or nameof(ShellModel.IsTurnInProgress)
+                or nameof(ShellModel.HasActiveWork)
                 or nameof(ShellModel.State))
             {
                 Dispatcher.UIThread.Post(() =>
@@ -181,19 +183,17 @@ public sealed class ChatView : UserControl
 
     private void RebindMusic()
     {
+        List<ModuleSurface> surfaces = new();
+        Core.Modules.BuiltIn.NowPlayingModel? discoveredMusic = null;
         try
         {
-            foreach (Core.Modules.ModuleSurface surface in _model.Runtime.Modules.GetSurfaces())
+            surfaces.AddRange(_model.Runtime.Modules.GetSurfaces());
+            foreach (ModuleSurface surface in surfaces)
             {
                 if (surface.Model is Core.Modules.BuiltIn.NowPlayingModel nowPlaying)
                 {
-                    if (!ReferenceEquals(_musicPanel?.NowPlaying, nowPlaying))
-                    {
-                        _musicPanel = new MusicRailPanel(nowPlaying, InvokeMusicTool);
-                        _railHost.Children[0] = BuildRailCard(_musicPanel, _sensesRow, _resourcesCard);
-                    }
-
-                    return;
+                    discoveredMusic = nowPlaying;
+                    break;
                 }
             }
         }
@@ -202,6 +202,85 @@ public sealed class ChatView : UserControl
             // The registry is not open yet (called before modules register); the card
             // stays in its resting state and rebinds on the registry-changed event.
         }
+
+        if (!ReferenceEquals(_musicPanel?.NowPlaying, discoveredMusic))
+        {
+            _musicPanel = new MusicRailPanel(discoveredMusic, InvokeMusicTool);
+        }
+
+        MusicRailPanel musicPanel = _musicPanel ?? new MusicRailPanel(null, InvokeMusicTool);
+        _musicPanel = musicPanel;
+        _railHost.Children.Clear();
+        _railHost.Children.Add(BuildRailCard(musicPanel, _sensesRow, _resourcesCard));
+        foreach (ModuleSurface surface in surfaces.Where(surface =>
+                     surface.Slot == ShellSlot.Sidebar && surface.Elements.Count > 0))
+        {
+            _railHost.Children.Add(BuildModuleSurfaceCard(surface));
+        }
+    }
+
+    private Control BuildModuleSurfaceCard(ModuleSurface surface)
+    {
+        StackPanel content = new() { Spacing = 10 };
+        StackPanel heading = new()
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 9,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        heading.Children.Add(IconGlyph.Make(ModuleIconGlyph.Resolve(surface.IconKey), 20, Palette.AccentSoftBrush));
+        heading.Children.Add(Ui.Text(surface.Title, Palette.FontEmphasis, Palette.TextPrimaryBrush,
+            FontWeight.SemiBold, wrap: false));
+        content.Children.Add(heading);
+
+        Dictionary<string, TextBox> inputs = new(StringComparer.OrdinalIgnoreCase);
+        foreach (ModuleSurfaceElement element in surface.Elements)
+        {
+            switch (element.Type)
+            {
+                case ModuleSurfaceElementType.Text:
+                    content.Children.Add(Ui.Text(element.Label, Palette.FontBody, Palette.TextSecondaryBrush));
+                    break;
+
+                case ModuleSurfaceElementType.Input:
+                    TextBox input = new()
+                    {
+                        Watermark = element.Placeholder,
+                        MaxLength = 4096,
+                        FontFamily = Palette.UiFont,
+                        FontSize = Palette.FontBody,
+                        Foreground = Palette.TextPrimaryBrush,
+                        Background = Palette.SurfaceBrush,
+                        BorderBrush = Palette.StrokeBrush,
+                        BorderThickness = new Thickness(1),
+                        CornerRadius = new CornerRadius(Palette.RadiusControl),
+                        Padding = new Thickness(10, 8)
+                    };
+                    inputs[element.Name] = input;
+                    StackPanel field = new() { Spacing = 5 };
+                    field.Children.Add(Ui.Caption(element.Label));
+                    field.Children.Add(input);
+                    content.Children.Add(field);
+                    break;
+
+                case ModuleSurfaceElementType.Button:
+                    content.Children.Add(Ui.PrimaryButton(element.Label,
+                        () => InvokeModuleSurfaceAction(surface, element, inputs), wide: true));
+                    break;
+            }
+        }
+
+        return Ui.Card(content, padding: 16, radius: Palette.RadiusPanel, background: Palette.ElevatedBrush);
+    }
+
+    private void InvokeModuleSurfaceAction(ModuleSurface surface, ModuleSurfaceElement action,
+        IReadOnlyDictionary<string, TextBox> inputs)
+    {
+        Dictionary<string, string> values = inputs.ToDictionary(
+            pair => pair.Key,
+            pair => pair.Value.Text ?? string.Empty,
+            StringComparer.OrdinalIgnoreCase);
+        _ = _model.ExecuteModuleSurfaceActionAsync(surface, action, values);
     }
 
     private static Border BuildRailCard(Control music, Control senses, Control resources)

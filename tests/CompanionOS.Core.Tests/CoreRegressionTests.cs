@@ -64,6 +64,143 @@ public sealed class CoreRegressionTests
         }
     }
 
+    [Fact]
+    public void ExternalModuleManifestAcceptsBoundedSidebarControlsForDeclaredTools()
+    {
+        string folder = Path.Combine(Path.GetTempPath(), $"iris-plugin-surface-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(folder);
+        try
+        {
+            File.WriteAllText(Path.Combine(folder, "plugin.json"), """
+                {
+                  "schema": 1,
+                  "id": "telegram",
+                  "name": "Telegram",
+                  "transport": "builtin",
+                  "tools": [{
+                    "name": "send_message",
+                    "description": "Send a message.",
+                    "schema": {"type":"object","properties":{"recipient":{"type":"string"},"message":{"type":"string"}}}
+                  }],
+                  "surfaces": [{
+                    "id": "compose",
+                    "title": "New message",
+                    "slot": "sidebar",
+                    "icon": "telegram",
+                    "elements": [
+                      {"id":"recipient","type":"input","name":"recipient","label":"To","placeholder":"Contact"},
+                      {"id":"message","type":"input","name":"message","label":"Message"},
+                      {"id":"send","type":"button","label":"Send","tool":"send_message"}
+                    ]
+                  }]
+                }
+                """);
+
+            bool loaded = PluginManifest.TryLoad(folder, out PluginManifest? manifest, out string reason);
+
+            Assert.True(loaded, reason);
+            Assert.NotNull(manifest);
+            PluginSurfaceManifest surface = Assert.Single(manifest.Surfaces);
+            Assert.Equal("telegram", surface.Icon);
+            Assert.Equal("sidebar", surface.Slot);
+            Assert.Equal(3, surface.Elements.Count);
+            Assert.Equal("send_message", surface.Elements[^1].ToolName);
+        }
+        finally
+        {
+            Directory.Delete(folder, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void ExternalModuleManifestRejectsSurfaceActionsThatAreNotDeclaredTools()
+    {
+        string folder = Path.Combine(Path.GetTempPath(), $"iris-plugin-surface-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(folder);
+        try
+        {
+            File.WriteAllText(Path.Combine(folder, "plugin.json"), """
+                {
+                  "schema": 1,
+                  "id": "sample",
+                  "name": "Sample",
+                  "transport": "builtin",
+                  "surfaces": [{
+                    "id": "actions",
+                    "title": "Actions",
+                    "slot": "sidebar",
+                    "icon": "body",
+                    "elements": [{"id":"run","type":"button","label":"Run","tool":"missing_tool"}]
+                  }]
+                }
+                """);
+
+            bool loaded = PluginManifest.TryLoad(folder, out _, out string reason);
+
+            Assert.False(loaded);
+            Assert.Contains("declared tool", reason, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            Directory.Delete(folder, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void ExternalModuleToolNamesAreQualifiedAndCollisionResistant()
+    {
+        using PluginHost host = new(new EventBus(), Path.Combine(Path.GetTempPath(), $"iris-plugin-{Guid.NewGuid():N}"));
+        PluginManifest manifest = new()
+        {
+            Id = "clock",
+            Name = "Clock",
+            Tools =
+            [
+                new PluginTool("now.time", "Read the current time.", null, "{}"),
+                new PluginTool("now_time", "Read the current time another way.", null, "{}")
+            ]
+        };
+
+        PluginModuleAdapter adapter = new(host, manifest);
+
+        Assert.Equal(2, adapter.Tools.Count);
+        Assert.All(adapter.Tools, tool => Assert.StartsWith("plugin_clock_", tool.Name));
+        Assert.NotEqual(adapter.Tools[0].Name, adapter.Tools[1].Name);
+    }
+
+    [Fact]
+    public async Task ExternalCommandModuleResolvesPathRuntimeAndReceivesLocalToolName()
+    {
+        string folder = Path.Combine(Path.GetTempPath(), $"iris-plugin-command-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(folder);
+        File.WriteAllText(Path.Combine(folder, "read-tool.ps1"),
+            "$request = ConvertFrom-Json -InputObject ([Console]::In.ReadLine()); [Console]::Out.WriteLine($request.tool)");
+        using PluginHost host = new(new EventBus(), folder);
+        PluginManifest plugin = new()
+        {
+            Id = "path-check",
+            Name = "Path check",
+            Transport = "command",
+            Command = ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "read-tool.ps1"],
+            Folder = folder,
+            Disabled = false
+        };
+
+        try
+        {
+            PluginResult result = await host.CallAsync(plugin,
+                new PluginTool("send_message", "Send a message.", null, "{}"), "{}", "test-turn",
+                CancellationToken.None);
+
+            Assert.True(result.Ok, result.Error);
+            Assert.Contains("send_message", result.Text, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            Directory.Delete(folder, recursive: true);
+        }
+    }
+
     [Theory]
     [InlineData("IRIS", true, "")]
     [InlineData("Hey, Iris!", true, "")]

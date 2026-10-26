@@ -63,7 +63,9 @@ body crash never touches her mind.
 
 Make adding integrations a core product capability, not a list of features compiled into Iris.
 The first foundation now carries truthful MCP progress notifications into a shared,
-non-activating activity card. The platform is not complete until all stages below are shipped:
+non-activating activity card, and external manifests can contribute bounded sidebar forms and
+buttons routed through their owning module's permission gate. The platform is not complete
+until all stages below are shipped:
 
 1. **Stable SDK and lifecycle:** versioned manifests, dynamic MCP tool discovery, clear install,
    enable, update, disable, and removal flows, plus a starter kit and validation diagnostics.

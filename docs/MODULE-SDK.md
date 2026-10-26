@@ -13,7 +13,14 @@ permission, activity, and shell contracts so each integration feels like part of
   enabling them is a user action and takes effect after Iris restarts. Existing manifests that
   omitted the field now require that explicit enable step.
 - External tools are adapted into the same dynamic router and execution boundary. MCP tools
-  are currently repeated in the manifest rather than discovered from `tools/list`.
+  are currently repeated in the manifest rather than discovered from `tools/list`, and receive
+  stable module-qualified router names so unrelated modules can reuse local tool names.
+- External modules may declare up to six sidebar surfaces, each with at most twenty native
+  elements: plain text, text inputs, and buttons bound to that module's declared tools. A
+  button action is checked against its owning module and then uses the same permission gate
+  as a model-selected tool. All inputs in one surface are string fields shared by its buttons
+  and must match each target tool's JSON schema. Semantic icon keys use Iris's built-in glyph set;
+  a module's icon also appears in the activity card.
 - Every external tool asks for approval on each call. Manifest permission labels are shown as
   information only; they do not grant or enforce individual capabilities yet.
 - MCP tools may send `notifications/progress` after Iris supplies `_meta.progressToken` with
@@ -22,21 +29,27 @@ permission, activity, and shell contracts so each integration feels like part of
 - The activity card shows the current conversation/tool step without taking focus. The compact
   call pill remains a separate surface. Progress bars appear only when the module reports both
   a finite progress value and a finite positive total; otherwise the card shows the step only.
+- A bare executable such as `node` or `python` resolves through `PATH`; a relative command path
+  resolves inside the module folder. External code runs only after the module is enabled.
+- A command module receives one JSON line on stdin with its module id, local tool name, and
+  arguments. MCP modules receive the standard `tools/call` request with the local tool name.
 
 ## What the public SDK still needs
 
-The current mechanism is not yet the complete extensibility promise. External modules still
-cannot contribute their own icons, panels, inputs, or independently controlled overlays. The
-next SDK work must define and implement:
+The current mechanism is not yet the complete extensibility promise. Sidebar controls are
+static, use semantic glyphs rather than a module's own branded assets, and cannot yet provide
+independent overlays, main tabs, dynamic state updates, or typed form controls. The next SDK
+work must define and implement:
 
 1. A versioned manifest and authoring kit with validation, dynamic tool discovery, lifecycle
    hooks, installation review, enable/disable/update/removal, and actionable diagnostics.
 2. Permission scopes that are explicit, reviewable, revocable, and enforced by Iris. Read
    access to contacts must be distinct from sending messages; consequential actions must still
    have user control.
-3. A declarative UI contract for cards, forms, buttons, icons, and overlay surfaces. Iris owns
-   rendering, focus, accessibility, placement, and visibility policy; modules publish state and
-   named actions instead of loading arbitrary UI code into the shell.
+3. A declarative UI contract that grows the current sidebar schema into stateful cards, typed
+   forms, branded icons, buttons, and independently controlled overlays. Iris owns rendering,
+   focus, accessibility, placement, and visibility policy; modules publish state and named
+   actions instead of loading arbitrary UI code into the shell.
 4. A shared activity lifecycle for queued, running, waiting, completed, partial, failed, and
    cancelled work. Events must carry stable task and module IDs, current step, optional truthful
    progress, wait reason, and available controls. Chat, overlays, notices, and diagnostics must
@@ -61,3 +74,51 @@ provide a recognizable icon, and publish steps such as “Finding Alex,” “Dr
 she must not claim progress the service did not report. A sent message is an external side
 effect, so the user must be able to review and authorize that action according to the configured
 permission policy.
+
+### Current schema-v1 sidebar example
+
+The module's tool schema is declared once in `plugin.json`; a button names that local tool and
+the input names map to JSON argument properties. `icon` is a semantic key from Iris's
+allow-list. The module stays disabled until the user explicitly enables it.
+
+```json
+{
+  "schema": 1,
+  "id": "telegram",
+  "name": "Telegram",
+  "version": "0.1.0",
+  "description": "Find contacts and send messages.",
+  "icon": "telegram",
+  "transport": "mcp",
+  "command": ["node", "server.js"],
+  "disabled": true,
+  "tools": [
+    {
+      "name": "send_message",
+      "description": "Send a message to a contact.",
+      "permission": "messages.send",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "recipient": { "type": "string" },
+          "message": { "type": "string" }
+        },
+        "required": ["recipient", "message"]
+      }
+    }
+  ],
+  "surfaces": [
+    {
+      "id": "compose",
+      "title": "New message",
+      "slot": "sidebar",
+      "icon": "telegram",
+      "elements": [
+        { "id": "recipient", "type": "input", "name": "recipient", "label": "To", "placeholder": "Contact" },
+        { "id": "message", "type": "input", "name": "message", "label": "Message" },
+        { "id": "send", "type": "button", "label": "Send", "tool": "send_message" }
+      ]
+    }
+  ]
+}
+```

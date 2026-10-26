@@ -243,6 +243,9 @@ public interface IAssistantModule
     /// <summary>One sentence about what this body part is for.</summary>
     string Purpose { get; }
 
+    /// <summary>Semantic shell icon key for status and activity surfaces.</summary>
+    string IconKey => "body";
+
     /// <summary>Example requests and synonyms. The router matches user speech against this.</summary>
     string CapabilityDescription { get; }
 
@@ -288,10 +291,38 @@ public enum ShellSlot
 /// </summary>
 public sealed class ModuleSurface
 {
+    /// <summary>Owning module id. Used to keep UI actions inside the module's tool boundary.</summary>
+    public string ModuleId { get; init; } = string.Empty;
+    public string ModuleName { get; init; } = string.Empty;
+
     public required string Id { get; init; }
     public required string Title { get; init; }
     public required ShellSlot Slot { get; init; }
     public required object Model { get; init; }
+
+    /// <summary>A shell-owned semantic icon key, never executable markup or remote content.</summary>
+    public string IconKey { get; init; } = "body";
+
+    /// <summary>Safe declarative elements the shell can render using native controls.</summary>
+    public IReadOnlyList<ModuleSurfaceElement> Elements { get; init; } = Array.Empty<ModuleSurfaceElement>();
+}
+
+/// <summary>One constrained element in a module-authored surface.</summary>
+public sealed class ModuleSurfaceElement
+{
+    public required string Id { get; init; }
+    public required ModuleSurfaceElementType Type { get; init; }
+    public string Label { get; init; } = string.Empty;
+    public string Name { get; init; } = string.Empty;
+    public string Placeholder { get; init; } = string.Empty;
+    public string ToolName { get; init; } = string.Empty;
+}
+
+public enum ModuleSurfaceElementType
+{
+    Text,
+    Input,
+    Button
 }
 
 /// <summary>Optional: modules that want to show something on screen implement this.</summary>
