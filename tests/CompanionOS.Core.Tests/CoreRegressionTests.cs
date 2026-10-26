@@ -980,6 +980,39 @@ public sealed class CoreRegressionTests
     }
 
     [Fact]
+    public async Task SynchronousModuleToolPublishesOneStartAndOneFinishForItsTurn()
+    {
+        string temp = Path.Combine(Path.GetTempPath(), $"iris-tool-events-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(temp);
+        try
+        {
+            EventBus events = new();
+            List<ConversationEvent> conversation = [];
+            using IDisposable subscription = events.Subscribe<ConversationEvent>(conversation.Add);
+            SandboxGuard sandbox = new(events,
+                new FileAuditTrail(Path.Combine(temp, "audit.jsonl")),
+                new PermissionGrantStore(Path.Combine(temp, "permissions.json")));
+            await using ModuleHost host = new(new SettingsStore(), events, sandbox, memory: null!);
+            await host.RegisterAsync(new TestAssistantModule("test", "Test", "Test module.",
+                [new ModuleTool("do_thing", "Do one thing.", ToolTier.Reflex, "{}") ]));
+
+            using JsonDocument argumentsDocument = JsonDocument.Parse("{}");
+            ToolResult result = await host.ExecuteAsync("do_thing", argumentsDocument.RootElement.Clone(),
+                "turn-one", CancellationToken.None);
+
+            Assert.True(result.Succeeded);
+            Assert.Single(conversation, item => item.TurnId == "turn-one" &&
+                item.Phase == ConversationPhase.ToolStarted);
+            Assert.Single(conversation, item => item.TurnId == "turn-one" &&
+                item.Phase == ConversationPhase.ToolFinished);
+        }
+        finally
+        {
+            Directory.Delete(temp, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task ModuleRegistryRefreshRemovesOldToolsAndRegistersTheReplacement()
     {
         string temp = Path.Combine(Path.GetTempPath(), $"iris-module-registry-refresh-{Guid.NewGuid():N}");

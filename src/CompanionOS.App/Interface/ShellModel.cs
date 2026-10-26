@@ -24,6 +24,7 @@ public sealed class ChatEntry : ObservableObject
 {
     private string _text = string.Empty;
     private bool _isStreaming;
+    private bool _isToolRunning;
 
     public ChatRole Role { get; init; }
     public DateTimeOffset Time { get; init; } = DateTimeOffset.Now;
@@ -44,6 +45,12 @@ public sealed class ChatEntry : ObservableObject
     {
         get => _isStreaming;
         set => SetProperty(ref _isStreaming, value);
+    }
+
+    public bool IsToolRunning
+    {
+        get => _isToolRunning;
+        set => SetProperty(ref _isToolRunning, value);
     }
 
     public string TimeText => Time.ToString("HH:mm");
@@ -89,6 +96,7 @@ public sealed partial class ShellModel : ObservableObject
     private bool _isSpeaking;
     private bool _isTurnInProgress;
     private bool _isSurfaceActionInProgress;
+    private string _activeConversationTurnId = string.Empty;
     private string _activityTurnId = string.Empty;
     private string _activityMessage = string.Empty;
     private string _activityModule = string.Empty;
@@ -226,6 +234,13 @@ public sealed partial class ShellModel : ObservableObject
     }
 
     public bool HasActiveWork => IsTurnInProgress || _isSurfaceActionInProgress;
+
+    /// <summary>The conversation turn whose events currently own the chat activity state.</summary>
+    public string ActiveConversationTurnId
+    {
+        get => _activeConversationTurnId;
+        private set => SetProperty(ref _activeConversationTurnId, value);
+    }
 
     /// <summary>Current truthful work status, shared by chat and non-activating overlays.</summary>
     public string ActivityTurnId

@@ -63,6 +63,15 @@ public sealed partial class ShellModel : ObservableObject
 
     private void HandleConversation(ConversationEvent payload)
     {
+        if (payload.Phase == ConversationPhase.UserMessage)
+        {
+            ActiveConversationTurnId = payload.TurnId;
+        }
+        else if (!string.Equals(payload.TurnId, ActiveConversationTurnId, StringComparison.Ordinal))
+        {
+            return;
+        }
+
         switch (payload.Phase)
         {
             case ConversationPhase.UserMessage:
@@ -103,6 +112,7 @@ public sealed partial class ShellModel : ObservableObject
             case ConversationPhase.AssistantCompleted:
                 IsTurnInProgress = false;
                 ClearActivity();
+                ActiveConversationTurnId = string.Empty;
                 if (_streamingEntry is null)
                 {
                     Messages.Add(new ChatEntry { Role = ChatRole.Assistant, Text = payload.Text });
@@ -123,14 +133,37 @@ public sealed partial class ShellModel : ObservableObject
                     Role = ChatRole.Tool,
                     Text = payload.Text,
                     Detail = payload.Detail ?? string.Empty,
-                    TurnId = payload.TurnId
+                    TurnId = payload.TurnId,
+                    IsToolRunning = true
                 });
                 break;
 
             case ConversationPhase.ToolFinished:
-                if (Messages.Count > 0 && Messages[^1].Role == ChatRole.Tool && !string.IsNullOrEmpty(payload.Detail))
+                ChatEntry? activeTool = Messages.LastOrDefault(message =>
+                    message.Role == ChatRole.Tool && message.TurnId == payload.TurnId && message.IsToolRunning);
+                string toolResult = string.IsNullOrEmpty(payload.Detail)
+                    ? payload.Text
+                    : $"{payload.Text} — {Trim(payload.Detail, 160)}";
+                if (activeTool is not null)
                 {
-                    Messages[^1].Text = $"{payload.Text} — {Trim(payload.Detail, 160)}";
+                    activeTool.Text = toolResult;
+                    activeTool.IsToolRunning = false;
+                }
+                else
+                {
+                    // Permission refusals can finish without a ToolStarted event. Keep
+                    // their result visible without accidentally rewriting an older step.
+                    Messages.Add(new ChatEntry
+                    {
+                        Role = ChatRole.Tool,
+                        Text = toolResult,
+                        TurnId = payload.TurnId
+                    });
+                }
+
+                if (payload.TurnId == ActivityTurnId)
+                {
+                    BeginActivity(payload.TurnId, "Thinking", "Iris", "Reviewing the result", "body");
                 }
 
                 break;
@@ -138,16 +171,30 @@ public sealed partial class ShellModel : ObservableObject
             case ConversationPhase.TurnFailed:
                 IsTurnInProgress = false;
                 ClearActivity();
+                ActiveConversationTurnId = string.Empty;
                 FinalizeStreamingTurn(payload.TurnId);
+                FinalizeToolSteps(payload.TurnId, "stopped after an error");
                 AddSystemMessage($"Something went wrong: {payload.Text}");
                 break;
 
             case ConversationPhase.TurnCancelled:
                 IsTurnInProgress = false;
                 ClearActivity();
+                ActiveConversationTurnId = string.Empty;
                 FinalizeStreamingTurn(payload.TurnId);
+                FinalizeToolSteps(payload.TurnId, "cancelled");
                 AddSystemMessage(payload.Text);
                 break;
+        }
+    }
+
+    private void FinalizeToolSteps(string turnId, string outcome)
+    {
+        foreach (ChatEntry entry in Messages.Where(message =>
+                     message.Role == ChatRole.Tool && message.TurnId == turnId && message.IsToolRunning))
+        {
+            entry.Text = $"{entry.Text} — {outcome}";
+            entry.IsToolRunning = false;
         }
     }
 

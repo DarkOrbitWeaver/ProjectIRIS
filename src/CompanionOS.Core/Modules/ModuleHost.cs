@@ -417,16 +417,6 @@ public sealed class ModuleHost : IAsyncDisposable
             }
         }
 
-        _events.Publish(new ConversationEvent
-        {
-            Phase = ConversationPhase.ToolStarted,
-            TurnId = turnId,
-            Text = tool.ShortLabel,
-            Detail = owner.DisplayName,
-            ModuleId = owner.Id,
-            IconKey = owner.IconKey
-        });
-
         return await ExecuteAuthorizedToolAsync(owner, tool, arguments, turnId, cancellationToken,
             publishConversationEvents: true, isBackground: false).ConfigureAwait(false);
     }
