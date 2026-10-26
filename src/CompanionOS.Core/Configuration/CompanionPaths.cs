@@ -44,6 +44,8 @@ public static class CompanionPaths
     public static string SettingsFile => Path.Combine(ConfigDirectory, "settings.json");
     public static string PersonaFile => Path.Combine(ConfigDirectory, "persona.json");
     public static string PermissionsFile => Path.Combine(ConfigDirectory, "permissions.json");
+    /// <summary>Current-user DPAPI ciphertext for external-module credentials.</summary>
+    public static string ModuleSecretsFile => Path.Combine(ConfigDirectory, "module-secrets.json");
     public static string BrainDatabaseFile => Path.Combine(MemoryDirectory, "brain.db");
     public static string JournalFile => Path.Combine(MemoryDirectory, "journal.jsonl");
 

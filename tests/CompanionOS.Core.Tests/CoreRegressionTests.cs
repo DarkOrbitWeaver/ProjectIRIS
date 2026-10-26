@@ -319,6 +319,34 @@ public sealed class CoreRegressionTests
     }
 
     [Fact]
+    public void ModuleSecretStoreEncryptsAndSeparatesCredentialsByModule()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"iris-module-secrets-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        string path = Path.Combine(root, "module-secrets.json");
+        const string secret = "telegram-token-123456789";
+        try
+        {
+            ModuleSecretStore store = new(path);
+            store.Set("telegram", "bot_token", secret);
+
+            Assert.True(store.Contains("telegram", "bot_token"));
+            Assert.Equal(secret, store.Get("telegram", "bot_token"));
+            Assert.Null(store.Get("music", "bot_token"));
+            Assert.DoesNotContain(secret, File.ReadAllText(path), StringComparison.Ordinal);
+
+            ModuleSecretStore reopened = new(path);
+            Assert.Equal(secret, reopened.Get("telegram", "bot_token"));
+            Assert.True(reopened.Remove("telegram", "bot_token"));
+            Assert.False(store.Contains("telegram", "bot_token"));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public void ExternalModuleManifestRejectsSurfaceActionsThatAreNotDeclaredTools()
     {
         string folder = Path.Combine(Path.GetTempPath(), $"iris-plugin-surface-{Guid.NewGuid():N}");
@@ -525,7 +553,7 @@ public sealed class CoreRegressionTests
                         $result = @{
                             tools = @(@{
                                 name = 'send_message'
-                                description = 'Send a message to a contact.'
+                                description = "Send a message to a contact. Token: $env:IRIS_SECRET_API_KEY"
                                 inputSchema = @{ type = 'object'; properties = @{ recipient = @{ type = 'string' } }; required = @('recipient') }
                             })
                             nextCursor = 'page-2'
@@ -550,6 +578,7 @@ public sealed class CoreRegressionTests
               "disabled": false,
               "discoverTools": true,
               "asksPermission": ["messages.send"],
+              "secrets": ["api_key"],
               "tools": [{ "name": "send_message", "permission": "messages.send" }],
               "surfaces": [{
                 "id": "compose",
@@ -566,7 +595,9 @@ public sealed class CoreRegressionTests
 
         try
         {
-            using PluginHost host = new(new EventBus(), root);
+            ModuleSecretStore secrets = new(Path.Combine(root, "secrets.json"));
+            secrets.Set("telegram", "api_key", "telegram-test-api-key-123456");
+            using PluginHost host = new(new EventBus(), root, secrets);
             host.Load();
 
             await host.PrepareEnabledAsync(CancellationToken.None);
@@ -576,6 +607,7 @@ public sealed class CoreRegressionTests
             PluginTool tool = plugin.Tools.Single(candidate => candidate.Name == "send_message");
             Assert.Equal("send_message", tool.Name);
             Assert.Equal("messages.send", tool.Permission);
+            Assert.Equal("Send a message to a contact. Token: [redacted]", tool.Description);
             Assert.Contains("recipient", tool.Schema);
             Assert.Contains(plugin.Tools, candidate => candidate.Name == "search_contacts");
             Assert.Single(plugin.Surfaces);
@@ -592,13 +624,13 @@ public sealed class CoreRegressionTests
         string root = Path.Combine(Path.GetTempPath(), $"iris-command-discovery-{Guid.NewGuid():N}");
         string folder = Path.Combine(root, "contacts");
         Directory.CreateDirectory(folder);
-        File.WriteAllText(Path.Combine(folder, "module.ps1"), """
+            File.WriteAllText(Path.Combine(folder, "module.ps1"), """
             $request = ConvertFrom-Json -InputObject ([Console]::In.ReadLine())
             if ($request.action -eq 'tools/list') {
                 $toolSchema = @{ type = 'object'; properties = @{ query = @{ type = 'string' } }; required = @('query') }
-                $response = @{ type = 'tools'; tools = @(@{ name = 'lookup_contact'; description = 'Find a contact by name.'; schema = $toolSchema }) }
+                $response = @{ type = 'tools'; tools = @(@{ name = 'lookup_contact'; description = "Find a contact by name. $env:IRIS_SECRET_API_KEY"; schema = $toolSchema }) }
             } else {
-                $response = @{ type = 'result'; text = 'Found Ada.' }
+                $response = @{ type = 'result'; text = "Found Ada. Token: $env:IRIS_SECRET_API_KEY" }
             }
             [Console]::Out.WriteLine(($response | ConvertTo-Json -Compress -Depth 20))
             """);
@@ -612,13 +644,16 @@ public sealed class CoreRegressionTests
               "disabled": false,
               "discoverTools": true,
               "asksPermission": ["contacts.read"],
+              "secrets": ["api_key"],
               "tools": [{ "name": "lookup_contact", "permission": "contacts.read", "background": true, "alwaysConfirm": true }]
             }
             """);
 
         try
         {
-            using PluginHost host = new(new EventBus(), root);
+            ModuleSecretStore secrets = new(Path.Combine(root, "secrets.json"));
+            secrets.Set("contacts", "api_key", "test-secret-value-123456");
+            using PluginHost host = new(new EventBus(), root, secrets);
             host.Load();
             await host.PrepareEnabledAsync(CancellationToken.None);
 
@@ -628,12 +663,13 @@ public sealed class CoreRegressionTests
             Assert.Equal("contacts.read", tool.Permission);
             Assert.True(tool.Background);
             Assert.True(tool.AlwaysConfirm);
+            Assert.Equal("Find a contact by name. ", tool.Description);
             Assert.Contains("query", tool.Schema);
 
             PluginResult result = await host.CallAsync(plugin, tool, "{\"query\":\"Ada\"}", "test-turn",
                 CancellationToken.None);
             Assert.True(result.Ok, result.Error);
-            Assert.Equal("Found Ada.", result.Text);
+            Assert.Equal("Found Ada. Token: [redacted]", result.Text);
         }
         finally
         {

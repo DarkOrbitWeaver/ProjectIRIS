@@ -70,6 +70,16 @@ permission, activity, and shell contracts so each integration feels like part of
   unbounded work.
 - A bare executable such as `node` or `python` resolves through `PATH`; a relative command path
   resolves inside the module folder. External code runs only after the module is enabled.
+- Modules that need account credentials list secret names in the manifest. Iris's Modules screen
+  accepts those values as masked input and stores them in a current-user DPAPI encrypted file;
+  values are not written to the manifest, settings, prompts, arguments, or audit records. A command
+  module receives declared credentials as uppercase `IRIS_SECRET_<NAME>` environment variables
+  (dots and hyphens become underscores) only for a `call` action. An MCP process receives them
+  when it starts; changing or removing a credential closes that process so its in-memory copy is
+  released, and it reconnects on the next call. Iris removes inherited `IRIS_SECRET_*` variables
+  and redacts exact stored values from module output, errors, progress, and discovered descriptions
+  before displaying them. Enabled module code still runs as your Windows user, so only assign
+  credentials to code you trust.
 - A command module receives one JSON line on stdin with its module id, local tool name, arguments,
   and action (plus protocol version 1). `action` is `call` for execution and `tools/list` for
   startup discovery. For discovery, return one JSON object with `type: "tools"` and a `tools`
@@ -172,6 +182,7 @@ user explicitly enables it.
   "disabled": true,
   "discoverTools": true,
   "asksPermission": ["messages.send", "history.read"],
+  "secrets": ["bot_token"],
   "tools": [
     {
       "name": "send_message",

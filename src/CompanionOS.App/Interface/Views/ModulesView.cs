@@ -261,7 +261,7 @@ public sealed class ModulesView : UserControl
                 : activeThisSession
                     ? "Stop routing to this plugin now and keep it disabled after restart"
                     : "Cancel the pending enable so this plugin remains off after restart");
-            launchToggle.Click += (_, _) => SetPluginLaunchEnabled(plugin, plugin.Disabled);
+            launchToggle.Click += async (_, _) => await SetPluginLaunchEnabledAsync(plugin, plugin.Disabled);
 
             StackPanel body = new() { Spacing = 6 };
             if (!string.IsNullOrWhiteSpace(plugin.Description))
@@ -287,6 +287,11 @@ public sealed class ModulesView : UserControl
                         Palette.WarningBrush, FontWeight.Medium, wrap: false));
                 }
                 body.Children.Add(toolRow);
+            }
+
+            foreach (string secretName in plugin.Secrets)
+            {
+                body.Children.Add(BuildModuleSecretRow(plugin, secretName));
             }
 
             Border card = new()
@@ -328,7 +333,104 @@ public sealed class ModulesView : UserControl
         return section;
     }
 
-    private void SetPluginLaunchEnabled(PluginManifest plugin, bool enable)
+    private Control BuildModuleSecretRow(PluginManifest plugin, string secretName)
+    {
+        bool isStored;
+        try
+        {
+            isStored = _runtime.Plugins.Secrets.Contains(plugin.Id, secretName);
+        }
+        catch (Exception exception)
+        {
+            return Ui.Text($"Credential store unavailable: {exception.Message}",
+                Palette.FontCaption, Palette.WarningBrush);
+        }
+        TextBlock state = Ui.Caption(isStored
+            ? "Saved encrypted for this Windows account."
+            : "Not set. Iris will not include it in prompts or tool arguments.");
+        TextBox input = new()
+        {
+            Width = 210,
+            Height = 34,
+            PasswordChar = '*',
+            Watermark = $"Set {secretName}",
+            VerticalContentAlignment = VerticalAlignment.Center
+        };
+        ToolTip.SetTip(input, "Credential value is stored encrypted and sent only to this module process.");
+
+        Button save = Ui.GhostButton("Save", async () =>
+        {
+            string value = input.Text ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                _runtime.Events.PublishNotice("Enter a credential value first.", NoticeSeverity.Warning);
+                return;
+            }
+            try
+            {
+                _runtime.Plugins.Secrets.Set(plugin.Id, secretName, value);
+                input.Text = string.Empty;
+                if (plugin.Transport == "mcp")
+                {
+                    await _runtime.Plugins.CloseMcpSessionAsync(plugin.Id);
+                    state.Text = "Saved encrypted. Any active MCP process was stopped; it will reconnect with this value on its next call.";
+                }
+                else
+                {
+                    state.Text = "Saved encrypted for this Windows account.";
+                }
+                _runtime.Events.PublishNotice($"Saved {secretName} for {plugin.Name}.", NoticeSeverity.Success);
+            }
+            catch (Exception exception)
+            {
+                _runtime.Events.PublishNotice($"Could not save {secretName}: {exception.Message}", NoticeSeverity.Danger);
+            }
+        });
+
+        Button remove = Ui.GhostButton("Remove", async () =>
+        {
+            try
+            {
+                _runtime.Plugins.Secrets.Remove(plugin.Id, secretName);
+                input.Text = string.Empty;
+                if (plugin.Transport == "mcp")
+                {
+                    await _runtime.Plugins.CloseMcpSessionAsync(plugin.Id);
+                    state.Text = "Removed from storage and stopped any active MCP process. It will reconnect without this value on its next call.";
+                }
+                else
+                {
+                    state.Text = "Not set. Iris will not include it in prompts or tool arguments.";
+                }
+                _runtime.Events.PublishNotice($"Removed {secretName} for {plugin.Name}.", NoticeSeverity.Success);
+            }
+            catch (Exception exception)
+            {
+                _runtime.Events.PublishNotice($"Could not remove {secretName}: {exception.Message}", NoticeSeverity.Danger);
+            }
+        });
+
+        StackPanel controls = new()
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 8,
+            Children = { input, save, remove }
+        };
+        StackPanel content = new()
+        {
+            Spacing = 5,
+            Children =
+            {
+                Ui.Text($"Credential · {secretName} · {PluginManifest.ToSecretEnvironmentName(secretName)}",
+                    Palette.FontCaption, Palette.TextPrimaryBrush, FontWeight.Medium),
+                controls,
+                state
+            }
+        };
+        return content;
+    }
+
+    private async Task SetPluginLaunchEnabledAsync(PluginManifest plugin, bool enable)
     {
         string moduleId = $"plugin:{plugin.Id}";
         bool activeThisSession = _runtime.Modules.IsEnabled(moduleId);
@@ -340,6 +442,7 @@ public sealed class ModulesView : UserControl
             _runtime.Modules.SetEnabled(moduleId, enable);
             if (!enable && activeThisSession)
             {
+                await _runtime.Plugins.CloseMcpSessionAsync(plugin.Id);
                 message = "Disabled now and at next launch.";
             }
             else if (enable)

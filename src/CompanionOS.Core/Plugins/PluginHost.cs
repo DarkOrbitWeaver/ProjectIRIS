@@ -45,11 +45,13 @@ public sealed class PluginHost : IDisposable
     private readonly Dictionary<string, McpConnection> _mcpServers = new(StringComparer.Ordinal);
     private readonly SemaphoreSlim _mcpConnectionGate = new(1, 1);
     private readonly string _pluginsRoot;
+    private readonly ModuleSecretStore _secrets;
 
-    public PluginHost(EventBus events, string? pluginsRoot = null)
+    public PluginHost(EventBus events, string? pluginsRoot = null, ModuleSecretStore? secrets = null)
     {
         _events = events;
         _pluginsRoot = pluginsRoot ?? CompanionPaths.ModulesDirectory;
+        _secrets = secrets ?? ModuleSecretStore.CreateDefault();
     }
 
     /// <summary>Every plugin that loaded cleanly, in folder order.</summary>
@@ -59,6 +61,9 @@ public sealed class PluginHost : IDisposable
     public IReadOnlyList<(string Folder, string Reason)> Rejected => _rejected;
 
     public string Root => _pluginsRoot;
+
+    /// <summary>Encrypted credentials explicitly assigned to external modules.</summary>
+    public ModuleSecretStore Secrets => _secrets;
 
     /// <summary>
     /// Reads schemas from opted-in MCP and command modules before the router is built.
@@ -95,7 +100,7 @@ public sealed class PluginHost : IDisposable
 
                 if (!ApplyDiscoveredTools(plugin, discovered) && plugin.Transport == "mcp")
                 {
-                    StopMcp(plugin.Id);
+                    await CloseMcpSessionAsync(plugin.Id).ConfigureAwait(false);
                 }
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -103,7 +108,7 @@ public sealed class PluginHost : IDisposable
                 plugin.Tools = [];
                 if (plugin.Transport == "mcp")
                 {
-                    StopMcp(plugin.Id);
+                    await CloseMcpSessionAsync(plugin.Id).ConfigureAwait(false);
                 }
                 throw;
             }
@@ -112,7 +117,7 @@ public sealed class PluginHost : IDisposable
                 plugin.Tools = [];
                 if (plugin.Transport == "mcp")
                 {
-                    StopMcp(plugin.Id);
+                    await CloseMcpSessionAsync(plugin.Id).ConfigureAwait(false);
                 }
                 CompanionLog.Warning("Plugins", $"Tool discovery failed for '{plugin.Name}': {exception.Message}");
             }
@@ -121,12 +126,15 @@ public sealed class PluginHost : IDisposable
 
     private bool ApplyDiscoveredTools(PluginManifest plugin, IReadOnlyList<PluginTool> discovered)
     {
+        string[] secrets = LoadModuleSecrets(plugin).Values.ToArray();
         List<PluginTool> merged = discovered.Select(tool =>
         {
             PluginTool? policy = plugin.DeclaredTools.FirstOrDefault(declared =>
                 string.Equals(declared.Name, tool.Name, StringComparison.OrdinalIgnoreCase));
             return tool with
             {
+                Description = RedactSecrets(tool.Description, secrets),
+                Schema = RedactJsonStrings(tool.Schema, secrets),
                 Permission = policy?.Permission,
                 Background = policy?.Background ?? false,
                 AlwaysConfirm = policy?.AlwaysConfirm ?? false
@@ -222,6 +230,20 @@ public sealed class PluginHost : IDisposable
         if (_mcpServers.Remove(pluginId, out McpConnection? connection))
         {
             connection.Dispose();
+        }
+    }
+
+    /// <summary>Closes a running server so rotated or removed credentials are no longer held in its process.</summary>
+    public async Task CloseMcpSessionAsync(string pluginId)
+    {
+        await _mcpConnectionGate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            StopMcp(pluginId);
+        }
+        finally
+        {
+            _mcpConnectionGate.Release();
         }
     }
 
@@ -361,6 +383,10 @@ public sealed class PluginHost : IDisposable
             RedirectStandardError = true,
             RedirectStandardInput = true
         };
+        Dictionary<string, string> secretValues = action == "call"
+            ? LoadModuleSecrets(plugin)
+            : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        ApplySecretEnvironment(startInfo, SecretEnvironmentValues(plugin, secretValues));
         foreach (string argument in plugin.Command.Skip(1))
         {
             startInfo.ArgumentList.Add(argument);
@@ -399,12 +425,12 @@ public sealed class PluginHost : IDisposable
         process.StandardInput.Close();
 
         Task<CommandOutput> standardOutTask = ReadCommandOutputAsync(process.StandardOutput, process, plugin, tool, turnId,
-            cancellationToken);
+            secretValues.Values, cancellationToken);
         Task<string> standardErrorTask = ReadBoundedOutputAsync(process.StandardError, MaximumCommandErrorCharacters,
             cancellationToken);
         await Task.WhenAll(standardOutTask, standardErrorTask).ConfigureAwait(false);
         CommandOutput commandOutput = await standardOutTask.ConfigureAwait(false);
-        string standardError = await standardErrorTask.ConfigureAwait(false);
+        string standardError = RedactSecrets(await standardErrorTask.ConfigureAwait(false), secretValues.Values);
         await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
 
         double cost = (Stopwatch.GetTimestamp() - started) * 1000.0 / Stopwatch.Frequency;
@@ -432,8 +458,103 @@ public sealed class PluginHost : IDisposable
         return new PluginResult(true, commandOutput.Text.Trim());
     }
 
+    private Dictionary<string, string> LoadModuleSecrets(PluginManifest plugin)
+    {
+        Dictionary<string, string> values = new(StringComparer.OrdinalIgnoreCase);
+        foreach (string secretName in plugin.Secrets)
+        {
+            string? value = _secrets.Get(plugin.Id, secretName);
+            if (!string.IsNullOrEmpty(value))
+            {
+                values.Add(secretName, value);
+            }
+        }
+        return values;
+    }
+
+    private static Dictionary<string, string> SecretEnvironmentValues(PluginManifest plugin,
+        IReadOnlyDictionary<string, string> secretValues)
+    {
+        Dictionary<string, string> environment = new(StringComparer.OrdinalIgnoreCase);
+        foreach (string secretName in plugin.Secrets)
+        {
+            if (secretValues.TryGetValue(secretName, out string? value))
+            {
+                environment.Add(PluginManifest.ToSecretEnvironmentName(secretName), value);
+            }
+        }
+        return environment;
+    }
+
+    internal static void ApplySecretEnvironment(ProcessStartInfo startInfo,
+        IReadOnlyDictionary<string, string> secretEnvironment)
+    {
+        foreach (string inheritedName in startInfo.Environment.Keys
+                     .Where(name => name.StartsWith("IRIS_SECRET_", StringComparison.OrdinalIgnoreCase)).ToArray())
+        {
+            startInfo.Environment.Remove(inheritedName);
+        }
+        foreach ((string name, string value) in secretEnvironment)
+        {
+            startInfo.Environment[name] = value;
+        }
+    }
+
+    internal static string RedactSecrets(string text, IEnumerable<string> secretValues)
+    {
+        foreach (string secret in secretValues)
+        {
+            if (!string.IsNullOrEmpty(secret))
+            {
+                text = text.Replace(secret, "[redacted]", StringComparison.Ordinal);
+            }
+        }
+        return text;
+    }
+
+    private static string RedactJsonStrings(string json, IEnumerable<string> secrets)
+    {
+        try
+        {
+            JsonNode? root = JsonNode.Parse(json);
+            return RedactJsonNode(root, secrets)?.ToJsonString() ?? "null";
+        }
+        catch (JsonException)
+        {
+            return json;
+        }
+    }
+
+    private static JsonNode? RedactJsonNode(JsonNode? node, IEnumerable<string> secrets)
+    {
+        if (node is JsonObject objectNode)
+        {
+            JsonObject redacted = new();
+            foreach (string key in objectNode.Select(property => property.Key).ToArray())
+            {
+                redacted[key] = RedactJsonNode(objectNode[key], secrets);
+            }
+            return redacted;
+        }
+        if (node is JsonArray arrayNode)
+        {
+            JsonArray redacted = new();
+            foreach (JsonNode? item in arrayNode)
+            {
+                redacted.Add(RedactJsonNode(item, secrets));
+            }
+            return redacted;
+        }
+        if (node is JsonValue valueNode && valueNode.TryGetValue(out string? text) && text is not null)
+        {
+            return JsonValue.Create(RedactSecrets(text, secrets));
+        }
+        return node?.DeepClone();
+    }
+
     private async Task<CommandOutput> ReadCommandOutputAsync(StreamReader reader, Process process,
-        PluginManifest plugin, PluginTool tool, string turnId, CancellationToken cancellationToken)
+        PluginManifest plugin, PluginTool tool, string turnId, IEnumerable<string> secretValues,
+        CancellationToken cancellationToken)
     {
         StringBuilder plainText = new();
         StringBuilder line = new();
@@ -476,7 +597,8 @@ public sealed class PluginHost : IDisposable
 
                 if (character == '\n')
                 {
-                    ProcessCommandLine(line.ToString().TrimEnd('\r'), plainText, plugin, tool, turnId, ref result,
+                    ProcessCommandLine(RedactSecrets(line.ToString().TrimEnd('\r'), secretValues),
+                        plainText, plugin, tool, turnId, ref result,
                         ref lastProgressTicks, ref surfaceUpdateCount);
                     line.Clear();
                 }
@@ -489,7 +611,8 @@ public sealed class PluginHost : IDisposable
 
         if (!exceededLimit && line.Length > 0)
         {
-            ProcessCommandLine(line.ToString().TrimEnd('\r'), plainText, plugin, tool, turnId, ref result,
+            ProcessCommandLine(RedactSecrets(line.ToString().TrimEnd('\r'), secretValues),
+                plainText, plugin, tool, turnId, ref result,
                 ref lastProgressTicks, ref surfaceUpdateCount);
         }
 
@@ -770,33 +893,30 @@ public sealed class PluginHost : IDisposable
                 ModuleName = plugin.Name,
                 ToolName = tool.Name,
                 TurnId = turnId,
-                Message = progress.Message ?? $"{tool.Name} is working",
+                Message = RedactSecrets(progress.Message ?? $"{tool.Name} is working", connection.SecretValues.Values),
                 IconKey = plugin.ResolveIcon(plugin.Icon),
                 Progress = progress.Progress,
                 Total = progress.Total
             }), cancellationToken).ConfigureAwait(false);
 
         bool isError = lat.TryGetProperty("isError", out JsonElement errorElement) && errorElement.ValueKind == JsonValueKind.True;
-        string text = ExtractText(lat);
+        string text = RedactSecrets(ExtractText(lat), connection.SecretValues.Values);
         return new PluginResult(!isError, text, isError ? "The plugin reported this call as an error." : null);
     }
 
     private async Task<McpConnection> GetMcpAsync(PluginManifest plugin, CancellationToken cancellationToken)
     {
-        if (_mcpServers.TryGetValue(plugin.Id, out McpConnection? existing))
-        {
-            return existing;
-        }
-
         await _mcpConnectionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            if (_mcpServers.TryGetValue(plugin.Id, out existing))
+            if (_mcpServers.TryGetValue(plugin.Id, out McpConnection? existing))
             {
                 return existing;
             }
 
-            McpConnection connection = new(plugin, ResolveWorkingDirectory(plugin));
+            Dictionary<string, string> secretValues = LoadModuleSecrets(plugin);
+            McpConnection connection = new(plugin, ResolveWorkingDirectory(plugin),
+                SecretEnvironmentValues(plugin, secretValues), secretValues);
             _mcpServers[plugin.Id] = connection;
             await connection.StartAndInitializeAsync(cancellationToken).ConfigureAwait(false);
             return connection;
@@ -877,6 +997,7 @@ internal sealed class McpConnection : IDisposable
     private const int MaximumInputSchemaCharacters = 16_384;
     private const int MaximumToolDescriptionCharacters = 1_000;
     private readonly PluginManifest _plugin;
+    private readonly Dictionary<string, string> _secretValues;
     private Process? _process;
     private readonly Dictionary<int, TaskCompletionSource<JsonElement>> _pending = [];
     private readonly SemaphoreSlim _writeGate = new(1, 1);
@@ -886,13 +1007,18 @@ internal sealed class McpConnection : IDisposable
     private readonly Dictionary<string, long> _lastProgressTicks = new(StringComparer.Ordinal);
     private int _nextId;
 
-    public McpConnection(PluginManifest plugin, string workingDirectory)
+    public McpConnection(PluginManifest plugin, string workingDirectory,
+        IReadOnlyDictionary<string, string> secretEnvironment, Dictionary<string, string> secretValues)
     {
         _plugin = plugin;
         WorkingDirectory = workingDirectory;
+        _secretValues = secretValues;
+        SecretEnvironment = secretEnvironment;
     }
 
     public string WorkingDirectory { get; }
+    public IReadOnlyDictionary<string, string> SecretValues => _secretValues;
+    private IReadOnlyDictionary<string, string> SecretEnvironment { get; }
     public string? Failed { get; private set; }
 
     public async Task StartAndInitializeAsync(CancellationToken cancellationToken)
@@ -920,6 +1046,7 @@ internal sealed class McpConnection : IDisposable
             {
                 startInfo.ArgumentList.Add(argument);
             }
+            PluginHost.ApplySecretEnvironment(startInfo, SecretEnvironment);
 
             _process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
             _process.OutputDataReceived += OnOutputLine;
@@ -927,7 +1054,7 @@ internal sealed class McpConnection : IDisposable
             {
                 if (!string.IsNullOrWhiteSpace(args.Data))
                 {
-                    CompanionLog.Trace("Plugins", $"'{_plugin.Name}' stderr: {args.Data}");
+                    CompanionLog.Trace("Plugins", $"'{_plugin.Name}' stderr: {PluginHost.RedactSecrets(args.Data, _secretValues.Values)}");
                 }
             };
             if (!_process.Start())

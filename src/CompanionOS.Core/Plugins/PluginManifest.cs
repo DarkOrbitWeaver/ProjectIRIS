@@ -57,6 +57,8 @@ public sealed class PluginManifest
     public List<string> Command { get; init; } = new();
     public string WorkingDirectory { get; init; } = ".";
     public List<string> AsksPermission { get; init; } = new();
+    /// <summary>Credential names this module may receive in its process environment.</summary>
+    public List<string> Secrets { get; init; } = new();
     /// <summary>Obtain callable schemas from MCP tools/list or the command tools/list handshake at startup.</summary>
     public bool DiscoverTools { get; init; }
     /// <summary>Manifest-authored permission and execution policy, retained when schemas are discovered.</summary>
@@ -170,6 +172,33 @@ public sealed class PluginManifest
                         return false;
                     }
                     asks.Add(ask.GetString() ?? "");
+                }
+            }
+
+            List<string> secrets = [];
+            if (root.TryGetProperty("secrets", out JsonElement secretsElement))
+            {
+                if (secretsElement.ValueKind != JsonValueKind.Array)
+                {
+                    rejectionReason = "'secrets' must be an array of credential names";
+                    return false;
+                }
+                HashSet<string> environmentNames = new(StringComparer.OrdinalIgnoreCase);
+                foreach (JsonElement secret in secretsElement.EnumerateArray())
+                {
+                    if (secret.ValueKind != JsonValueKind.String)
+                    {
+                        rejectionReason = "each 'secrets' entry must be a string";
+                        return false;
+                    }
+                    string secretName = secret.GetString() ?? string.Empty;
+                    string environmentName = ToSecretEnvironmentName(secretName);
+                    if (!IsSecretName(secretName) || !environmentNames.Add(environmentName))
+                    {
+                        rejectionReason = $"credential name '{secretName}' is invalid or collides with another environment name";
+                        return false;
+                    }
+                    secrets.Add(secretName);
                 }
             }
 
@@ -305,6 +334,7 @@ public sealed class PluginManifest
                 Command = command,
                 WorkingDirectory = root.TryGetProperty("workingDirectory", out JsonElement workingDirectory) ? workingDirectory.GetString() ?? "." : ".",
                 AsksPermission = asks,
+                Secrets = secrets,
                 DiscoverTools = discoverTools,
                 Surfaces = surfaces,
                 Disabled = disabledByDefault,
@@ -630,6 +660,13 @@ public sealed class PluginManifest
     private static bool IsPermissionScope(string value) =>
         value.Length is > 0 and <= 96 && char.IsAsciiLetter(value[0]) &&
         value.All(character => char.IsAsciiLetterOrDigit(character) || character is '.' or '_' or '-');
+
+    private static bool IsSecretName(string value) =>
+        value.Length is > 0 and <= 64 && char.IsAsciiLetter(value[0]) &&
+        value.All(character => char.IsAsciiLetterOrDigit(character) || character is '.' or '_' or '-');
+
+    public static string ToSecretEnvironmentName(string secretName) =>
+        "IRIS_SECRET_" + secretName.Replace('.', '_').Replace('-', '_').ToUpperInvariant();
 
     private static bool ValidateStringInputs(PluginSurfaceManifest surface, PluginTool tool,
         HashSet<string> inputNames, out string rejectionReason)
