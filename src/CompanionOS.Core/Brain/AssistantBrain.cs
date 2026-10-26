@@ -488,6 +488,7 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
         bool answerSpokenDuringGeneration = false;
         string answerText = string.Empty;
         List<string> toolLedger = new();
+        string? lastToolFailureDetail = null;
         HashSet<string> uncertainTools = new(StringComparer.OrdinalIgnoreCase);
         bool honestyRetryUsed = false;
 
@@ -544,35 +545,43 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
                 answerText = turn.Text.Length > 0 ? turn.Text : roundText.ToString().Trim();
 
                 // The OS checks the model, not the other way round. A draft that announces
-                // completed work with zero tool receipts behind it gets exactly one retry:
-                // the draft is echoed back with the receipt block, and the model must call
-                // the tool or say plainly that it did not run. This is the fix for the
-                // "Resumed." that played nothing.
-                if (toolLedger.Count == 0 && SpeechPlanner.LooksLikeUnbackedClaim(answerText))
+                // completed work behind zero *succeeded* receipts gets exactly one retry:
+                // the draft is echoed back with a receipt check, and the model must call
+                // the tool or say plainly what did not happen. This covers both lies the
+                // run has met: announcing work with no tools run, and announcing a success
+                // right after a hand refused. And if her own words collapse instead
+                // ("Boss." and silence), the receipts answer for her.
+                if (SpeechPlanner.LooksLikeUnbackedClaim(answerText) && !anyToolSucceeded)
                 {
                     if (!honestyRetryUsed)
                     {
                         honestyRetryUsed = true;
                         IrisEvent.Log("Brain", "turn.honesty_retry", LogLevel.Info,
-                            message: "A draft announced work with no tool receipts behind it; she is asked for the truth before it is spoken as final.",
+                            message: "A draft announced work with no succeeded tool behind it; she is asked for the truth before it is spoken as final.",
                             data: new Dictionary<string, string?>
                             {
-                                ["draft_chars"] = answerText.Length.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                                ["draft_chars"] = answerText.Length.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                                ["tools_run"] = toolLedger.Count.ToString(System.Globalization.CultureInfo.InvariantCulture)
                             });
                         messages.Add(ChatMessage.Assistant(turn.Text));
-                        // If this turn has no hands at all, "call the tool" cannot be the fix:
-                        // asking for it again just taught the model to repeat the lie. What
-                        // we saw today: the router gave her zero music tools, she still
-                        // claimed she had resumed. So the nudge matches the hands she has.
-                        messages.Add(ChatMessage.System(routedTools.Count == 0
-                            ? "RECEIPT CHECK: no tool has run in this turn yet, and you have no tools for that " +
-                              "action this turn — \"call the tool\" cannot be the fix. There is no confirmation " +
-                              "on record that anything happened. Answer again in one short honest sentence: " +
-                              "say plainly that it has not happened, and offer to do it next."
-                            : "RECEIPT CHECK: no tool has run in this turn yet — there is no confirmation on record " +
-                              "that anything was played, paused, added, opened, saved or sent. Your draft announced an " +
-                              "action as done. Either call the tool now and act on its result, or answer again " +
-                              "honestly in one short sentence: say what has NOT happened yet, then offer to do it."));
+                        // If no hand was routed at all, "call the tool" cannot be the fix;
+                        // if hands ran and failed, the model has to own that. What the
+                        // records show: zero music tools on a resume request, and a 4B model
+                        // that answered a receipt check by collapsing to "Boss." and stopping.
+                        messages.Add(ChatMessage.System(toolLedger.Count == 0
+                            ? routedTools.Count == 0
+                                ? "RECEIPT CHECK: no tool has run in this turn yet, and you have no tools for that " +
+                                  "action this turn — \"call the tool\" cannot be the fix. There is no confirmation " +
+                                  "on record that anything happened. Answer again in one short honest sentence: " +
+                                  "say plainly that it has not happened, and offer to do it next."
+                                : "RECEIPT CHECK: no tool has run in this turn yet — there is no confirmation on record " +
+                                  "that anything was played, paused, added, opened, saved or sent. Your draft announced an " +
+                                  "action as done. Either call the tool now and act on its result, or answer again " +
+                                  "honestly in one short sentence: say what has NOT happened yet, then offer to do it."
+                            : "RECEIPT CHECK: the hands you moved this turn did not complete their work: " +
+                              string.Join("; ", toolLedger) + ". That is the truth on record. Answer again in one short honest " +
+                              "sentence: say it did not go through and why; then offer the nearest working next step. " +
+                              "Never describe a failed action as a success."));
                         // Anything already streamed may have carried the claim; reconnect the
                         // spoken answer so the truth is what lands last.
                         answerSpokenDuringGeneration = false;
@@ -580,11 +589,32 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
                     }
 
                     IrisEvent.Log("Brain", "turn.unverified_claim", LogLevel.Warning,
-                        message: "After a receipt-check retry the answer still announces work with no tool behind it. The record keeps the mismatch.",
+                        message: "After a receipt-check retry the answer still announces work with no succeeded tool behind it. The record keeps the mismatch.",
                         data: new Dictionary<string, string?>
                         {
                             ["answer_chars"] = answerText.Length.ToString(System.Globalization.CultureInfo.InvariantCulture)
                         });
+
+                    // The mismatch stays in the record, not in her voice: what she ships as
+                    // her answer is written from receipts, so a success the tools did not
+                    // back can never be spoken.
+                    answerText = BuildReceiptAnswer(toolLedger, anyToolSucceeded, lastToolFailureDetail);
+                    answerSpokenDuringGeneration = false; // the receipt answer is the one she speaks
+                    IrisEvent.Log("Brain", "turn.answer_rescued", LogLevel.Info,
+                        message: "An unverified claim would have been her answer; the receipts spoke instead.",
+                        data: ReceiptData(toolLedger));
+                }
+                else if (!anyToolSucceeded && SpeechPlanner.LooksLikeCollapsedReply(answerText))
+                {
+                    // The collapse of 19:31: answering an action request with "Boss." and
+                    // going quiet. Her words are not an answer there, so the OS answers —
+                    // short, from receipts. The retry machinery shapes the turn; her
+                    // response never inherits the mess of a correction round.
+                    answerText = BuildReceiptAnswer(toolLedger, anyToolSucceeded, lastToolFailureDetail);
+                    answerSpokenDuringGeneration = false; // the receipt answer is the one she speaks
+                    IrisEvent.Log("Brain", "turn.answer_rescued", LogLevel.Info,
+                        message: "A collapsed reply was replaced with the receipt answer so the turn still lands honestly.",
+                        data: ReceiptData(toolLedger));
                 }
 
                 if (maySpeakWhileGenerating && streamedAnySpeech)
@@ -668,6 +698,13 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
                 toolLedger.Add($"{label}: " + (result.BackgroundTaskId is not null ? "started in background"
                     : result.IsOutcomeUncertain ? "unconfirmed"
                     : result.Succeeded ? "done" : "failed"));
+
+                if (!result.Succeeded && result.BackgroundTaskId is null && !result.IsOutcomeUncertain)
+                {
+                    // The refusal text is the honest "why" — the receipt answer quotes it
+                    // instead of leaving the boss guessing what broke.
+                    lastToolFailureDetail = FirstSentenceOf(result.ModelText);
+                }
 
                 messages.Add(ChatMessage.ToolResult(call.Id, call.Name, result.ModelText));
 

@@ -1491,6 +1491,21 @@ public sealed class CoreRegressionTests
         Assert.Equal(expectedClaim, SpeechPlanner.LooksLikeUnbackedClaim(answer));
     }
 
+    [Theory]
+    [InlineData("", true)]
+    [InlineData("Boss.", true)]
+    [InlineData("Boss!", true)]
+    [InlineData("Yes boss!", true)]
+    [InlineData("okay", true)]
+    [InlineData("Sure, thanks boss.", true)]
+    [InlineData("Boss, not now.", false)]
+    [InlineData("Done.", false)]
+    [InlineData("That did not go through — there is no playlist called 'Holo Light'.", false)]
+    public void CollapsedRepliesAreCaughtButRealAnswersPass(string answer, bool expectedCollapse)
+    {
+        Assert.Equal(expectedCollapse, SpeechPlanner.LooksLikeCollapsedReply(answer));
+    }
+
     [Fact]
     public void WakeMatcherUsesTheUpdatedPersonaNameAndGreetingList()
     {

@@ -495,11 +495,13 @@ public sealed class ModuleHost : IAsyncDisposable
     {
         if (publishConversationEvents)
         {
+            // The chip reads like an agent's hand, not a catalogue entry: what the hand
+            // is doing and on what, built from the module's own narrator.
             _events.Publish(new ConversationEvent
             {
                 Phase = ConversationPhase.ToolStarted,
                 TurnId = turnId,
-                Text = tool.ShortLabel,
+                Text = CapitalizeFirst(DescribeActionPhrase(owner, tool, arguments)),
                 Detail = owner.DisplayName,
                 ModuleId = owner.Id,
                 IconKey = owner.IconKey
@@ -646,7 +648,11 @@ public sealed class ModuleHost : IAsyncDisposable
         CacheDirectory = CompanionPaths.CacheDirectory
     };
 
-    private static string DescribeAction(IAssistantModule module, ModuleTool tool, JsonElement arguments)
+    /// <summary>
+    /// The verb phrase a module's own narrator builds for a call — "play 'hollowlight'" —
+    /// the raw action text that the tool chip and the permission prompt both build on.
+    /// </summary>
+    private static string DescribeActionPhrase(IAssistantModule module, ModuleTool tool, JsonElement arguments)
     {
         string action = tool.Description.TrimEnd('.').ToLowerInvariant();
         if (module is IModuleActionDescriber describer)
@@ -661,8 +667,15 @@ public sealed class ModuleHost : IAsyncDisposable
             }
         }
 
-        return $"{module.DisplayName} wants to {action.Trim().TrimEnd('.')}.";
+        return action.Trim().TrimEnd('.');
     }
+
+    private static string DescribeAction(IAssistantModule module, ModuleTool tool, JsonElement arguments) =>
+        $"{module.DisplayName} wants to {DescribeActionPhrase(module, tool, arguments)}.";
+
+    /// <summary>Turns a verb phrase into a card headline: "play 'hollowlight'" → "Play 'hollowlight'".</summary>
+    private static string CapitalizeFirst(string text) =>
+        string.IsNullOrEmpty(text) ? text : char.ToUpperInvariant(text[0]) + text[1..];
 
     private void PublishToolFinished(string turnId, IAssistantModule owner, ModuleTool tool, ToolResult result)
     {

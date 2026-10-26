@@ -77,6 +77,19 @@ dedicated provenance (`task_log`): activation never seeds or walks through them
 work have to become knowledge on purpose (remember/corrections) — which is where
 knowledge belongs anyway.
 
+### 11. The loop owns the answer, not the model's mood
+**Why the run allowed this:** a 4B model, handed a receipt check, once answered a whole
+action request with exactly "Boss." and went quiet — and a failed tool never blocked a
+success claim, because the receipt check only fired on *zero* tools.
+**Decision:** retries live inside the tool loop and are invisible to her response. The
+answer ships from receipts whenever her words collapse (`LooksLikeCollapsedReply`) or
+claim what no receipt succeeded (`LooksLikeUnbackedClaim` after anything ran):
+`turn.answer_rescued` replaces the answer, the mismatch stays only in the record. Tool
+chips narrate like agent cards — the module's own `DescribeAction` verb phrase, not a
+menu label — so intent, hands and result are all visible while the loop works.
+**Cost:** terse but honest fallback answers; the model's raw optionality over the final
+line is reduced — by design, receipt truth outranks model prose.
+
 ---
 
 ## Modules

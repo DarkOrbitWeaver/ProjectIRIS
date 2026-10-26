@@ -117,6 +117,40 @@ public static partial class SpeechPlanner
         return false;
     }
 
+    /// <summary>
+    /// The collapsed-reply shape this run caught in her records: handed a receipt check,
+    /// the 4B brain answered a whole action request with exactly "Boss." and stopped.
+    /// A reply that is empty, or nothing but address words and backchannel ("yes",
+    /// "okay", "thanks"), is not an answer to a request for work — the brain treats it
+    /// as a collapse and answers from the receipts instead.
+    /// </summary>
+    private static readonly HashSet<string> CollapsedReplyWords = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "boss", "hey", "hi", "hello", "iris", "yes", "no", "yeah", "nah", "ok", "okay",
+        "sure", "k", "kk", "thanks", "wdym"
+    };
+
+    /// <summary>True when a whole reply is nothing but address words and backchannel.</summary>
+    public static bool LooksLikeCollapsedReply(string? answerText)
+    {
+        string text = (answerText ?? string.Empty).Trim();
+        if (text.Length == 0)
+        {
+            return true;
+        }
+
+        string[] words = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        foreach (string raw in words)
+        {
+            if (!CollapsedReplyWords.Contains(raw.TrimEnd('.', '!', '?', ',', ':', ';', '…')))
+            {
+                return false;
+            }
+        }
+
+        return words.Length > 0;
+    }
+
     /// <summary>Lists read like catalogue pages: many commas, semicolons or inline bullets.</summary>
     private static bool IsEnumerationShape(string sentence)
     {

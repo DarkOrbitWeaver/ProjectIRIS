@@ -345,6 +345,53 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
         return letters >= 8;
     }
 
+    /// <summary>
+    /// The receipt-backed answer the OS owns: when her own words collapse or carry a
+    /// claim the receipts contradict, these are the words she says instead. Written by
+    /// the loop, never the model — the one part of a turn that can no longer lie.
+    /// </summary>
+    private static string BuildReceiptAnswer(IReadOnlyList<string> toolLedger, bool anyToolSucceeded,
+        string? failureDetail)
+    {
+        if (anyToolSucceeded)
+        {
+            string done = string.Join("; ", toolLedger
+                .Where(entry => entry.EndsWith("done", StringComparison.OrdinalIgnoreCase))
+                .Take(3));
+            if (done.Length == 0)
+            {
+                done = string.Join("; ", toolLedger.Take(2));
+            }
+
+            return $"Done — {done}.";
+        }
+
+        if (toolLedger.Count > 0)
+        {
+            string why = string.IsNullOrWhiteSpace(failureDetail)
+                ? string.Empty
+                : $" {failureDetail.TrimEnd('.').TrimEnd(',')}";
+            return $"That did not go through.{why} Want me to try another way?";
+        }
+
+        return "Nothing has happened yet — that turn ended without this getting done. " +
+               "Say the word and I will go for it.";
+    }
+
+    /// <summary>Keeps the first sentence of a refusal — the honest "why", not a wall.</summary>
+    private static string FirstSentenceOf(string text)
+    {
+        string trimmed = (text ?? string.Empty).Trim();
+        int cut = trimmed.IndexOf('.');
+        string sentence = cut >= 0 ? trimmed[..(cut + 1)] : trimmed;
+        return sentence.Length <= 140 ? sentence : sentence[..140].TrimEnd() + "…";
+    }
+
+    private static Dictionary<string, string?> ReceiptData(IReadOnlyList<string> toolLedger) => new()
+    {
+        ["receipts"] = string.Join(" | ", toolLedger)
+    };
+
     private IReadOnlyList<ChatMessage> TakeHistoryWindow()
     {
         lock (_historyLock)
