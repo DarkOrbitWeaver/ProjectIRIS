@@ -101,48 +101,6 @@ public static partial class SpeechPlanner
     }
 
     /// <summary>
-    /// True when the answer announces work she never did, or promises work that never
-    /// ran. Three agent shapes count, and specifically NOT the world describing itself:
-    ///
-    ///   1. First-person work words near the subject — "I'll open it", "I just paused it",
-    ///      "let me check the library" (a turn-ending promise is a broken one).
-    ///   2. Bare action announcements at sentence start — "Resumed.", "Done.",
-    ///      "Playing Machine Girl."
-    ///   3. Past completions anywhere — "Alright boss, playlist resumed."
-    ///
-    /// Media-state sentences — "You are watching an ASMR playlist playing some stuff",
-    /// "the video is paused" — are summaries of reality, not claims of work. The run of
-    /// 20:25 replaced her *correct* "what am I watching" answer with the receipts
-    /// because the old regex met the word "playing" inside a video title. Information
-    /// needs no tool receipts; claiming she acted does.
-    /// </summary>
-    public static bool LooksLikeUnbackedClaim(string? answerText)
-    {
-        if (string.IsNullOrWhiteSpace(answerText))
-        {
-            return false;
-        }
-
-        foreach (string sentence in SpeechTextSanitizer.SplitIntoSentences(answerText, 4))
-        {
-            string lean = sentence.Trim();
-            if (lean.Length == 0 || lean.EndsWith('?'))
-            {
-                continue;
-            }
-
-            if (SelfWorkPattern().IsMatch(lean) ||
-                SentenceStartClaimPattern().IsMatch(lean) ||
-                PastCompletionPattern().IsMatch(lean))
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    /// <summary>
     /// The collapsed-reply shape this run caught in her records: handed a receipt check,
     /// the 4B brain answered a whole action request with exactly "Boss." and stopped.
     /// A reply that is empty, or nothing but address words and backchannel ("yes",
@@ -215,37 +173,15 @@ public static partial class SpeechPlanner
     [GeneratedRegex(@"(?:^|[\s])(?:[-•*]\s|\d{1,2}[\.\)]\s)", RegexOptions.CultureInvariant)]
     private static partial Regex EnumerationMarkerPattern();
 
-    // First-person work: the subject is her hands ("i", "i'll", "let me") and an action
-    // verb follows within a short window. The window stays tight so chatter that merely
-    // mentions verbs ("I think the song you're playing is nice") never matches.
-    [GeneratedRegex(
-        @"\b(?:i\b|im\b|ill\b|ive\b|i'd\b|id\b|i am\b|i was\b|i will\b|i'll\b|i've\b|i just\b|let me\b|let's\b|we're\b|we will\b|we'll\b|going to\b)" +
-        @"[^.!?]{0,16}?\b(resume|resumed|play|playing|played|pause|paused|start|started|stop|stopped|open|opened|" +
-        @"close|clos|save|saved|download|downloaded|send|sent|lock|locked|unlock|unlocked|mute|muted|unmute|" +
-        @"unmuted|launch|launched|create|created|add|added|remove|removed|delete|deleted|check|look|find|fetch|grab|bring|did)\b",
-        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
-    private static partial Regex SelfWorkPattern();
-
-    // "Resumed.", "Done.", "Playing Machine Girl, boss." — an announcement that starts
-    // with the action itself is her voice claiming the deed.
-    [GeneratedRegex(
-        @"(?:^|[?!.]\s)\s*(resumed|playing|played|paused|started|stopped|added|created|deleted|removed|opened|closed|saved|downloaded|sent|muted|unmuted|locked|unlocked|launched|done)\b",
-        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
-    private static partial Regex SentenceStartClaimPattern();
-
-    // Past completions anywhere, but only the verbs whose deed is hers by nature. The
-    // media participles (playing, paused, started, stopped) stay out: "the song is
-    // paused" describes the world. "You ..." keeps diary-recall chatter out: "you
-    // created that playlist last Friday" is memory, not a claim she acted just now.
-    [GeneratedRegex(
-        @"(?<!\byou(?:\s+are)?\s)\b(resumed|added|created|removed|deleted|saved|downloaded|launched|unlocked|locked|muted|unmuted)\b",
-        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
-    private static partial Regex PastCompletionPattern();
-
+    // The one classifier left in the planner, per the boss's ruling: regex judges the
+    // REQUEST (an input, like form validation) — never her words. Every language cop
+    // built on her output eventually punished a truthful sentence ("the video is
+    // paused", "an ASMR playlist playing…"). The brain's gates stay on receipts and
+    // the collapse shape alone; both are facts, not sentence shapes.
     /// <summary>
     /// A clear order aimed at her hands — the "play a song from our playlist" family.
-    /// The brain uses it for the 20:20 stall: hands routed, none run, and she asked
-    /// permission for an order instead of acting.
+    /// The turn contract uses it to scope the receipt check to turns where work is
+    /// actually asked for; informational requests are never gated.
     /// </summary>
     public static bool IsActionRequest(string? userText)
     {
@@ -262,25 +198,4 @@ public static partial class SpeechPlanner
         @"\b(play|pause|resume|shuffle|skip|next|previous|open|launch|mute|unmute|volume|timer|alarm|note|download|find|search)\b|\b(song|track|playlist|music|video|yt|youtube|game|window|app|folder|file)\b",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex ActionRequestPattern();
-
-    /// <summary>
-    /// The offer-question shape that substitutes for the action: "want me to play that?",
-    /// "shall I open it?", "the ASMR one you're watching?". On a turn whose hands are
-    /// routed, asking permission for an unambiguous order is narrator-voice, not work.
-    /// </summary>
-    public static bool LooksLikeOfferInsteadOfAction(string? answerText)
-    {
-        string text = (answerText ?? string.Empty).Trim();
-        if (text.Length < 8)
-        {
-            return false;
-        }
-
-        return OfferPattern().IsMatch(text);
-    }
-
-    [GeneratedRegex(
-        @"\b(do you want|you want|want me|shall i|should i|could i|can i|may i|i can|would you like|what about|how about|if you want|if you'd like|which one|which playlist|which song|want that|or maybe)\b",
-        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
-    private static partial Regex OfferPattern();
 }

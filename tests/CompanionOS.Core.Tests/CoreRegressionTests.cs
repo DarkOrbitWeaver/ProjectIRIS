@@ -1479,34 +1479,9 @@ public sealed class CoreRegressionTests
         Assert.Equal("Sure thing boss. Should I start the playlist?", spoken);
     }
 
-    [Theory]
-    [InlineData("Resumed.", true)]
-    [InlineData("Alright boss, playlist resumed.", true)]
-    [InlineData("Want me to play any of them?", false)]
-    [InlineData("Sure boss. Nothing is playing right now — want me to start something?", false)]
-    [InlineData("Done.", true)]
-    public void UnbackedClaimsAreCaughtButAnswersThatAdmitNothingHappenedPass(
-        string answer, bool expectedClaim)
-    {
-        Assert.Equal(expectedClaim, SpeechPlanner.LooksLikeUnbackedClaim(answer));
-    }
-
-    // The 20:25 run replaced her correct "what am I watching" answer with the receipt
-    // rescue, because the video's own words ("ASMR playlist playing …") met the old
-    // claim regex. Reality described aloud is information, not a claim of work.
-    [Theory]
-    [InlineData("You are watching an ASMR playlist playing and some stuff.", false)]
-    [InlineData("The video is paused on YouTube.", false)]
-    [InlineData("I think the song you're playing is great.", false)]
-    [InlineData("Let me check the library, boss.", true)]
-    [InlineData("I'll open the file now.", true)]
-    [InlineData("I just paused it, boss.", true)]
-    public void MediaStatesAreNotClaimsButPromisesWithoutWorkAre(
-        string answer, bool expectedClaim)
-    {
-        Assert.Equal(expectedClaim, SpeechPlanner.LooksLikeUnbackedClaim(answer));
-    }
-
+    // The linguistic cops are gone: regex may judge the request (an input), never her
+    // words. What survives is the planner's structural floor — the input classifier,
+    // the collapse shape (a non-answer is a fact), and the speech budget.
     [Theory]
     [InlineData("play a song from our playlist", true)]
     [InlineData("resume the music", true)]
@@ -1516,16 +1491,6 @@ public sealed class CoreRegressionTests
     public void ClearOrdersAreRecognizedAsActionRequests(string userText, bool expected)
     {
         Assert.Equal(expected, SpeechPlanner.IsActionRequest(userText));
-    }
-
-    [Theory]
-    [InlineData("You're watching the ASMR one — want me to play that?", true)]
-    [InlineData("Which playlist, boss?", true)]
-    [InlineData("You are watching an ASMR playlist.", false)]
-    [InlineData("Nothing got done that turn.", false)]
-    public void PermissionAskingIsSpottedButPlainAnswersPass(string answer, bool expected)
-    {
-        Assert.Equal(expected, SpeechPlanner.LooksLikeOfferInsteadOfAction(answer));
     }
 
     [Fact]

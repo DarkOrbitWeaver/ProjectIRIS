@@ -544,79 +544,44 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
             {
                 answerText = turn.Text.Length > 0 ? turn.Text : roundText.ToString().Trim();
 
-                // Gates pay rent only where work was asked for. Chatter and informational
-                // turns ("what am I watching?") are never receipt-checked: on 20:25 the
-                // rescue replaced her *correct* answer because the gate ran everywhere.
-                // An action turn is one whose hands ran or failed, or whose request asks
-                // for an action — everything else ships exactly as she wrote it.
-                bool actionTurn = toolLedger.Count > 0 ||
+                // The gate is receipts, not words. Regex never judges her sentences again:
+                // every pattern built on her output eventually punished truth ("the video
+                // is paused", "an ASMR playlist playing…" once replaced her correct
+                // answer). What remain are facts — did the request ask for work, and did
+                // any hand succeed. If not, she faces the receipt truth ONCE — acts, or
+                // refuses plainly — and then her words ship exactly as she wrote them.
+                bool actionIntended = toolLedger.Count > 0 ||
                     (routedTools.Count > 0 && SpeechPlanner.IsActionRequest(userText));
-                bool unbackedClaim = actionTurn &&
-                    SpeechPlanner.LooksLikeUnbackedClaim(answerText) && !anyToolSucceeded;
-                bool permissionStall = actionTurn && toolLedger.Count == 0 &&
-                    routedTools.Count > 0 && !unbackedClaim &&
-                    SpeechPlanner.IsActionRequest(userText) &&
-                    SpeechPlanner.LooksLikeOfferInsteadOfAction(answerText);
-                if (unbackedClaim || permissionStall)
+                bool receiptsOwed = actionIntended && !anyToolSucceeded && uncertainTools.Count == 0;
+                if (receiptsOwed && !honestyRetryUsed)
                 {
-                    if (!honestyRetryUsed)
-                    {
-                        honestyRetryUsed = true;
-                        IrisEvent.Log("Brain", "turn.honesty_retry", LogLevel.Info,
-                            message: "A draft announced work with no succeeded tool behind it; she is asked for the truth before it is spoken as final.",
-                            data: new Dictionary<string, string?>
-                            {
-                                ["draft_chars"] = answerText.Length.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                                ["tools_run"] = toolLedger.Count.ToString(System.Globalization.CultureInfo.InvariantCulture)
-                            });
-                        messages.Add(ChatMessage.Assistant(turn.Text));
-                        // If no hand was routed at all, "call the tool" cannot be the fix;
-                        // if hands ran and failed, the model has to own that. What the
-                        // records show: zero music tools on a resume request, and a 4B model
-                        // that answered a receipt check by collapsing to "Boss." and stopping.
-                        messages.Add(ChatMessage.System(toolLedger.Count == 0
-                            ? routedTools.Count == 0
-                                ? "RECEIPT CHECK: no tool has run in this turn yet, and you have no tools for that " +
-                                  "action this turn — \"call the tool\" cannot be the fix. There is no confirmation " +
-                                  "on record that anything happened. Answer again in one short honest sentence: " +
-                                  "say plainly that it has not happened, and offer to do it next."
-                                : "RECEIPT CHECK: no tool has run in this turn yet — there is no confirmation on record " +
-                                  "that anything was played, paused, added, opened, saved or sent. Your draft announced an " +
-                                  "action as done. Either call the tool now and act on its result, or answer again " +
-                                  "honestly in one short sentence: say what has NOT happened yet, then offer to do it. " +
-                                  "A clear order is an instruction, not a question — do not ask permission; act."
-                            : "RECEIPT CHECK: the hands you moved this turn did not complete their work: " +
-                              string.Join("; ", toolLedger) + ". That is the truth on record. Answer again in one short honest " +
-                              "sentence: say it did not go through and why; then offer the nearest working next step. " +
-                              "Never describe a failed action as a success."));
-                        // Anything already streamed may have carried the claim; reconnect the
-                        // spoken answer so the truth is what lands last.
-                        answerSpokenDuringGeneration = false;
-                        continue;
-                    }
-
-                    IrisEvent.Log("Brain", "turn.unverified_claim", LogLevel.Warning,
-                        message: "After a receipt-check retry the answer still announces work with no succeeded tool behind it. The record keeps the mismatch.",
+                    honestyRetryUsed = true;
+                    IrisEvent.Log("Brain", "turn.receipt_check", LogLevel.Info,
+                        message: "Work was asked for but no hand succeeded; she is told the receipt truth once and acts or refuses plainly.",
                         data: new Dictionary<string, string?>
                         {
-                            ["answer_chars"] = answerText.Length.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                            ["tools_run"] = toolLedger.Count.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                            ["tools_routed"] = routedTools.Count.ToString(System.Globalization.CultureInfo.InvariantCulture)
                         });
-
-                    // The mismatch stays in the record, not in her voice: what she ships as
-                    // her answer is written from receipts, so a success the tools did not
-                    // back can never be spoken.
-                    answerText = BuildReceiptAnswer(toolLedger, anyToolSucceeded, lastToolFailureDetail);
-                    answerSpokenDuringGeneration = false; // the receipt answer is the one she speaks
-                    IrisEvent.Log("Brain", "turn.answer_rescued", LogLevel.Info,
-                        message: "An unverified claim would have been her answer; the receipts spoke instead.",
-                        data: ReceiptData(toolLedger));
+                    messages.Add(ChatMessage.Assistant(turn.Text));
+                    messages.Add(ChatMessage.System(toolLedger.Count == 0
+                        ? "RECEIPT CHECK: this request is an action, and no hand has run yet. Call the matching tool " +
+                          "now and act on its result — a clear order is an instruction, not a question; do not ask " +
+                          "permission. If no hand can truly do it, answer in one short sentence that it has not " +
+                          "happened, and offer the nearest working next step."
+                        : "RECEIPT CHECK: the hands you moved did not complete: " + string.Join("; ", toolLedger) +
+                          ". That is the record. Answer in ONE short sentence: what did not happen, and the nearest " +
+                          "working step. Never describe a failed action as a success."));
+                    // Anything already streamed may have carried a claim; the truth lands last.
+                    answerSpokenDuringGeneration = false;
+                    continue;
                 }
-                else if (!anyToolSucceeded && SpeechPlanner.LooksLikeCollapsedReply(answerText))
+
+                if (receiptsOwed && SpeechPlanner.LooksLikeCollapsedReply(answerText))
                 {
-                    // The collapse of 19:31: answering an action request with "Boss." and
-                    // going quiet. Her words are not an answer there, so the OS answers —
-                    // short, from receipts. The retry machinery shapes the turn; her
-                    // response never inherits the mess of a correction round.
+                    // The collapse of 19:31: a non-answer ("Boss." and silence) on a turn
+                    // that owed receipts. The only word-shaped check left anywhere,
+                    // because a reply wholly made of address words is a fact, not phrasing.
                     answerText = BuildReceiptAnswer(toolLedger, anyToolSucceeded, lastToolFailureDetail);
                     answerSpokenDuringGeneration = false; // the receipt answer is the one she speaks
                     IrisEvent.Log("Brain", "turn.answer_rescued", LogLevel.Info,
