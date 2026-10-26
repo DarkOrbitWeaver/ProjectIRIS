@@ -27,6 +27,7 @@ public sealed class VoicePipeline : IAsyncDisposable
     private readonly SpeechAudioPlayer _player = new();
     private readonly WakePhraseMatcher _wakeMatcher;
     private readonly PocketTtsServerHost _pocketHost;
+    private readonly IDisposable _settingsChangedSubscription;
     private readonly object _segmentLock = new();
     private readonly SemaphoreSlim _recognitionGate = new(1, 1);
 
@@ -96,7 +97,7 @@ public sealed class VoicePipeline : IAsyncDisposable
 
         // Re-reading the output device on every play keeps the speakers setting truthful
         // without a restart: what the picker wrote is what plays next.
-        events.Subscribe<SettingsChangedEvent>(_ => _player.DeviceNumber =
+        _settingsChangedSubscription = events.Subscribe<SettingsChangedEvent>(_ => _player.DeviceNumber =
             _settings.Current.Voice.OutputDeviceNumber);
     }
 
@@ -788,8 +789,57 @@ public sealed class VoicePipeline : IAsyncDisposable
             return false;
         }
 
-        await _player.PlayAsync(phrase, Profile.Volume, cancellationToken).ConfigureAwait(false);
-        return true;
+        string turnId = IrisEvent.CurrentCorrelationId ?? string.Empty;
+        _events.Publish(new SpeechEvent { IsSpeaking = true, TurnId = turnId });
+        long started = System.Diagnostics.Stopwatch.GetTimestamp();
+        try
+        {
+            bool accepted = await _player.PlayAsync(phrase, Profile.Volume, cancellationToken)
+                .ConfigureAwait(false);
+            if (!accepted)
+            {
+                IrisEvent.Log("Voice", "speech.reflex.playback_failed", LogLevel.Warning,
+                    message: "The selected output device did not accept a cached voice phrase.",
+                    data: new Dictionary<string, string?>
+                    {
+                        ["category"] = category,
+                        ["output_device"] = _settings.Current.Voice.OutputDeviceNumber.ToString(
+                            System.Globalization.CultureInfo.InvariantCulture)
+                    });
+                NotifySpeechUnavailable();
+                return false;
+            }
+
+            _nextSpeechFailureNotice = DateTimeOffset.MinValue;
+            IrisEvent.Log("Voice", "speech.reflex.playback_accepted", LogLevel.Trace,
+                durationMs: System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds,
+                data: new Dictionary<string, string?> { ["category"] = category });
+            return true;
+        }
+        catch (OperationCanceledException)
+        {
+            IrisEvent.Log("Voice", "speech.reflex.cancelled", LogLevel.Trace,
+                durationMs: System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds,
+                data: new Dictionary<string, string?> { ["category"] = category });
+            throw;
+        }
+        catch (Exception exception)
+        {
+            IrisEvent.Log("Voice", "speech.reflex.output_failed", LogLevel.Warning,
+                durationMs: System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds,
+                data: new Dictionary<string, string?>
+                {
+                    ["category"] = category,
+                    ["error_type"] = exception.GetType().Name
+                });
+            CompanionLog.Warning("Voice", $"Cached phrase playback failed: {exception.Message}");
+            NotifySpeechUnavailable();
+            return false;
+        }
+        finally
+        {
+            _events.Publish(new SpeechEvent { IsSpeaking = false, TurnId = turnId });
+        }
     }
 
     /// <summary>Stops her mid-sentence. Used by Escape, barge-in and sleep.</summary>
@@ -803,6 +853,7 @@ public sealed class VoicePipeline : IAsyncDisposable
         }
 
         _isDisposed = true;
+        _settingsChangedSubscription.Dispose();
         _microphone.SamplesAvailable -= OnMicrophoneSamples;
         _microphone.LevelChanged -= OnMicrophoneLevel;
         _player.AmplitudeChanged -= OnSpokenAmplitude;
