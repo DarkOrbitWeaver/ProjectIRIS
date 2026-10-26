@@ -22,6 +22,26 @@ namespace CompanionOS.Core.Tests;
 public sealed class CoreRegressionTests
 {
     [Fact]
+    public void ToolArgumentsRejectMalformedJsonAndNonObjectValues()
+    {
+        Assert.False(ToolArgumentsParser.TryParse("{\"path\":", out _));
+        Assert.False(ToolArgumentsParser.TryParse("[]", out _));
+        Assert.False(ToolArgumentsParser.TryParse("null", out _));
+    }
+
+    [Fact]
+    public void ToolArgumentsAcceptObjectAndEmptyNoArgumentPayloads()
+    {
+        Assert.True(ToolArgumentsParser.TryParse("{\"path\":\"music\"}", out JsonElement arguments));
+        Assert.Equal(JsonValueKind.Object, arguments.ValueKind);
+        Assert.Equal("music", arguments.GetProperty("path").GetString());
+
+        Assert.True(ToolArgumentsParser.TryParse(" ", out JsonElement emptyArguments));
+        Assert.Equal(JsonValueKind.Object, emptyArguments.ValueKind);
+        Assert.Empty(emptyArguments.EnumerateObject());
+    }
+
+    [Fact]
     public async Task VisionOffCannotBeOverriddenByForcedCapture()
     {
         SettingsStore settings = new();

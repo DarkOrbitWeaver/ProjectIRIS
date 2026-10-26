@@ -16,7 +16,10 @@ behavior that has been exercised.
 - **Conversation core:** typed and recognized speech requests reach the same turn coordinator.
   It includes available machine context, recalled memory, and request-relevant tools; it sends
   tool results back into the conversation and can make bounded follow-up calls. Its system
-  instructions now distinguish ambient metadata from actual screen images.
+  instructions now distinguish ambient metadata from actual screen images. Malformed tool JSON
+  and non-object argument values now fail visibly before module execution instead of being
+  silently replaced with empty arguments. This closes one fail-open path; schema-level validation
+  and model-specific routing quality still need broader coverage.
 - **Voice:** microphone capture, speech segmentation, Whisper or configured HTTP recognition,
   wake matching, interruption, one locked voice profile, cached reflex phrases, and the managed
   local Pocket TTS default are implemented. Voice segments now record a correlated,
@@ -70,9 +73,13 @@ works on the target PC under real microphone, speaker, model, display, game, and
 
 ## Biggest remaining work
 
-1. **Connect and explain the whole loop.** Correlate source and freshness information with each
-   turn; distinguish "configured" from "available" and "actually observed"; connect voice,
-   memory, tools, overlays, cancellation, and recovery under one inspectable task/turn identity.
+1. **Strengthen Iris's core and connect the whole loop.** Correlate source and freshness
+   information with each turn; distinguish "configured" from "available" and "actually
+   observed"; connect hearing, speech, vision, media, memory, reasoning, tools, voice output,
+   overlays, cancellation, and recovery under one inspectable task/turn identity. The current
+   system combines text recognition, on-demand images, and ambient metadata; it is not yet a
+   unified real-time multimodal perception model. Improve self-feedback so Iris can report what
+   she sensed, what she inferred, what she tried, what verified, and where uncertainty remains.
 2. **Make voice dependable on this machine.** Verify every offered profile through the real
    engine, repair voice preview and selected-voice failures, and measure warm/cold synthesis,
    recognition time, CPU/RAM, interruption, missing-device recovery, and no-mic behavior. Keep
@@ -101,9 +108,10 @@ works on the target PC under real microphone, speaker, model, display, game, and
 
 ## Verification checkpoint
 
-The current worktree builds with zero warnings/errors and the core suite passes 72/72 tests. New
+The current worktree builds with zero warnings/errors and the core suite passes 74/74 tests. New
 regressions verify that `vision: off` blocks forced capture, that Iris does not claim passive
-screen access, that ambient context is withheld until observed and when sensing has stopped, and
+screen access, that malformed or non-object tool arguments cannot reach a module, that ambient
+context is withheld until observed and when sensing has stopped, and
 that a failed media probe never presents the previous track as current. Sensor-health checks
 distinguish disabled, waiting, available, and unavailable sources; turn context captures health
 from the same snapshot used to build the prompt; and an intentional cancellation closes the

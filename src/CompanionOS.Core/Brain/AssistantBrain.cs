@@ -489,16 +489,13 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
             {
                 string operationId = _journal.RecordToolCall(turnId, "router", call.Name);
 
-                JsonElement arguments;
-                try
+                if (!ToolArgumentsParser.TryParse(call.ArgumentsJson, out JsonElement arguments))
                 {
-                    using JsonDocument document = JsonDocument.Parse(
-                        string.IsNullOrWhiteSpace(call.ArgumentsJson) ? "{}" : call.ArgumentsJson);
-                    arguments = document.RootElement.Clone();
-                }
-                catch (JsonException)
-                {
-                    arguments = JsonDocument.Parse("{}").RootElement.Clone();
+                    ToolResult invalidArguments = ToolResult.Fail(
+                        "I did not run that action because its arguments were invalid. I should ask for the missing details and try again.");
+                    _journal.RecordToolResult(turnId, operationId, JournalToolStatus.Failed);
+                    messages.Add(ChatMessage.ToolResult(call.Id, call.Name, invalidArguments.ModelText));
+                    continue;
                 }
 
                 ToolResult result = await _modules

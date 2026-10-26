@@ -11,6 +11,8 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="CompanionOS.Core.Tests" />
+
     <!-- Local database for the synaptic graph. SQLite is the one storage engine that
          survives a power cut mid-write, provided we keep WAL on. -->
     <PackageReference Include="Microsoft.Data.Sqlite" Version="9.0.0" />
