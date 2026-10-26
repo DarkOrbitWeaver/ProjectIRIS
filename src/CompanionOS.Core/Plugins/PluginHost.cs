@@ -534,7 +534,7 @@ public sealed class PluginHost : IDisposable
         return text;
     }
 
-    private static string RedactJsonStrings(string json, IEnumerable<string> secrets)
+    internal static string RedactJsonStrings(string json, IEnumerable<string> secrets)
     {
         try
         {
@@ -944,6 +944,7 @@ public sealed class PluginHost : IDisposable
             return new PluginResult(false, "", $"Arguments are not JSON: {exception.Message}");
         }
 
+        int surfaceUpdateCount = 0;
         JsonElement lat = await connection.CallToolAsync(tool.Name, arguments,
             progress => _events.Publish(new ModuleProgressEvent
             {
@@ -955,7 +956,9 @@ public sealed class PluginHost : IDisposable
                 IconKey = plugin.ResolveIcon(plugin.Icon),
                 Progress = progress.Progress,
                 Total = progress.Total
-            }), cancellationToken).ConfigureAwait(false);
+            }),
+            state => TryPublishSurfaceState(state, plugin, turnId, ref surfaceUpdateCount),
+            cancellationToken).ConfigureAwait(false);
 
         bool isError = lat.TryGetProperty("isError", out JsonElement errorElement) && errorElement.ValueKind == JsonValueKind.True;
         string text = RedactSecrets(ExtractText(lat), connection.SecretValues.Values);
@@ -1062,6 +1065,7 @@ internal sealed class McpConnection : IDisposable
     private readonly object _pendingLock = new();
     private readonly object _progressLock = new();
     private readonly Dictionary<string, Action<McpProgressUpdate>> _progressHandlers = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, Action<JsonElement>> _surfaceHandlers = new(StringComparer.Ordinal);
     private readonly Dictionary<string, long> _lastProgressTicks = new(StringComparer.Ordinal);
     private int _nextId;
 
@@ -1154,6 +1158,10 @@ internal sealed class McpConnection : IDisposable
         {
             using JsonDocument document = JsonDocument.Parse(line);
             if (TryHandleProgress(document.RootElement))
+            {
+                return;
+            }
+            if (TryHandleSurfaceUpdate(document.RootElement))
             {
                 return;
             }
@@ -1253,13 +1261,63 @@ internal sealed class McpConnection : IDisposable
         return true;
     }
 
+    private bool TryHandleSurfaceUpdate(JsonElement message)
+    {
+        if (!message.TryGetProperty("method", out JsonElement methodElement) ||
+            methodElement.ValueKind != JsonValueKind.String ||
+            methodElement.GetString() != "notifications/iris/ui" ||
+            !message.TryGetProperty("params", out JsonElement parameters) ||
+            parameters.ValueKind != JsonValueKind.Object ||
+            !parameters.TryGetProperty("progressToken", out JsonElement tokenElement))
+        {
+            return false;
+        }
+
+        string token = tokenElement.ValueKind switch
+        {
+            JsonValueKind.String => tokenElement.GetString() ?? string.Empty,
+            JsonValueKind.Number => tokenElement.GetRawText(),
+            _ => string.Empty
+        };
+        if (token.Length == 0)
+        {
+            companionTrace("invalid MCP surface update token");
+            return true;
+        }
+
+        Action<JsonElement>? handler;
+        lock (_progressLock)
+        {
+            if (!_surfaceHandlers.TryGetValue(token, out handler))
+            {
+                return true;
+            }
+        }
+
+        try
+        {
+            // State updates can contain a contact label or other user data. Redact secrets
+            // before parsing or forwarding anything to the shared shell.
+            string safeJson = PluginHost.RedactJsonStrings(parameters.GetRawText(), _secretValues.Values);
+            using JsonDocument safeDocument = JsonDocument.Parse(safeJson);
+            handler(safeDocument.RootElement.Clone());
+        }
+        catch (Exception exception)
+        {
+            CompanionLog.Warning("Plugins", $"'{_plugin.Name}' sent an invalid surface update ({exception.GetType().Name}).");
+        }
+        return true;
+    }
+
     public async Task<JsonElement> CallToolAsync(string toolName, JsonElement arguments,
-        Action<McpProgressUpdate> progressHandler, CancellationToken cancellationToken)
+        Action<McpProgressUpdate> progressHandler, Action<JsonElement> surfaceHandler,
+        CancellationToken cancellationToken)
     {
         string progressToken = Guid.NewGuid().ToString("N");
         lock (_progressLock)
         {
             _progressHandlers[progressToken] = progressHandler;
+            _surfaceHandlers[progressToken] = surfaceHandler;
         }
 
         try
@@ -1276,6 +1334,7 @@ internal sealed class McpConnection : IDisposable
             lock (_progressLock)
             {
                 _progressHandlers.Remove(progressToken);
+                _surfaceHandlers.Remove(progressToken);
                 _lastProgressTicks.Remove(progressToken);
             }
         }

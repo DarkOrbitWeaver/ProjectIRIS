@@ -44,7 +44,8 @@ behavior that has been exercised.
 - **Capabilities:** built-in music and system tools use the shared module router and approval
   boundary. External command/MCP modules can discover tools, request scoped consent, use encrypted
   credentials, expose bounded native controls and overlays, report progress, and control overlay
-  visibility for their current task. Folder refresh and immediate enable/disable are implemented.
+  visibility for their current task. MCP notifications now use the same validated surface-state
+  contract as command modules. Folder refresh and immediate enable/disable are implemented.
 - **Shared state:** typed events connect conversation, mind state, voice, memory recall, tools,
   perception, notices, telemetry, and the interface. Local diagnostic logs and a turn journal
   exist. Recognized transcript, attention, speech, and visible chat entries carry the interaction

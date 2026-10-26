@@ -851,6 +851,29 @@ public sealed class CoreRegressionTests
                             nextCursor = 'page-2'
                         }
                     }
+                } elseif ($request.method -eq 'tools/call') {
+                    $notification = @{
+                        jsonrpc = '2.0'
+                        method = 'notifications/iris/ui'
+                        params = @{
+                            progressToken = $request.params._meta.progressToken
+                            surface = 'activity'
+                            visible = $false
+                        }
+                    }
+                    [Console]::Out.WriteLine(($notification | ConvertTo-Json -Compress -Depth 20))
+                    $stateNotification = @{
+                        jsonrpc = '2.0'
+                        method = 'notifications/iris/ui'
+                        params = @{
+                            progressToken = $request.params._meta.progressToken
+                            surface = 'activity'
+                            element = 'status'
+                            label = "Connected with $env:IRIS_SECRET_API_KEY"
+                        }
+                    }
+                    [Console]::Out.WriteLine(($stateNotification | ConvertTo-Json -Compress -Depth 20))
+                    $result = @{ content = @(@{ type = 'text'; text = 'Message sent.' }); isError = $false }
                 } else {
                     continue
                 }
@@ -881,6 +904,12 @@ public sealed class CoreRegressionTests
                   { "id": "recipient", "type": "input", "name": "recipient", "label": "To" },
                   { "id": "send", "type": "button", "label": "Send", "tool": "send_message" }
                 ]
+              }, {
+                "id": "activity",
+                "title": "Telegram activity",
+                "slot": "overlay",
+                "icon": "telegram",
+                "elements": [ { "id": "status", "type": "text", "label": "Ready" } ]
               }]
             }
             """);
@@ -888,8 +917,11 @@ public sealed class CoreRegressionTests
         try
         {
             ModuleSecretStore secrets = new(Path.Combine(root, "secrets.json"));
-            secrets.Set("telegram", "api_key", "telegram-test-api-key-123456");
-            using PluginHost host = new(new EventBus(), root, secrets);
+            secrets.Set("telegram", "api_key", "telegram-test-\"api-key\"-123456");
+            EventBus events = new();
+            List<ModuleSurfaceStateChangedEvent> surfaceUpdates = [];
+            using IDisposable surfaceSubscription = events.Subscribe<ModuleSurfaceStateChangedEvent>(surfaceUpdates.Add);
+            using PluginHost host = new(events, root, secrets);
             host.Load();
 
             await host.PrepareEnabledAsync(CancellationToken.None);
@@ -902,7 +934,22 @@ public sealed class CoreRegressionTests
             Assert.Equal("Send a message to a contact. Token: [redacted]", tool.Description);
             Assert.Contains("recipient", tool.Schema);
             Assert.Contains(plugin.Tools, candidate => candidate.Name == "search_contacts");
-            Assert.Single(plugin.Surfaces);
+            Assert.Equal(2, plugin.Surfaces.Count);
+
+            PluginResult call = await host.CallAsync(plugin, tool, "{\"recipient\":\"Ada\"}",
+                "mcp-turn-42", CancellationToken.None);
+
+            Assert.True(call.Ok, call.Error);
+            Assert.Equal("Message sent.", call.Text);
+            Assert.Equal(2, surfaceUpdates.Count);
+            ModuleSurfaceStateChangedEvent surfaceUpdate = surfaceUpdates[0];
+            Assert.Equal("plugin:telegram", surfaceUpdate.ModuleId);
+            Assert.Equal("plugin:telegram:activity", surfaceUpdate.SurfaceId);
+            Assert.Equal("mcp-turn-42", surfaceUpdate.TurnId);
+            Assert.False(surfaceUpdate.IsSurfaceVisible);
+            ModuleSurfaceStateChangedEvent textUpdate = surfaceUpdates[1];
+            Assert.Equal("mcp-turn-42", textUpdate.TurnId);
+            Assert.Equal("Connected with [redacted]", textUpdate.Label);
         }
         finally
         {

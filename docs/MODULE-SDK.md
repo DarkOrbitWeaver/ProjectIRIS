@@ -32,8 +32,8 @@ permission, activity, and shell contracts so each integration feels like part of
   independent overlays), each with at most twenty native elements: plain text, text inputs,
   constrained select controls, and buttons bound to that module's offered tools. Select options
   map to string enum values in the target tool schema; a `dynamic: true` select can start empty
-  and receive safe option updates from its module. Command modules can update only elements in
-  their own declared surfaces through `ui` JSONL messages. The shell can show up to three declared
+  and receive safe option updates from its module. Command modules can update their declared
+  surfaces through `ui` JSONL messages; MCP modules can use `notifications/iris/ui`. The shell can show up to three declared
   module overlays together while its tool is running, updates them from real progress, and lets the
   user hide each one for that task. A button action is checked against its owning module and then
   uses the same permission gate as a model-selected tool. All inputs in one surface are string
@@ -124,6 +124,22 @@ Progress numbers are optional; omit them when there is no honest total. `result.
 true and `result.text` is returned to Iris. The module process is isolated from Iris's UI process,
 and cancellation terminates its process tree. The command runs with the user's OS permissions, so
 the existing module enablement and capability approval still matter.
+
+### MCP module surface updates
+
+An MCP server can use the same declared-surface contract during `tools/call` by sending the
+task's `_meta.progressToken` back in a `notifications/iris/ui` notification. Iris accepts the
+notification only while that call is active, applies the same manifest validation and 128-update
+limit, redacts configured secrets, and attaches the host's turn/task ID. It can update a control:
+
+```json
+{"jsonrpc":"2.0","method":"notifications/iris/ui","params":{"progressToken":"TOKEN_FROM_TOOLS_CALL","surface":"activity","element":"status","label":"Message sent"}}
+```
+
+Or it can show or hide its overlay for that task by omitting `element` and setting `visible` to a
+boolean. A stale notification from a completed call is ignored. This is an Iris UI extension over
+MCP notifications; standard `notifications/progress` remains available for the shared activity
+step and percentage.
 
 ## What the public SDK still needs
 
