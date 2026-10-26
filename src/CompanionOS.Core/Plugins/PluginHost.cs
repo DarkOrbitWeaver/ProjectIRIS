@@ -52,6 +52,66 @@ public sealed class PluginHost : IDisposable
     public string Root => _pluginsRoot;
 
     /// <summary>
+    /// Starts opted-in MCP servers and reads their current tool schemas before the
+    /// module router is built. Discovery is bounded and failures leave that plugin
+    /// with no callable discovered tools rather than a stale schema.
+    /// </summary>
+    public async Task PrepareEnabledAsync(CancellationToken cancellationToken)
+    {
+        foreach (PluginManifest plugin in _loaded.Where(candidate =>
+                     !candidate.Disabled && candidate.DiscoverTools && candidate.Transport == "mcp"))
+        {
+            using CancellationTokenSource discoveryBudget =
+                CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            discoveryBudget.CancelAfter(TimeSpan.FromSeconds(10));
+            try
+            {
+                McpConnection connection = await GetMcpAsync(plugin, discoveryBudget.Token).ConfigureAwait(false);
+                IReadOnlyList<PluginTool> discovered = await connection.ListToolsAsync(discoveryBudget.Token)
+                    .ConfigureAwait(false);
+
+                List<PluginTool> merged = discovered.Select(tool =>
+                {
+                    PluginTool? policy = plugin.DeclaredTools.FirstOrDefault(declared =>
+                        string.Equals(declared.Name, tool.Name, StringComparison.OrdinalIgnoreCase));
+                    return tool with { Permission = policy?.Permission };
+                }).ToList();
+
+                plugin.Tools = merged;
+                if (!PluginManifest.ValidateDiscoveredSurfaces(plugin, out string reason))
+                {
+                    plugin.Tools = [];
+                    StopMcp(plugin.Id);
+                    CompanionLog.Warning("Plugins", $"Rejected discovered tools for '{plugin.Name}': {reason}");
+                    continue;
+                }
+
+                CompanionLog.Info("Plugins", $"Discovered {merged.Count} MCP tools for '{plugin.Name}'.");
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                plugin.Tools = [];
+                StopMcp(plugin.Id);
+                throw;
+            }
+            catch (Exception exception)
+            {
+                plugin.Tools = [];
+                StopMcp(plugin.Id);
+                CompanionLog.Warning("Plugins", $"Tool discovery failed for '{plugin.Name}': {exception.Message}");
+            }
+        }
+    }
+
+    private void StopMcp(string pluginId)
+    {
+        if (_mcpServers.Remove(pluginId, out McpConnection? connection))
+        {
+            connection.Dispose();
+        }
+    }
+
+    /// <summary>
     /// Changes the launch preference in the plugin's own manifest. External plugins
     /// are never hot-loaded or hot-unloaded: their process boundary and permissions are
     /// reviewed at startup, so the change is explicitly for the next Iris launch.
@@ -350,6 +410,10 @@ public sealed class PluginActivityEvent : CompanionEvent
 /// </summary>
 internal sealed class McpConnection : IDisposable
 {
+    private const int MaximumDiscoveredTools = 128;
+    private const int MaximumToolPages = 16;
+    private const int MaximumInputSchemaCharacters = 16_384;
+    private const int MaximumToolDescriptionCharacters = 1_000;
     private readonly PluginManifest _plugin;
     private Process? _process;
     private readonly Dictionary<int, TaskCompletionSource<JsonElement>> _pending = [];
@@ -569,13 +633,96 @@ internal sealed class McpConnection : IDisposable
         }
     }
 
+    public async Task<IReadOnlyList<PluginTool>> ListToolsAsync(CancellationToken cancellationToken)
+    {
+        List<PluginTool> tools = [];
+        HashSet<string> names = new(StringComparer.OrdinalIgnoreCase);
+        HashSet<string> cursors = new(StringComparer.Ordinal);
+        string? cursor = null;
+        using CancellationTokenSource discoveryBudget =
+            CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        discoveryBudget.CancelAfter(TimeSpan.FromSeconds(10));
+        int pageCount = 0;
+        do
+        {
+            if (++pageCount > MaximumToolPages)
+            {
+                throw new InvalidOperationException($"MCP tools/list exceeded the {MaximumToolPages}-page limit.");
+            }
+            Dictionary<string, object?> parameters = cursor is null
+                ? new()
+                : new() { ["cursor"] = cursor };
+            JsonElement result = await RequestAsync("tools/list", parameters,
+                discoveryBudget.Token, TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            if (result.ValueKind != JsonValueKind.Object ||
+                !result.TryGetProperty("tools", out JsonElement toolsElement) ||
+                toolsElement.ValueKind != JsonValueKind.Array ||
+                tools.Count + toolsElement.GetArrayLength() > MaximumDiscoveredTools)
+            {
+                throw new InvalidOperationException($"MCP tools/list must return pages containing at most {MaximumDiscoveredTools} total tools.");
+            }
+
+            foreach (JsonElement entry in toolsElement.EnumerateArray())
+            {
+                if (entry.ValueKind != JsonValueKind.Object ||
+                    !entry.TryGetProperty("name", out JsonElement nameElement) ||
+                    nameElement.ValueKind != JsonValueKind.String)
+                {
+                    throw new InvalidOperationException("MCP tools/list returned a tool without a string name.");
+                }
+
+                string name = nameElement.GetString() ?? string.Empty;
+                if (name.Length is 0 or > 128 || !names.Add(name))
+                {
+                    throw new InvalidOperationException("MCP tools/list returned an empty, oversized, or duplicate tool name.");
+                }
+
+                string description = entry.TryGetProperty("description", out JsonElement descriptionElement) &&
+                                     descriptionElement.ValueKind == JsonValueKind.String
+                    ? descriptionElement.GetString() ?? string.Empty
+                    : string.Empty;
+                if (description.Length > MaximumToolDescriptionCharacters)
+                {
+                    throw new InvalidOperationException($"MCP tool '{name}' description exceeds {MaximumToolDescriptionCharacters} characters.");
+                }
+
+                if (!entry.TryGetProperty("inputSchema", out JsonElement schema) ||
+                    schema.ValueKind != JsonValueKind.Object ||
+                    !schema.TryGetProperty("type", out JsonElement typeElement) ||
+                    typeElement.ValueKind != JsonValueKind.String || typeElement.GetString() != "object")
+                {
+                    throw new InvalidOperationException($"MCP tool '{name}' must provide an object inputSchema.");
+                }
+
+                string schemaJson = schema.GetRawText();
+                if (schemaJson.Length > MaximumInputSchemaCharacters)
+                {
+                    throw new InvalidOperationException($"MCP tool '{name}' inputSchema exceeds {MaximumInputSchemaCharacters} characters.");
+                }
+
+                tools.Add(new PluginTool(name, description, null, schemaJson));
+            }
+
+            cursor = result.TryGetProperty("nextCursor", out JsonElement cursorElement) &&
+                     cursorElement.ValueKind == JsonValueKind.String
+                ? cursorElement.GetString()
+                : null;
+            if (!string.IsNullOrEmpty(cursor) && !cursors.Add(cursor))
+            {
+                throw new InvalidOperationException("MCP tools/list repeated a page cursor.");
+            }
+        } while (!string.IsNullOrEmpty(cursor));
+
+        return tools;
+    }
+
     private void companionTrace(string text)
     {
         CompanionLog.Trace("Plugins", $"'{_plugin.Name}' said something outside JSON-RPC: {text}");
     }
 
     public async Task<JsonElement> RequestAsync(string method, Dictionary<string, object?> parameters,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, TimeSpan? timeout = null)
     {
         if (Failed is not null || _process is null)
         {
@@ -600,7 +747,7 @@ internal sealed class McpConnection : IDisposable
         await _process.StandardInput.WriteLineAsync(request).ConfigureAwait(false);
 
         // A stuck plugin can jam its tool; 30 s is already generous before it loses the slot.
-        Task finished = await Task.WhenAny(waiter.Task, Task.Delay(TimeSpan.FromSeconds(30), cancellationToken))
+        Task finished = await Task.WhenAny(waiter.Task, Task.Delay(timeout ?? TimeSpan.FromSeconds(30), cancellationToken))
             .ConfigureAwait(false);
         if (finished != waiter.Task)
         {
@@ -608,7 +755,9 @@ internal sealed class McpConnection : IDisposable
             {
                 _pending.Remove(id);
             }
-            throw new TimeoutException($"'{_plugin.Name}'.{method} timed out after 30 s");
+            cancellationToken.ThrowIfCancellationRequested();
+            TimeSpan effectiveTimeout = timeout ?? TimeSpan.FromSeconds(30);
+            throw new TimeoutException($"'{_plugin.Name}'.{method} timed out after {effectiveTimeout.TotalSeconds:0} s");
         }
         return await waiter.Task.ConfigureAwait(false);
     }

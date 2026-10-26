@@ -32,6 +32,7 @@ namespace CompanionOS.Core.Plugins;
 ///   "command": ["node", "server.js"],
 ///   "workingDirectory": ".",
 ///   "asksPermission": ["playlist.write"],
+///   "discoverTools": true,
 ///   "disabled": true,
 ///   "tools": [
 ///     { "name": "search", "description": "Search videos.",
@@ -51,12 +52,16 @@ public sealed class PluginManifest
     public List<string> Command { get; init; } = new();
     public string WorkingDirectory { get; init; } = ".";
     public List<string> AsksPermission { get; init; } = new();
+    /// <summary>For MCP only, obtain callable schemas from tools/list at startup.</summary>
+    public bool DiscoverTools { get; init; }
+    /// <summary>Manifest-authored tool policy; retained separately when MCP schemas are discovered.</summary>
+    public List<PluginTool> DeclaredTools { get; init; } = new();
     public List<PluginSurfaceManifest> Surfaces { get; init; } = new();
     /// <summary>Whether this external process is allowed to join Iris at next launch.
     /// Built-in modules use the runtime switch; folder plugins deliberately require a
     /// restart so no unreviewed executable begins running mid-session.</summary>
     public bool Disabled { get; set; } = true;
-    public List<PluginTool> Tools { get; init; } = new();
+    public List<PluginTool> Tools { get; set; } = new();
 
     public string Folder { get; set; } = string.Empty;
 
@@ -212,6 +217,17 @@ public sealed class PluginManifest
                 disabledByDefault = disabledElement.ValueKind == JsonValueKind.True;
             }
 
+            bool discoverTools = false;
+            if (root.TryGetProperty("discoverTools", out JsonElement discoverElement))
+            {
+                if (discoverElement.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+                {
+                    rejectionReason = "'discoverTools' must be a boolean";
+                    return false;
+                }
+                discoverTools = discoverElement.ValueKind == JsonValueKind.True;
+            }
+
             PluginManifest parsed = new()
             {
                 Schema = root.TryGetProperty("schema", out JsonElement schema) ? schema.GetInt32() : 0,
@@ -224,9 +240,11 @@ public sealed class PluginManifest
                 Command = command,
                 WorkingDirectory = root.TryGetProperty("workingDirectory", out JsonElement workingDirectory) ? workingDirectory.GetString() ?? "." : ".",
                 AsksPermission = asks,
+                DiscoverTools = discoverTools,
                 Surfaces = surfaces,
                 Disabled = disabledByDefault,
                 Tools = tools,
+                DeclaredTools = tools,
                 Folder = folder
             };
 
@@ -250,8 +268,13 @@ public sealed class PluginManifest
                 rejectionReason = "transport needs a 'command' array";
                 return false;
             }
+            if (parsed.DiscoverTools && parsed.Transport != "mcp")
+            {
+                rejectionReason = "'discoverTools' is currently supported only for MCP modules";
+                return false;
+            }
 
-            if (!ValidateSurfaces(parsed, out rejectionReason))
+            if (!ValidateSurfaces(parsed, out rejectionReason, validateActionsAndSchemas: !parsed.DiscoverTools))
             {
                 return false;
             }
@@ -283,7 +306,11 @@ public sealed class PluginManifest
             ? value.GetString() ?? string.Empty
             : string.Empty;
 
-    private static bool ValidateSurfaces(PluginManifest plugin, out string rejectionReason)
+    internal static bool ValidateDiscoveredSurfaces(PluginManifest plugin, out string rejectionReason) =>
+        ValidateSurfaces(plugin, out rejectionReason, validateActionsAndSchemas: true);
+
+    private static bool ValidateSurfaces(PluginManifest plugin, out string rejectionReason,
+        bool validateActionsAndSchemas)
     {
         const int maximumSurfaces = 6;
         const int maximumElementsPerSurface = 20;
@@ -365,13 +392,14 @@ public sealed class PluginManifest
                 PluginTool? targetTool = plugin.Tools.FirstOrDefault(tool =>
                     string.Equals(tool.Name, element.ToolName, StringComparison.OrdinalIgnoreCase));
                 if (!string.Equals(element.Type, "button", StringComparison.OrdinalIgnoreCase) ||
-                    string.IsNullOrWhiteSpace(element.Label) || targetTool is null)
+                    string.IsNullOrWhiteSpace(element.Label) || (validateActionsAndSchemas && targetTool is null))
                 {
                     rejectionReason = $"UI element '{element.Id}' must be text, input, or a button for a declared tool";
                     return false;
                 }
 
-                if (!ValidateStringInputs(surface, targetTool, inputNames, out rejectionReason))
+                if (targetTool is not null && validateActionsAndSchemas &&
+                    !ValidateStringInputs(surface, targetTool, inputNames, out rejectionReason))
                 {
                     return false;
                 }
@@ -385,6 +413,7 @@ public sealed class PluginManifest
     private static bool ValidatePermissions(PluginManifest plugin, out string rejectionReason)
     {
         HashSet<string> declared = new(StringComparer.OrdinalIgnoreCase);
+        HashSet<string> toolNames = new(StringComparer.OrdinalIgnoreCase);
         foreach (string scope in plugin.AsksPermission)
         {
             if (!IsPermissionScope(scope) || !declared.Add(scope))
@@ -396,7 +425,13 @@ public sealed class PluginManifest
 
         foreach (PluginTool tool in plugin.Tools)
         {
-            if (string.IsNullOrWhiteSpace(tool.Name) || string.IsNullOrWhiteSpace(tool.Description))
+            if (!toolNames.Add(tool.Name))
+            {
+                rejectionReason = $"tool name '{tool.Name}' is duplicated";
+                return false;
+            }
+            if (string.IsNullOrWhiteSpace(tool.Name) ||
+                (!plugin.DiscoverTools && string.IsNullOrWhiteSpace(tool.Description)))
             {
                 rejectionReason = "every tool needs a name and description";
                 return false;

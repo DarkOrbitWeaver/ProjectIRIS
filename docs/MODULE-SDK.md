@@ -12,9 +12,17 @@ permission, activity, and shell contracts so each integration feels like part of
 - External modules default to disabled unless their manifest explicitly sets `"disabled": false`;
   enabling them is a user action and takes effect after Iris restarts. Existing manifests that
   omitted the field now require that explicit enable step.
-- External tools are adapted into the same dynamic router and execution boundary. MCP tools
-  are currently repeated in the manifest rather than discovered from `tools/list`, and receive
-  stable module-qualified router names so unrelated modules can reuse local tool names.
+- External tools are adapted into the same dynamic router and execution boundary, and receive
+  stable module-qualified router names so unrelated modules can reuse local tool names. MCP
+  modules may set `"discoverTools": true` to load tool schemas from `tools/list` during startup;
+  each tool name and schema then comes from its server. The manifest can still declare
+  name-to-permission policy entries without duplicating those schemas. Discovery follows MCP
+  pagination and caps each module at 128 tools and 16 pages, each schema at 16 KB and description
+  at 1,000 characters, with a 10-second total discovery budget per module. If discovery fails or
+  the live surfaces do not match the discovered schemas, the module is registered without
+  callable discovered tools and the reason is logged. Discovered tools without a matching
+  manifest permission policy still pass through the conservative system-critical approval gate;
+  they simply have no named scope attached to the prompt yet.
 - External modules may declare up to six sidebar surfaces, each with at most twenty native
   elements: plain text, text inputs, and buttons bound to that module's declared tools. A
   button action is checked against its owning module and then uses the same permission gate
@@ -45,8 +53,10 @@ static, use semantic glyphs rather than a module's own branded assets, and canno
 independent overlays, main tabs, dynamic state updates, or typed form controls. The next SDK
 work must define and implement:
 
-1. A versioned manifest and authoring kit with validation, dynamic tool discovery, lifecycle
-   hooks, installation review, enable/disable/update/removal, and actionable diagnostics.
+1. A versioned manifest and authoring kit with stronger validation, dynamic discovery for
+   command modules and live refresh, lifecycle hooks, installation review,
+   enable/disable/update/removal, and actionable in-app diagnostics. MCP discovery currently
+   happens at startup only.
 2. Permission scopes that are explicit, reviewable, revocable, and enforced by Iris. Read
    access to contacts must be distinct from sending messages; consequential actions must still
    have user control. Current `permission` labels document and display intent; they are not yet
@@ -82,9 +92,10 @@ permission policy.
 
 ### Current schema-v1 sidebar example
 
-The module's tool schema is declared once in `plugin.json`; a button names that local tool and
-the input names map to JSON argument properties. `icon` is a semantic key from Iris's
-allow-list. The module stays disabled until the user explicitly enables it.
+With `discoverTools: true`, the MCP server supplies its tool schemas and the manifest supplies
+permission policy; a button names a discovered tool and input names map to its JSON argument
+properties. `icon` is a semantic key from Iris's allow-list. The module stays disabled until the
+user explicitly enables it.
 
 ```json
 {
@@ -97,20 +108,12 @@ allow-list. The module stays disabled until the user explicitly enables it.
   "transport": "mcp",
   "command": ["node", "server.js"],
   "disabled": true,
+  "discoverTools": true,
   "asksPermission": ["messages.send"],
   "tools": [
     {
       "name": "send_message",
-      "description": "Send a message to a contact.",
-      "permission": "messages.send",
-      "schema": {
-        "type": "object",
-        "properties": {
-          "recipient": { "type": "string" },
-          "message": { "type": "string" }
-        },
-        "required": ["recipient", "message"]
-      }
+      "permission": "messages.send"
     }
   ],
   "surfaces": [

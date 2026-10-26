@@ -245,6 +245,90 @@ public sealed class CoreRegressionTests
         }
     }
 
+    [Fact]
+    public async Task McpPluginDiscoversToolsAndUsesManifestPermissionPolicy()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"iris-plugin-discovery-{Guid.NewGuid():N}");
+        string folder = Path.Combine(root, "sample");
+        Directory.CreateDirectory(folder);
+        File.WriteAllText(Path.Combine(folder, "server.ps1"), """
+            while ($null -ne ($line = [Console]::In.ReadLine())) {
+                $request = ConvertFrom-Json -InputObject $line
+                if ($request.method -eq 'notifications/initialized') { continue }
+                if ($request.method -eq 'initialize') {
+                    $result = @{ protocolVersion = '2024-11-05'; capabilities = @{}; serverInfo = @{ name = 'test'; version = '1' } }
+                } elseif ($request.method -eq 'tools/list') {
+                    if ($request.params.cursor -eq 'page-2') {
+                        $result = @{ tools = @(@{
+                            name = 'search_contacts'
+                            description = 'Find contacts.'
+                            inputSchema = @{ type = 'object'; properties = @{ query = @{ type = 'string' } }; required = @('query') }
+                        }) }
+                    } else {
+                        $result = @{
+                            tools = @(@{
+                                name = 'send_message'
+                                description = 'Send a message to a contact.'
+                                inputSchema = @{ type = 'object'; properties = @{ recipient = @{ type = 'string' } }; required = @('recipient') }
+                            })
+                            nextCursor = 'page-2'
+                        }
+                    }
+                } else {
+                    continue
+                }
+                $response = @{ jsonrpc = '2.0'; id = $request.id; result = $result }
+                [Console]::Out.WriteLine(($response | ConvertTo-Json -Compress -Depth 20))
+            }
+            """);
+        File.WriteAllText(Path.Combine(folder, "plugin.json"), """
+            {
+              "schema": 1,
+              "id": "telegram",
+              "name": "Telegram",
+              "version": "0.1.0",
+              "description": "Messaging tools",
+              "transport": "mcp",
+              "command": ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "server.ps1"],
+              "disabled": false,
+              "discoverTools": true,
+              "asksPermission": ["messages.send"],
+              "tools": [{ "name": "send_message", "permission": "messages.send" }],
+              "surfaces": [{
+                "id": "compose",
+                "title": "New message",
+                "slot": "sidebar",
+                "icon": "telegram",
+                "elements": [
+                  { "id": "recipient", "type": "input", "name": "recipient", "label": "To" },
+                  { "id": "send", "type": "button", "label": "Send", "tool": "send_message" }
+                ]
+              }]
+            }
+            """);
+
+        try
+        {
+            using PluginHost host = new(new EventBus(), root);
+            host.Load();
+
+            await host.PrepareEnabledAsync(CancellationToken.None);
+
+            PluginManifest plugin = Assert.Single(host.Loaded);
+            Assert.Equal(2, plugin.Tools.Count);
+            PluginTool tool = plugin.Tools.Single(candidate => candidate.Name == "send_message");
+            Assert.Equal("send_message", tool.Name);
+            Assert.Equal("messages.send", tool.Permission);
+            Assert.Contains("recipient", tool.Schema);
+            Assert.Contains(plugin.Tools, candidate => candidate.Name == "search_contacts");
+            Assert.Single(plugin.Surfaces);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
     [Theory]
     [InlineData("IRIS", true, "")]
     [InlineData("Hey, Iris!", true, "")]

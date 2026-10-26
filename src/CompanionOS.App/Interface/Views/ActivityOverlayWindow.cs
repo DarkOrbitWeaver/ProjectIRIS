@@ -5,6 +5,7 @@ using Avalonia.Layout;
 using Avalonia.Media;
 using CompanionOS.App.Interface.Controls;
 using CompanionOS.App.Interface.Theme;
+using AvaloniaPath = Avalonia.Controls.Shapes.Path;
 
 namespace CompanionOS.App.Interface.Views;
 
@@ -18,7 +19,7 @@ internal sealed class ActivityOverlayWindow : Window
     private const double CardHeight = 104;
 
     private readonly TextBlock _module;
-    private readonly Path _moduleIcon;
+    private readonly AvaloniaPath _moduleIcon;
     private readonly TextBlock _step;
     private readonly TextBlock _detail;
     private readonly Border _progressTrack;
@@ -43,7 +44,7 @@ internal sealed class ActivityOverlayWindow : Window
 
         _module = Label(Palette.FontCaption, Palette.TextFaintBrush, FontWeight.SemiBold);
         _module.LetterSpacing = 0.9;
-        _moduleIcon = (Path)IconGlyph.Make(ModuleIconGlyph.Resolve("body"), 15, Palette.AccentSoftBrush);
+        _moduleIcon = (AvaloniaPath)IconGlyph.Make(ModuleIconGlyph.Resolve("body"), 15, Palette.AccentSoftBrush);
         _step = Label(Palette.FontEmphasis, Palette.TextPrimaryBrush, FontWeight.SemiBold);
         _detail = Label(Palette.FontBody, Palette.TextSecondaryBrush, FontWeight.Medium);
 

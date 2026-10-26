@@ -160,6 +160,8 @@ public sealed class CompanionRuntime : IAsyncDisposable
             await Modules.RegisterAsync(module, cancellationToken).ConfigureAwait(false);
         }
 
+        await Plugins.PrepareEnabledAsync(cancellationToken).ConfigureAwait(false);
+
         // Folder plugins are real modules, not just cards in the Body screen. Registering
         // them here gives the router, sandbox and model the same contract as built-ins.
         foreach (PluginManifest plugin in Plugins.Loaded.Where(plugin => !plugin.Disabled))
