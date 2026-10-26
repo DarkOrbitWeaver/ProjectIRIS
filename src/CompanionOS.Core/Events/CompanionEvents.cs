@@ -191,6 +191,21 @@ public enum NoticeSeverity
     Danger
 }
 
+/// <summary>
+/// Real-time word from her ears: what the recognizer is doing with a segment —
+/// heard and addressed to her, heard but not addressed, open on purpose, closed.
+/// The shell shows this live so the boss can always see the ears working; these
+/// lines are display-only and never journaled (transcripts stay conversation-only).
+/// </summary>
+public sealed class EarsEvent : CompanionEvent
+{
+    /// <summary>Short state word: not_addressed, addressed, open, closed.</summary>
+    public required string State { get; init; }
+
+    /// <summary>Transcript or hint, shown live only.</summary>
+    public string Text { get; init; } = string.Empty;
+}
+
 /// <summary>A module was installed, removed, enabled or disabled.</summary>
 public sealed class ModuleRegistryChangedEvent : CompanionEvent
 {

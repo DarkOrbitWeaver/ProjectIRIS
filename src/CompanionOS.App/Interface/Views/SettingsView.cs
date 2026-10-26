@@ -305,9 +305,15 @@ public sealed class SettingsView : UserControl
         Button listen = Ui.GhostButton("Listen for her name", () => _ = CaptureEarSampleAsync(heard, earStatus));
         Button teach = Ui.GhostButton("Teach her", () => SaveEarAlias(heard, earStatus));
 
+        TextBlock hotkeys = Ui.Text(
+            "Calling her: her name opens a conversation; Ctrl+K opens her ears anywhere, Ctrl+M mutes the microphone. " +
+            "The live line under her composer shows what her ears heard, in real time.",
+            Palette.FontCaption, Palette.TextSecondaryBrush, FontWeight.Medium, wrap: true);
+
         return Card("Her ears", new Control?[]
         {
             intro,
+            hotkeys,
             earStatus,
             Row("Say her name once", listen,
                 "Opens a nine-second capture. Her ears transcribe it, her voice stays silent, and she acts on nothing."),

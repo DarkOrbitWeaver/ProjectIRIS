@@ -401,6 +401,18 @@ public sealed class CompanionRuntime : IAsyncDisposable
             bool opening = !Voice.IsListening;
             Voice.SetListening(opening);
 
+            // A switch that answers nothing feels broken on the day the headset mangles
+            // her name; the press therefore speaks, on the shell and in her chatter line.
+            string earsLine = opening
+                ? "ears open on purpose — go ahead, Boss"
+                : "ears closed on purpose";
+            Events.Publish(new EarsEvent { State = opening ? "open" : "closed", Text = earsLine });
+            Events.Publish(new NoticeEvent
+            {
+                Severity = NoticeSeverity.Info,
+                Message = opening ? "Ears open — go ahead." : "Her ears are closed again (Ctrl+K to open)."
+            });
+
             IrisEvent.Log("Voice", "wake.hotkey", LogLevel.Info,
                 data: new Dictionary<string, string?>
                 {

@@ -48,6 +48,7 @@ public sealed partial class ShellModel : ObservableObject
         _subscriptions.Add(events.Subscribe<PermissionRequestedEvent>(payload => OnUiThread(() => HandlePermission(payload))));
         _subscriptions.Add(events.Subscribe<NoticeEvent>(payload => OnUiThread(() => HandleNotice(payload))));
         _subscriptions.Add(events.Subscribe<TranscriptEvent>(payload => OnUiThread(() => HandleTranscript(payload))));
+        _subscriptions.Add(events.Subscribe<EarsEvent>(payload => OnUiThread(() => HandleEars(payload))));
     }
 
     private static void OnUiThread(Action action)
@@ -394,6 +395,39 @@ public sealed partial class ShellModel : ObservableObject
         // so this only shows while she is still thinking.
         LastUtterance = payload.Text;
         IsListening = true;
+        SetEarsLine($"she heard \u201C{payload.Text.Trim()}\u201D — on it");
+    }
+
+    /// <summary>
+    /// One line of truth from her ears, displayed while it matters and gone after:
+    /// what the recognizer heard, whether the segment was for her, the invoke switch.
+    /// This is how the boss can finally see the ears working without opening logs.
+    /// </summary>
+    private void HandleEars(EarsEvent payload)
+    {
+        string line = payload.State switch
+        {
+            "not_addressed" => string.IsNullOrWhiteSpace(payload.Text)
+                ? "her ears heard something — waiting for her name"
+                : payload.Text,
+            "open" => "ears open on purpose — go ahead, Boss",
+            "closed" => "ears closed on purpose",
+            _ => payload.Text
+        };
+        SetEarsLine(line);
+    }
+
+    private void SetEarsLine(string line)
+    {
+        EarsLine = line;
+        _earsTimer.Stop();
+        _earsTimer.Start();
+    }
+
+    private void OnEarsTimerTick(object? sender, EventArgs eventArgs)
+    {
+        _earsTimer.Stop();
+        EarsLine = string.Empty;
     }
 
     private void PruneNotices()

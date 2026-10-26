@@ -82,6 +82,7 @@ public sealed partial class ShellModel : ObservableObject
     private readonly CompanionRuntime _runtime;
     private readonly DispatcherTimer _streamFlushTimer;
     private readonly DispatcherTimer _noticeTimer;
+    private readonly DispatcherTimer _earsTimer;
     private readonly StringBuilder _streamBuffer = new();
     private readonly List<IDisposable> _subscriptions = new();
 
@@ -94,6 +95,7 @@ public sealed partial class ShellModel : ObservableObject
     private string _contextText = "CTX —";
     private string _ramText = "RAM —";
     private string _lastUtterance = string.Empty;
+    private string _earsLine = string.Empty;
     private bool _isListening;
     private bool _isSpeaking;
     private bool _isTurnInProgress;
@@ -127,6 +129,11 @@ public sealed partial class ShellModel : ObservableObject
         _noticeTimer = new DispatcherTimer(
             TimeSpan.FromSeconds(1), DispatcherPriority.Background, (_, _) => PruneNotices());
         _noticeTimer.Start();
+
+        // Her ears line decays seven quiet seconds after its last update: it reports one
+        // segment or one switch press, then leaves the screen instead of becoming noise.
+        _earsTimer = new DispatcherTimer(
+            TimeSpan.FromSeconds(7), DispatcherPriority.Background, OnEarsTimerTick);
 
         // The guard gives the user exactly fifteen seconds to answer. The card used to
         // stay on screen after that deadline with a question that could no longer be
@@ -255,6 +262,17 @@ public sealed partial class ShellModel : ObservableObject
     {
         get => _activeConversationTurnId;
         private set => SetProperty(ref _activeConversationTurnId, value);
+    }
+
+    /// <summary>
+    /// One live line of what her ears just did — what the recognizer heard, whether the
+    /// segment was addressed to her, the invoke switch. A moment of truth on the board;
+    /// empty again after her ears have been quiet for seven seconds.
+    /// </summary>
+    public string EarsLine
+    {
+        get => _earsLine;
+        private set => SetProperty(ref _earsLine, value);
     }
 
     /// <summary>Current truthful work status, shared by chat and non-activating overlays.</summary>

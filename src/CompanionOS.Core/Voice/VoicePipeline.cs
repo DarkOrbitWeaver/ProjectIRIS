@@ -1492,7 +1492,16 @@ public sealed class VoicePipeline : IAsyncDisposable
             switch (addressing.Outcome)
             {
                 case VoiceAddressingOutcome.WakeMiss:
-                    // Not addressed to her; stay silent and let the audio decay.
+                    // The boss cannot read a wall: what the ears heard and why the segment
+                    // was ignored goes live to the shell. Display only — nothing is
+                    // persisted here, transcripts stay conversation-only.
+                    _events.Publish(new EarsEvent
+                    {
+                        State = "not_addressed",
+                        Text = string.IsNullOrWhiteSpace(transcript)
+                            ? "heard something short — waiting for her name"
+                            : $"heard \u201C{transcript.Trim()}\u201D — not addressed to her"
+                    });
                     LogSegmentDecision("wake_miss", stage, ears.RequireWakePhrase, conversationWasOpen,
                         wakeGateAvailable, recognizedCharacters, transcribeDurationMs);
                     return;

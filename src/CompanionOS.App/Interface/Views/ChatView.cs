@@ -46,6 +46,7 @@ public sealed class ChatView : UserControl
     private readonly StatusOrb _emptyOrb = new() { Width = 96, Height = 96 };
     private readonly Control _emptyState;
     private Button _micButton = null!;
+    private TextBlock _earsLineText = null!;
     private Button _sendButton = null!;
     private MeterKind _meterKind = MeterKind.Idle;
 
@@ -130,6 +131,14 @@ public sealed class ChatView : UserControl
                     _sendButton.IsEnabled = _model.IsRuntimeReady;
                     UpdateVoiceChrome();
                     UpdateTimerCadence();
+                });
+            }
+            else if (eventArgs.PropertyName is nameof(ShellModel.EarsLine))
+            {
+                Dispatcher.UIThread.Post(() =>
+                {
+                    _earsLineText.Text = _model.EarsLine;
+                    _earsLineText.IsVisible = _model.EarsLine.Length > 0;
                 });
             }
         };
@@ -450,8 +459,8 @@ public sealed class ChatView : UserControl
 
     private Control BuildLayout()
     {
-        // Transcript column.
-        Grid transcript = new() { RowDefinitions = new RowDefinitions("*,Auto") };
+        // Transcript column; the third row hosts the live ears line.
+        Grid transcript = new() { RowDefinitions = new RowDefinitions("*,Auto,Auto") };
 
         // Bottom anchor: an empty star row above the messages pushes them to the board's
         // flex-end position; it collapses once the transcript outgrows the window.
@@ -487,6 +496,16 @@ public sealed class ChatView : UserControl
         Border composer = BuildComposer();
         Grid.SetRow(composer, 1);
         transcript.Children.Add(composer);
+
+        // The ears line: one live caption of what the recognizer did with the last
+        // segment — what it heard, whether it was addressed to her, the invoke switch.
+        // The boss watches recognition happen on the board, never in a log.
+        _earsLineText = Ui.Text(string.Empty, Palette.FontCaption, Palette.TextSecondaryBrush,
+            FontWeight.Medium, wrap: true);
+        _earsLineText.IsVisible = false;
+        _earsLineText.Margin = new Thickness(24, 6, 24, 0);
+        Grid.SetRow(_earsLineText, 2);
+        transcript.Children.Add(_earsLineText);
 
         // Right rail column: the 280 px board card.
         Border rail = new()
