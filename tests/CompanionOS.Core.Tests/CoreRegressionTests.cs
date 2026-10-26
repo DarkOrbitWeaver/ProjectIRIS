@@ -56,6 +56,40 @@ public sealed class CoreRegressionTests
     }
 
     [Fact]
+    public async Task SpeechOutputStopCancelsActiveAndQueuedJobsButAllowsLaterSpeech()
+    {
+        SpeechOutputArbiter arbiter = new();
+        TaskCompletionSource activeEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        Task active = arbiter.RunAsync(async token =>
+        {
+            activeEntered.TrySetResult();
+            await Task.Delay(Timeout.InfiniteTimeSpan, token);
+        }, CancellationToken.None);
+        await activeEntered.Task;
+
+        bool queuedRan = false;
+        Task queued = arbiter.RunAsync(_ =>
+        {
+            queuedRan = true;
+            return Task.CompletedTask;
+        }, CancellationToken.None);
+
+        arbiter.Stop();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => active);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => queued);
+        Assert.False(queuedRan);
+
+        bool nextRequestRan = false;
+        await arbiter.RunAsync(_ =>
+        {
+            nextRequestRan = true;
+            return Task.CompletedTask;
+        }, CancellationToken.None);
+        Assert.True(nextRequestRan);
+    }
+
+    [Fact]
     public async Task SpeechOutputArbiterCancelsQueuedAndActiveWorkDuringShutdown()
     {
         SpeechOutputArbiter arbiter = new();

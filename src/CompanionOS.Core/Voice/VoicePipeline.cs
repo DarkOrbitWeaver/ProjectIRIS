@@ -889,7 +889,11 @@ public sealed class VoicePipeline : IAsyncDisposable
     }
 
     /// <summary>Stops her mid-sentence. Used by Escape, barge-in and sleep.</summary>
-    public void StopSpeaking() => _player.Stop();
+    public void StopSpeaking()
+    {
+        _player.Stop();
+        _speechOutputArbiter.Stop();
+    }
 
     public async ValueTask DisposeAsync()
     {
