@@ -1,12 +1,10 @@
 using Avalonia;
 using Avalonia.Controls;
-using Avalonia.Controls.Shapes;
 using Avalonia.Layout;
 using Avalonia.Media;
 using CompanionOS.App.Interface.Controls;
 using CompanionOS.App.Interface.Theme;
 using CompanionOS.Core.Modules;
-using AvaloniaPath = Avalonia.Controls.Shapes.Path;
 
 namespace CompanionOS.App.Interface.Views;
 
@@ -20,7 +18,7 @@ internal sealed class ActivityOverlayWindow : Window
     private const double CardHeight = 104;
 
     private readonly TextBlock _module;
-    private readonly AvaloniaPath _moduleIcon;
+    private readonly Border _moduleIcon;
     private readonly TextBlock _step;
     private readonly TextBlock _detail;
     private readonly Border _progressTrack;
@@ -46,7 +44,7 @@ internal sealed class ActivityOverlayWindow : Window
 
         _module = Label(Palette.FontCaption, Palette.TextFaintBrush, FontWeight.SemiBold);
         _module.LetterSpacing = 0.9;
-        _moduleIcon = (AvaloniaPath)IconGlyph.Make(ModuleIconGlyph.Resolve("body"), 15, Palette.AccentSoftBrush);
+        _moduleIcon = ModuleIconGlyph.Create("body", 15, Palette.AccentSoftBrush);
         _step = Label(Palette.FontEmphasis, Palette.TextPrimaryBrush, FontWeight.SemiBold);
         _detail = Label(Palette.FontBody, Palette.TextSecondaryBrush, FontWeight.Medium);
 
@@ -122,7 +120,7 @@ internal sealed class ActivityOverlayWindow : Window
 
         _module.Text = $"{model.ActivityModule.ToUpperInvariant()} · IN PROGRESS";
         _cancel.IsVisible = false;
-        _moduleIcon.Data = Avalonia.Media.StreamGeometry.Parse(ModuleIconGlyph.Resolve(model.ActivityIconKey));
+        ModuleIconGlyph.Update(_moduleIcon, model.ActivityIconKey, 15, Palette.AccentSoftBrush);
         _step.Text = model.ActivityMessage;
         _detail.Text = model.ActivityDetail;
         bool hasProgress = model.ActivityProgress is { } progress &&
@@ -147,7 +145,7 @@ internal sealed class ActivityOverlayWindow : Window
 
         bool live = task.State is BackgroundTaskState.Queued or BackgroundTaskState.Running or BackgroundTaskState.CancelRequested;
         _module.Text = $"{task.ModuleName.ToUpperInvariant()} · {(live ? "IN BACKGROUND" : task.State.ToString().ToUpperInvariant())}";
-        _moduleIcon.Data = Avalonia.Media.StreamGeometry.Parse(ModuleIconGlyph.Resolve(task.IconKey));
+        ModuleIconGlyph.Update(_moduleIcon, task.IconKey, 15, Palette.AccentSoftBrush);
         _step.Text = task.CurrentStep;
         _detail.Text = task.Result ?? $"{task.ToolName} · {task.Id}";
         _cancel.IsVisible = live;

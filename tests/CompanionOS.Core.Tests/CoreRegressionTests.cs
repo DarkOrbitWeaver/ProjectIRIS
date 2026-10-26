@@ -65,6 +65,42 @@ public sealed class CoreRegressionTests
     }
 
     [Fact]
+    public void ExternalModuleManifestAcceptsSmallLocalPngBranding()
+    {
+        string folder = Path.Combine(Path.GetTempPath(), $"iris-plugin-branding-{Guid.NewGuid():N}");
+        string assets = Path.Combine(folder, "assets");
+        Directory.CreateDirectory(assets);
+        try
+        {
+            File.WriteAllBytes(Path.Combine(assets, "brand.png"), Convert.FromBase64String(
+                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADUlEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC"));
+            File.WriteAllText(Path.Combine(folder, "plugin.json"), """
+                {"schema":1,"id":"branded","name":"Branded","transport":"builtin","icon":"assets/brand.png"}
+                """);
+
+            bool loaded = PluginManifest.TryLoad(folder, out PluginManifest? manifest, out string reason);
+
+            Assert.True(loaded, reason);
+            Assert.NotNull(manifest);
+            Assert.StartsWith("png:", manifest.ResolveIcon(manifest.Icon), StringComparison.Ordinal);
+            using PluginHost host = new(new EventBus(), folder);
+            PluginModuleAdapter adapter = new(host, manifest);
+            Assert.Equal(manifest.ResolveIcon(manifest.Icon), adapter.IconKey);
+
+            File.WriteAllText(Path.Combine(folder, "plugin.json"), """
+                {"schema":1,"id":"branded","name":"Branded","transport":"builtin","icon":"../brand.png"}
+                """);
+            bool traversalLoaded = PluginManifest.TryLoad(folder, out _, out string traversalReason);
+            Assert.False(traversalLoaded);
+            Assert.Contains("safe PNG", traversalReason, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            Directory.Delete(folder, recursive: true);
+        }
+    }
+
+    [Fact]
     public void ExternalModuleManifestAcceptsBoundedSidebarControlsAndModuleOverlays()
     {
         string folder = Path.Combine(Path.GetTempPath(), $"iris-plugin-surface-{Guid.NewGuid():N}");

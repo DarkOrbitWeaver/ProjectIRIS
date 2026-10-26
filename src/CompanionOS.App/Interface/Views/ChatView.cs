@@ -235,7 +235,7 @@ public sealed class ChatView : UserControl
             Spacing = 9,
             VerticalAlignment = VerticalAlignment.Center
         };
-        heading.Children.Add(IconGlyph.Make(ModuleIconGlyph.Resolve(surface.IconKey), 20, Palette.AccentSoftBrush));
+        heading.Children.Add(ModuleIconGlyph.Create(surface.IconKey, 20, Palette.AccentSoftBrush));
         heading.Children.Add(Ui.Text(surface.Title, Palette.FontEmphasis, Palette.TextPrimaryBrush,
             FontWeight.SemiBold, wrap: false));
         content.Children.Add(heading);

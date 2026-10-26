@@ -31,9 +31,10 @@ permission, activity, and shell contracts so each integration feels like part of
   their own declared surfaces through `ui` JSONL messages. The shell can show up to three declared
   module overlays together while its tool is running, updates them from real progress, and lets the
   user hide each one for that task. A button action is checked against its owning module and then
-  uses the same permission gate as a model-selected tool. All inputs in one surface are string fields shared by its buttons
-  and must match each target tool's JSON schema. Semantic icon keys use Iris's built-in glyph set;
-  a module's icon also appears in the activity card.
+  uses the same permission gate as a model-selected tool. All inputs in one surface are string
+  fields shared by its buttons and must match each target tool's JSON schema. Icons can use Iris's
+  semantic glyph keys or a module-local PNG (maximum 128×128 and 128 KiB, with path traversal and
+  links rejected); module branding appears in its surfaces and activity cards.
 - The request router keeps the model-facing list to at most eight tools, chooses no more than two
   relevant external modules, and ranks a large module's tools against the current request rather
   than taking the first entries. It caches a compact module fingerprint when registering the
@@ -99,8 +100,8 @@ the existing module enablement and capability approval still matter.
 ## What the public SDK still needs
 
 The current mechanism is not yet the complete extensibility promise. Controls are native and
-state can update during a command call, but icons still use semantic glyphs rather than module
-assets, overlays are activity-attached, and modules cannot persist UI state across restarts. They
+state can update during a command call, and module-local PNG branding is supported. Overlays are
+activity-attached, and modules cannot persist UI state across restarts. They
 cannot yet provide main tabs, rich typed forms, or explicit show/hide component APIs. The next SDK work must define and
 implement:
 

@@ -101,7 +101,7 @@ internal sealed class ModuleSurfaceOverlayWindow : Window
             VerticalAlignment = VerticalAlignment.Center,
             Children =
             {
-                IconGlyph.Make(ModuleIconGlyph.Resolve(surface.IconKey), 20, Palette.AccentSoftBrush),
+                ModuleIconGlyph.Create(surface.IconKey, 20, Palette.AccentSoftBrush),
                 Ui.Text(surface.Title, Palette.FontEmphasis, Palette.TextPrimaryBrush,
                     FontWeight.SemiBold, wrap: false)
             }

@@ -427,7 +427,7 @@ public sealed class PluginHost : IDisposable
                         ToolName = tool.Name,
                         TurnId = turnId,
                         Message = message,
-                        IconKey = plugin.Icon,
+                        IconKey = plugin.ResolveIcon(plugin.Icon),
                         Progress = TryReadFiniteNumber(root, "progress"),
                         Total = TryReadFiniteNumber(root, "total")
                     });
@@ -659,7 +659,7 @@ public sealed class PluginHost : IDisposable
                 ToolName = tool.Name,
                 TurnId = turnId,
                 Message = progress.Message ?? $"{tool.Name} is working",
-                IconKey = plugin.Icon,
+                IconKey = plugin.ResolveIcon(plugin.Icon),
                 Progress = progress.Progress,
                 Total = progress.Total
             }), cancellationToken).ConfigureAwait(false);

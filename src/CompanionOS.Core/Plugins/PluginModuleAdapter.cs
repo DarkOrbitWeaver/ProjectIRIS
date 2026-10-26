@@ -44,7 +44,7 @@ public sealed class PluginModuleAdapter : IAssistantModule, IModuleSurfaceProvid
 
     public string DisplayName => _plugin.Name;
 
-    public string IconKey => _plugin.Icon;
+    public string IconKey => _plugin.ResolveIcon(_plugin.Icon);
 
     public string Purpose => string.IsNullOrWhiteSpace(_plugin.Description)
         ? "External capability."
@@ -69,7 +69,7 @@ public sealed class PluginModuleAdapter : IAssistantModule, IModuleSurfaceProvid
                 ? ShellSlot.Overlay
                 : ShellSlot.Sidebar,
             Model = surface,
-            IconKey = surface.Icon,
+            IconKey = _plugin.ResolveIcon(surface.Icon),
             Elements = surface.Elements.Select(element => new ModuleSurfaceElement
             {
                 Id = element.Id,

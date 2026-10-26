@@ -1,4 +1,5 @@
 using System;
+using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -42,6 +43,11 @@ namespace CompanionOS.Core.Plugins;
 /// </summary>
 public sealed class PluginManifest
 {
+    private static readonly HashSet<string> BuiltInIconKeys = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "body", "chat", "memory", "music", "search", "send", "settings", "telegram", "timer", "web"
+    };
+
     public int Schema { get; init; }
     public string Id { get; init; } = string.Empty;
     public string Name { get; init; } = string.Empty;
@@ -64,6 +70,11 @@ public sealed class PluginManifest
     public List<PluginTool> Tools { get; set; } = new();
 
     public string Folder { get; set; } = string.Empty;
+
+    /// <summary>Returns the UI transport key for a validated builtin glyph or local PNG asset.</summary>
+    public string ResolveIcon(string reference) => BuiltInIconKeys.Contains(reference)
+        ? reference
+        : "png:" + Path.GetFullPath(Path.Combine(Folder, reference.Replace('/', Path.DirectorySeparatorChar)));
 
     /// <summary>Parses a manifest; returns the reason it is not usable instead of throwing.</summary>
     public static bool TryLoad(string folder, out PluginManifest? manifest, out string rejectionReason)
@@ -359,12 +370,11 @@ public sealed class PluginManifest
         const int maximumSidebarSurfaces = 5;
         const int maximumOverlaySurfaces = 3;
         const int maximumElementsPerSurface = 20;
-        string[] iconKeys = ["body", "chat", "memory", "music", "search", "send", "settings", "telegram", "timer", "web"];
         HashSet<string> surfaceIds = new(StringComparer.OrdinalIgnoreCase);
 
-        if (!iconKeys.Contains(plugin.Icon, StringComparer.OrdinalIgnoreCase))
+        if (!IsValidIconReference(plugin.Folder, plugin.Icon))
         {
-            rejectionReason = $"module uses unknown icon key '{plugin.Icon}'";
+            rejectionReason = $"module icon '{plugin.Icon}' must be a builtin icon key or a safe PNG asset inside the module folder";
             return false;
         }
 
@@ -402,9 +412,9 @@ public sealed class PluginManifest
                 rejectionReason = $"UI surface '{surface.Id}' uses unsupported slot '{surface.Slot}'; v1 supports sidebar and overlay";
                 return false;
             }
-            if (!iconKeys.Contains(surface.Icon, StringComparer.OrdinalIgnoreCase))
+            if (!IsValidIconReference(plugin.Folder, surface.Icon))
             {
-                rejectionReason = $"UI surface '{surface.Id}' uses unknown icon key '{surface.Icon}'";
+                rejectionReason = $"UI surface '{surface.Id}' icon must be a builtin key or a safe PNG asset inside the module folder";
                 return false;
             }
             if (surface.Elements.Count is 0 or > maximumElementsPerSurface)
@@ -491,6 +501,77 @@ public sealed class PluginManifest
 
         rejectionReason = string.Empty;
         return true;
+    }
+
+    private static bool IsValidIconReference(string pluginFolder, string reference)
+    {
+        if (BuiltInIconKeys.Contains(reference))
+        {
+            return true;
+        }
+        if (string.IsNullOrWhiteSpace(reference) || Path.IsPathRooted(reference) ||
+            !string.Equals(Path.GetExtension(reference), ".png", StringComparison.OrdinalIgnoreCase) ||
+            reference.Contains(':') || reference.Contains('\0'))
+        {
+            return false;
+        }
+
+        string[] segments = reference.Split(['/', '\\'], StringSplitOptions.RemoveEmptyEntries);
+        if (segments.Length == 0 || segments.Any(segment => segment is "." or ".."))
+        {
+            return false;
+        }
+
+        try
+        {
+            string root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(pluginFolder));
+            string path = Path.GetFullPath(Path.Combine(root, reference.Replace('/', Path.DirectorySeparatorChar)));
+            string rootPrefix = root + Path.DirectorySeparatorChar;
+            if (!path.StartsWith(rootPrefix, StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            if ((File.GetAttributes(root) & FileAttributes.ReparsePoint) != 0)
+            {
+                return false;
+            }
+            string current = root;
+            foreach (string segment in segments)
+            {
+                current = Path.Combine(current, segment);
+                FileAttributes attributes = File.GetAttributes(current);
+                if ((attributes & FileAttributes.ReparsePoint) != 0)
+                {
+                    return false;
+                }
+            }
+
+            FileInfo file = new(path);
+            if (!file.Exists || file.Length is <= 24 or > 131_072)
+            {
+                return false;
+            }
+
+            using FileStream stream = file.OpenRead();
+            byte[] header = new byte[24];
+            if (stream.Read(header, 0, header.Length) != header.Length ||
+                !header.AsSpan(0, 8).SequenceEqual(new byte[] { 137, 80, 78, 71, 13, 10, 26, 10 }) ||
+                BinaryPrimitives.ReadUInt32BigEndian(header.AsSpan(8, 4)) != 13 ||
+                !header.AsSpan(12, 4).SequenceEqual("IHDR"u8))
+            {
+                return false;
+            }
+
+            uint width = BinaryPrimitives.ReadUInt32BigEndian(header.AsSpan(16, 4));
+            uint height = BinaryPrimitives.ReadUInt32BigEndian(header.AsSpan(20, 4));
+            return width is > 0 and <= 128 && height is > 0 and <= 128;
+        }
+        catch (Exception exception) when (exception is ArgumentException or IOException or UnauthorizedAccessException or
+                                           NotSupportedException or System.Security.SecurityException)
+        {
+            return false;
+        }
     }
 
     private static bool ValidatePermissions(PluginManifest plugin, out string rejectionReason)
