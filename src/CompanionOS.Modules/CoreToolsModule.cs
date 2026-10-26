@@ -270,7 +270,8 @@ public sealed class CoreToolsModule : IAssistantModule
             Target = target,
             Content = content,
             Layer = 2,
-            Provenance = "user-correction"
+            Provenance = "user-correction",
+            Supersedes = previous.Length == 0 ? null : previous
         }, cancellationToken).ConfigureAwait(false);
 
         return ToolResult.Ok(

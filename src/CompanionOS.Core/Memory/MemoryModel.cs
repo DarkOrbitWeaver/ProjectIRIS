@@ -59,7 +59,8 @@ public enum SynapseType
     Before,
     After,
     During,
-    RelatedTo
+    RelatedTo,
+    Supersedes
 }
 
 /// <summary>Helpers that keep the polarity rules in one place.</summary>
@@ -71,7 +72,7 @@ public static class SynapseTypes
         SynapseType.IsA or SynapseType.BelongsTo => SynapsePolarity.Inward,
         SynapseType.UsedFor or SynapseType.Causes or SynapseType.CombinesWith or SynapseType.RelatedTo =>
             SynapsePolarity.Outward,
-        SynapseType.ConflictsWith or SynapseType.DangerIf or SynapseType.CannotBe => SynapsePolarity.Inhibitory,
+        SynapseType.ConflictsWith or SynapseType.DangerIf or SynapseType.CannotBe or SynapseType.Supersedes => SynapsePolarity.Inhibitory,
         SynapseType.Likes or SynapseType.Dislikes or SynapseType.Prefers => SynapsePolarity.Affective,
         _ => SynapsePolarity.Temporal
     };
@@ -105,6 +106,7 @@ public static class SynapseTypes
             "before" => SynapseType.Before,
             "after" => SynapseType.After,
             "during" => SynapseType.During,
+            "supersedes" or "replaces" => SynapseType.Supersedes,
             _ => SynapseType.RelatedTo
         };
     }
@@ -126,6 +128,7 @@ public static class SynapseTypes
         SynapseType.Before => "comes before",
         SynapseType.After => "comes after",
         SynapseType.During => "happens during",
+        SynapseType.Supersedes => "supersedes",
         _ => "relates to"
     };
 }

@@ -95,6 +95,12 @@ public sealed class SynapticMemoryEngine : IMemoryAccess
                         continue;
                     }
 
+                    // Supersedes is audit metadata, not a semantic association.
+                    if (synapse.Type == SynapseType.Supersedes)
+                    {
+                        continue;
+                    }
+
                     double carry = PolarityCarry.TryGetValue(synapse.Polarity, out double factor) ? factor : 0.8;
                     double candidateScore = originScore * synapse.Strength * carry * hopFactor;
 
@@ -189,6 +195,15 @@ public sealed class SynapticMemoryEngine : IMemoryAccess
                     continue;
                 }
 
+                if (synapse.Type == SynapseType.Supersedes ||
+                    (!synapse.Provenance.Equals("user-correction", StringComparison.OrdinalIgnoreCase) &&
+                     IsSupersededByCorrection(node, synapse)))
+                {
+                    // Keep old facts and the audit edge in the graph, but do not make
+                    // the replaced value part of the model's current working context.
+                    continue;
+                }
+
                 if (synapse.Provenance.Equals("user-correction", StringComparison.OrdinalIgnoreCase))
                 {
                     // Corrections are deliberately preserved rather than silently
@@ -264,6 +279,19 @@ public sealed class SynapticMemoryEngine : IMemoryAccess
             .LinkAsync(subject.Id, target.Id, type, 0.7, request.Provenance, cancellationToken)
             .ConfigureAwait(false);
 
+        if (!string.IsNullOrWhiteSpace(request.Supersedes))
+        {
+            MemoryNode formerTarget = await _graph
+                .UpsertNodeAsync(request.Supersedes.Trim(), string.Empty, layer, "user-correction",
+                    cancellationToken: cancellationToken)
+                .ConfigureAwait(false);
+            if (!string.Equals(formerTarget.Id, target.Id, StringComparison.Ordinal))
+            {
+                await _graph.LinkAsync(target.Id, formerTarget.Id, SynapseType.Supersedes, 1.0,
+                    "user-correction", cancellationToken).ConfigureAwait(false);
+            }
+        }
+
         _events.Publish(new MemoryChangedEvent { NodeId = subject.Id, Title = subject.Title, Change = "linked" });
         CompanionLog.Info("Memory", $"Learned: {subject.Title} {SynapseTypes.ToWords(type)} {target.Title} " +
                                     $"(strength {synapse.Strength:0.00}).");
@@ -278,6 +306,22 @@ public sealed class SynapticMemoryEngine : IMemoryAccess
             });
 
         return ToRecalled(subject);
+    }
+
+    private bool IsSupersededByCorrection(MemoryNode subject, MemorySynapse assertion)
+    {
+        foreach (MemorySynapse correction in _graph.OutgoingOf(subject.Id)
+                     .Where(edge => edge.Provenance.Equals("user-correction", StringComparison.OrdinalIgnoreCase)))
+        {
+            if (_graph.OutgoingOf(correction.ToNodeId).Any(edge =>
+                    edge.Type == SynapseType.Supersedes &&
+                    string.Equals(edge.ToNodeId, assertion.ToNodeId, StringComparison.Ordinal)))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>Simple top-N recall for modules that need a fact, not a full intuition block.</summary>

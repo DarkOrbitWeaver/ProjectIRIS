@@ -465,8 +465,11 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
         });
 
         StringBuilder finalAnswer = new();
-        bool usedTools = false;
+        bool anyToolSucceeded = false;
+        bool reachedFinalAnswer = false;
         string answerText = string.Empty;
+        List<string> toolLedger = new();
+        HashSet<string> uncertainTools = new(StringComparer.OrdinalIgnoreCase);
 
         for (int round = 0; round < MaximumToolRounds; round++)
         {
@@ -493,10 +496,10 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
             if (turn.ToolCalls.Count == 0)
             {
                 answerText = turn.Text.Length > 0 ? turn.Text : roundText.ToString().Trim();
+                reachedFinalAnswer = true;
                 break;
             }
 
-            usedTools = true;
             _mind.MoveTo(MindState.Acting, "tool call");
 
             // Echo the assistant's tool request back so the model keeps its own thread.
@@ -509,6 +512,7 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
             foreach (ToolCallRequest call in turn.ToolCalls)
             {
                 string operationId = _journal.RecordToolCall(turnId, "router", call.Name);
+                string label = call.Name.Replace('_', ' ').Replace('.', ' ');
 
                 if (!ToolArgumentsParser.TryParse(call.ArgumentsJson, out JsonElement arguments))
                 {
@@ -516,17 +520,49 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
                         "I did not run that action because its arguments were invalid. I should ask for the missing details and try again.");
                     _journal.RecordToolResult(turnId, operationId, JournalToolStatus.Failed);
                     messages.Add(ChatMessage.ToolResult(call.Id, call.Name, invalidArguments.ModelText));
+                    toolLedger.Add($"{label}: not run (invalid arguments)");
                     continue;
                 }
 
-                ToolResult result = await _modules
-                    .ExecuteAsync(call.Name, arguments, turnId, cancellationToken)
-                    .ConfigureAwait(false);
+                if (uncertainTools.Contains(call.Name))
+                {
+                    ToolResult notRepeated = ToolResult.Fail(
+                        $"I did not repeat {label}: the earlier attempt may already have completed. Check the current state first.");
+                    _journal.RecordToolResult(turnId, operationId, JournalToolStatus.Failed);
+                    messages.Add(ChatMessage.ToolResult(call.Id, call.Name, notRepeated.ModelText));
+                    toolLedger.Add($"{label}: not repeated");
+                    continue;
+                }
+
+                ToolResult result;
+                try
+                {
+                    result = await _modules
+                        .ExecuteAsync(call.Name, arguments, turnId, cancellationToken)
+                        .ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    _journal.RecordToolResult(turnId, operationId, JournalToolStatus.Unknown);
+                    throw;
+                }
+
                 _journal.RecordToolResult(turnId, operationId,
                     result.BackgroundTaskId is not null
                         ? JournalToolStatus.BackgroundStarted
+                        : result.IsOutcomeUncertain ? JournalToolStatus.Unknown
                         : result.Succeeded ? JournalToolStatus.Succeeded : JournalToolStatus.Failed,
                     result.BackgroundTaskId);
+
+                if (result.IsOutcomeUncertain)
+                {
+                    uncertainTools.Add(call.Name);
+                }
+
+                anyToolSucceeded |= result.Succeeded;
+                toolLedger.Add($"{label}: " + (result.BackgroundTaskId is not null ? "started in background"
+                    : result.IsOutcomeUncertain ? "unconfirmed"
+                    : result.Succeeded ? "done" : "failed"));
 
                 messages.Add(ChatMessage.ToolResult(call.Id, call.Name, result.ModelText));
 
@@ -547,6 +583,17 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
             _mind.MoveTo(MindState.Thinking, "resuming after tool");
         }
 
+        if (!reachedFinalAnswer && toolLedger.Count > 0)
+        {
+            answerText = (finalAnswer.ToString().Trim() + "\n\n" +
+                          $"I stopped after {toolLedger.Count} step(s) without finishing: {string.Join("; ", toolLedger)}. " +
+                          "Tell me if you want me to continue.").Trim();
+        }
+        else if (string.IsNullOrWhiteSpace(answerText) && toolLedger.Count > 0)
+        {
+            answerText = $"Here is what happened: {string.Join("; ", toolLedger)}.";
+        }
+
         if (string.IsNullOrWhiteSpace(answerText))
         {
             answerText = finalAnswer.ToString().Trim();
@@ -557,6 +604,16 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
             answerText = "I could not work that one out. Ask me again in a moment?";
         }
 
+        IrisEvent.Log("Brain", "turn.report", LogLevel.Info,
+            data: new Dictionary<string, string?>
+            {
+                ["origin"] = origin,
+                ["image_attached"] = hasAttachedImage.ToString(),
+                ["memories_activated"] = activation.Activated.Count().ToString(System.Globalization.CultureInfo.InvariantCulture),
+                ["tools"] = string.Join(" | ", toolLedger),
+                ["round_limit_hit"] = (!reachedFinalAnswer && toolLedger.Count > 0).ToString()
+            });
+
         // 6. Speak, unless the user interrupted or the voice is muted.
         _events.Publish(new ConversationEvent
         {
@@ -566,7 +623,7 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
             Detail = string.Join(",", selectedModules.Select(module => module.Id))
         });
 
-        RememberExchange(userText, answerText, usedTools);
+        RememberExchange(userText, answerText, anyToolSucceeded);
 
         if (_settings.Current.Voice.SpeakReplies)
         {

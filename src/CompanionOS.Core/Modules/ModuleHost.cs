@@ -478,9 +478,22 @@ public sealed class ModuleHost : IAsyncDisposable
             Task finished = await Task.WhenAny(execution, Task.Delay(Timeout.Infinite, timeoutSource.Token))
                 .ConfigureAwait(false);
 
-            result = finished == execution
-                ? await execution.ConfigureAwait(false)
-                : ToolResult.Fail($"{tool.Name} took too long, so I stopped it.");
+            if (finished == execution)
+            {
+                result = await execution.ConfigureAwait(false);
+            }
+            else
+            {
+                // Caller cancellation is an interrupted turn; it is not a module timeout.
+                cancellationToken.ThrowIfCancellationRequested();
+
+                // A module can ignore cancellation and finish a side effect after we stop waiting.
+                // Observe a late fault and tell the brain the outcome is unknown.
+                _ = execution.ContinueWith(task => { _ = task.Exception; }, CancellationToken.None,
+                    TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                    TaskScheduler.Default);
+                result = ToolResult.Uncertain($"I stopped waiting for {tool.Name} because it took too long.");
+            }
         }
         catch (OperationCanceledException)
         {
@@ -488,7 +501,7 @@ public sealed class ModuleHost : IAsyncDisposable
             {
                 throw;
             }
-            result = ToolResult.Fail($"{tool.Name} was cancelled.");
+            result = ToolResult.Uncertain($"{tool.Name} was stopped part-way through.");
         }
         catch (Exception exception)
         {

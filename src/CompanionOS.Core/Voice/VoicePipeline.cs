@@ -46,6 +46,8 @@ public sealed class VoicePipeline : IAsyncDisposable
     private DateTimeOffset _conversationOpenUntil = DateTimeOffset.MinValue;
     private DateTimeOffset _lastLevelPublished = DateTimeOffset.MinValue;
     private DateTimeOffset _nextRecognitionFailureNotice = DateTimeOffset.MinValue;
+    private const int MaximumPendingSegments = 2;
+    private int _pendingSegments;
     private DateTimeOffset _nextSpeechFailureNotice = DateTimeOffset.MinValue;
     private CancellationTokenSource? _reflexPreparationCancellation;
     private Task _reflexPreparationTask = Task.CompletedTask;
@@ -1100,9 +1102,31 @@ public sealed class VoicePipeline : IAsyncDisposable
                 int minimumSamples = 16000 * _settings.Current.Ears.MinimumSpeechMilliseconds / 1000;
                 if (finishedSegment.Length >= minimumSamples)
                 {
-                    _ = ProcessSegmentAsync(finishedSegment);
+                    if (Interlocked.Increment(ref _pendingSegments) > MaximumPendingSegments)
+                    {
+                        Interlocked.Decrement(ref _pendingSegments);
+                        LogSegmentDecision("segment_dropped_backlog", "queue",
+                            _settings.Current.Ears.RequireWakePhrase, IsConversationOpen, WakeGate.IsAvailable, 0);
+                    }
+                    else
+                    {
+                        _ = ProcessSegmentTrackedAsync(finishedSegment);
+                    }
                 }
             }
+        }
+    }
+
+    /// <summary>Transcribes one finished utterance and decides whether it was for her.</summary>
+    private async Task ProcessSegmentTrackedAsync(float[] segment)
+    {
+        try
+        {
+            await ProcessSegmentAsync(segment).ConfigureAwait(false);
+        }
+        finally
+        {
+            Interlocked.Decrement(ref _pendingSegments);
         }
     }
 
@@ -1176,19 +1200,22 @@ public sealed class VoicePipeline : IAsyncDisposable
             _nextRecognitionFailureNotice = DateTimeOffset.MinValue;
             recognizedCharacters = transcript.Length;
 
-            _events.Publish(new TranscriptEvent
-            {
-                Text = transcript,
-                IsFinal = true,
-                IsUser = true,
-                TurnId = interactionId
-            });
-            // Speech text belongs in the visible conversation, not persistent diagnostics.
-            CompanionLog.Info("Voice", $"Recognized speech ({transcript.Length} characters; transcript kept in conversation only).");
-
             stage = "addressing";
             VoiceAddressingDecision addressing = VoiceAddressingPolicy.Decide(
                 transcript, ears.RequireWakePhrase, conversationWasOpen, _wakeMatcher);
+            if (addressing.Outcome != VoiceAddressingOutcome.WakeMiss)
+            {
+                _events.Publish(new TranscriptEvent
+                {
+                    Text = transcript,
+                    IsFinal = true,
+                    IsUser = true,
+                    TurnId = interactionId
+                });
+                // Speech text belongs in the visible conversation, not persistent diagnostics.
+                CompanionLog.Info("Voice", $"Recognized speech ({transcript.Length} characters; transcript kept in conversation only).");
+            }
+
             switch (addressing.Outcome)
             {
                 case VoiceAddressingOutcome.WakeMiss:

@@ -207,6 +207,9 @@ public sealed class ToolResult
 {
     public bool Succeeded { get; init; }
 
+    /// <summary>True when the action may or may not have happened after waiting ended.</summary>
+    public bool IsOutcomeUncertain { get; init; }
+
     /// <summary>Set when success means a bounded background task was started, not completed.</summary>
     public string? BackgroundTaskId { get; init; }
 
@@ -237,6 +240,14 @@ public sealed class ToolResult
     {
         Succeeded = false,
         ModelText = reason,
+        DisplayText = reason
+    };
+
+    public static ToolResult Uncertain(string reason) => new()
+    {
+        Succeeded = false,
+        IsOutcomeUncertain = true,
+        ModelText = reason + " The action may or may not have completed. Do not repeat it; check the current state or ask the user.",
         DisplayText = reason
     };
 }
@@ -396,4 +407,7 @@ public sealed class RememberRequest
 
     /// <summary>Lower-case tag describing where the fact came from, used for explainability.</summary>
     public string Provenance { get; init; } = "conversation";
+
+    /// <summary>Optional former target explicitly replaced by this correction.</summary>
+    public string? Supersedes { get; init; }
 }
