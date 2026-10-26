@@ -85,14 +85,15 @@ public sealed class PerceptionEngine : IDisposable
     }
 
     /// <summary>
-    /// Looks at the screen. Honors the vision mode and skips unchanged frames.
-    /// Returns the frame she should reason about, or null when she cannot see.
+    /// Looks at the screen. The disabled vision setting always blocks capture;
+    /// forceFreshCapture only bypasses unchanged-frame reuse. Returns null when
+    /// the setting is off or capture fails.
     /// </summary>
     public async Task<ScreenFrame?> LookAsync(bool forceFreshCapture, CancellationToken cancellationToken = default)
     {
         SenseSettings senses = _settings.Current.Senses;
 
-        if (string.Equals(senses.VisionMode, "off", StringComparison.OrdinalIgnoreCase) && !forceFreshCapture)
+        if (string.Equals(senses.VisionMode, "off", StringComparison.OrdinalIgnoreCase))
         {
             _events.Publish(new SensesEvent { SenseName = "vision", Summary = "Vision is switched off in settings." });
             return null;
@@ -232,7 +233,7 @@ public sealed class PerceptionEngine : IDisposable
     }
 
     /// <summary>The plain-English situation block that goes into every prompt.</summary>
-    public string DescribeForPrompt()
+    public string DescribeForPrompt(bool userAttachedImage = false)
     {
         SituationSnapshot snapshot = Current;
         SenseSettings senses = _settings.Current.Senses;
@@ -275,7 +276,11 @@ public sealed class PerceptionEngine : IDisposable
             lines.Add($"A game is running in front: {ForegroundGame}.");
         }
 
-        lines.Add($"Vision is {_settings.Current.Senses.VisionMode}; local time {DateTime.Now:HH:mm}.");
+        lines.Add($"Screen capture setting: {senses.VisionMode}. This describes configuration, not visual evidence.");
+        lines.Add(userAttachedImage
+            ? "A user-supplied image is attached to this turn. Base visual claims only on that image; it does not provide continuous screen access."
+            : "No image is attached to the current user message. Ambient app/window details are not visual inspection. Describe screen pixels only after a successful screen tool result attaches an image.");
+        lines.Add($"Local time: {DateTime.Now:HH:mm}.");
         return string.Join(Environment.NewLine, lines);
     }
 

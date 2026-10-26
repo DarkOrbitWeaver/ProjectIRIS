@@ -343,7 +343,7 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
 
         // 4. Prompt assembly.
         string systemPrompt = _personaStore.Current.BuildSystemPrompt(
-            _perception.DescribeForPrompt(),
+            _perception.DescribeForPrompt(userAttachedImage: !string.IsNullOrWhiteSpace(attachedImage)),
             intuition,
             _modules.DescribeCapabilities(),
             DescribeMode(),

@@ -15,13 +15,15 @@ behavior that has been exercised.
 
 - **Conversation core:** typed and recognized speech requests reach the same turn coordinator.
   It includes available machine context, recalled memory, and request-relevant tools; it sends
-  tool results back into the conversation and can make bounded follow-up calls.
+  tool results back into the conversation and can make bounded follow-up calls. Its system
+  instructions now distinguish ambient metadata from actual screen images.
 - **Voice:** microphone capture, speech segmentation, Whisper or configured HTTP recognition,
   wake matching, interruption, one locked voice profile, cached reflex phrases, and the managed
   local Pocket TTS default are implemented. Missing voice output is meant to fail honestly.
 - **Awareness:** low-cost Windows foreground, media, idle, CPU/RAM, and battery observations;
   optional screen capture; game detection; and sleep/gaming resource handoff are implemented.
-  Screen vision is on demand or explicitly shared, not constant video.
+  Screen vision is on demand or explicitly shared, not constant video; disabling vision now
+  blocks even a forced-capture request.
 - **Memory:** a local graph with layers, typed/polarized links, activation, persistence,
   consolidation, visualization, and exact forget paths exists.
 - **Capabilities:** built-in music and system tools use the shared module router and approval
@@ -68,11 +70,12 @@ works on the target PC under real microphone, speaker, model, display, game, and
 
 ## Verification checkpoint
 
-At commit `a93f88d`, the solution built with zero warnings/errors and the core suite passed 54/54
-tests. The latest changes after that checkpoint are documentation clarifications only. No model
-was loaded and the app was not launched for this snapshot. The automated suite is still narrower
-than the product acceptance matrix; real-device audio, visual/layout, multi-display, and sustained
-resource behavior remain unverified here.
+The current worktree builds with zero warnings/errors and the core suite passes 57/57 tests. New
+regressions verify that `vision: off` blocks forced capture and that Iris does not claim passive
+screen access or confuse configuration with an image observed this turn. No model was loaded and
+the app was not launched for this snapshot. The automated suite is still narrower than the product
+acceptance matrix; real-device audio, visual/layout, multi-display, and sustained resource behavior
+remain unverified here.
 
 ## Delivery promise
 

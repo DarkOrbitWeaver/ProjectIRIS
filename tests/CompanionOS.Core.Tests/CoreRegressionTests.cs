@@ -7,6 +7,7 @@ using CompanionOS.Core.Modules;
 using CompanionOS.Core.Mind;
 using CompanionOS.Core.Voice;
 using CompanionOS.Core.Modules.BuiltIn;
+using CompanionOS.Core.Perception;
 using CompanionOS.Core.Plugins;
 using CompanionOS.Modules;
 using System.Net;
@@ -19,6 +20,52 @@ namespace CompanionOS.Core.Tests;
 
 public sealed class CoreRegressionTests
 {
+    [Fact]
+    public async Task VisionOffCannotBeOverriddenByForcedCapture()
+    {
+        SettingsStore settings = new();
+        settings.Current.Senses.VisionMode = "off";
+        EventBus events = new();
+        List<SensesEvent> senseEvents = [];
+        using IDisposable subscription = events.Subscribe<SensesEvent>(senseEvents.Add);
+        using PerceptionEngine perception = new(settings, events);
+
+        ScreenFrame? frame = await perception.LookAsync(forceFreshCapture: true);
+
+        Assert.Null(frame);
+        Assert.Contains(senseEvents, senseEvent =>
+            senseEvent.SenseName == "vision" && senseEvent.Summary.Contains("switched off", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void SituationPromptSeparatesVisualConfigurationFromObservedImages()
+    {
+        SettingsStore settings = new();
+        settings.Current.Senses.VisionMode = "ondemand";
+        using PerceptionEngine perception = new(settings, new EventBus());
+
+        string withoutImage = perception.DescribeForPrompt();
+        string withImage = perception.DescribeForPrompt(userAttachedImage: true);
+
+        Assert.Contains("Screen capture setting: ondemand", withoutImage);
+        Assert.Contains("No image is attached", withoutImage);
+        Assert.Contains("only after a successful screen tool result", withoutImage);
+        Assert.Contains("A user-supplied image is attached to this turn", withImage);
+        Assert.Contains("does not provide continuous screen access", withImage);
+    }
+
+    [Fact]
+    public void DefaultPersonaDoesNotClaimPassiveScreenAccess()
+    {
+        string prompt = Persona.CreateDefault().BuildSystemPrompt(
+            "Screen capture setting: ondemand.", "", "", "awake", "Monday 12:00");
+
+        Assert.DoesNotContain("you can reason, see the screen and act", prompt, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("the desktop is not continuously visible to you", prompt, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("when an image is attached to the current message", prompt,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
     [Theory]
     [InlineData("{\"schema\":1,\"id\":\"sample\",\"name\":\"Sample\",\"transport\":\"builtin\"}", true)]
     [InlineData("{\"schema\":1,\"id\":\"sample\",\"name\":\"Sample\",\"transport\":\"builtin\",\"disabled\":true}", true)]
