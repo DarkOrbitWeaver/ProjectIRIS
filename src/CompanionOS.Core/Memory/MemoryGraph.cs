@@ -613,8 +613,13 @@ public sealed partial class MemoryGraph : IAsyncDisposable
             double vectorScore = TextVectorizer.Cosine(queryVector, node.Vector);
             double titleBonus = 0;
 
-            if (normalizedQuery.Length > 0 && normalizedQuery.Contains(node.NormalizedTitle, StringComparison.Ordinal))
+            if (normalizedQuery.Length > 0 && node.NormalizedTitle.Length >= 3 &&
+                normalizedQuery.Contains(node.NormalizedTitle, StringComparison.Ordinal))
             {
+                // Minimum title length, mirroring the engine's ≥5 mention floor: a
+                // one- or two-letter normalized title ("ai") is substring noise that
+                // used to mint a top bonus out of any query that happened to
+                // contain those letters (chair, certain, waiting…).
                 titleBonus = 0.45;
             }
             else if (normalizedQuery.Length > 3 && node.NormalizedTitle.Length > 3 &&
