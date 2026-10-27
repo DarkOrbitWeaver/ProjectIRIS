@@ -187,6 +187,11 @@ public static partial class SpeechPlanner
     /// A clear order aimed at her hands — the "play a song from our playlist" family.
     /// The turn contract uses it to scope the receipt check to turns where work is
     /// actually asked for; informational requests are never gated.
+    ///
+    /// Verbs are authoritative. The media-noun family only escalates a sentence when
+    /// it is not question-shaped: "what song is playing?" used to pass as an order on
+    /// the bare word "song" and drew a receipt-check nudge demanding she act on a
+    /// question that has no tool (2026-10-27 audit).
     /// </summary>
     public static bool IsActionRequest(string? userText)
     {
@@ -196,11 +201,26 @@ public static partial class SpeechPlanner
             return false;
         }
 
-        return ActionRequestPattern().IsMatch(text);
+        if (ActionVerbPattern().IsMatch(text))
+        {
+            return true;
+        }
+
+        return MediaNounPattern().IsMatch(text) && !QuestionShapePattern().IsMatch(text);
     }
 
     [GeneratedRegex(
-        @"\b(play|pause|resume|shuffle|skip|next|previous|open|launch|mute|unmute|volume|timer|alarm|note|download|find|search)\b|\b(song|track|playlist|music|video|yt|youtube|game|window|app|folder|file)\b",
+        @"\b(play|pause|resume|shuffle|skip|next|previous|open|launch|mute|unmute|volume|timer|alarm|note|download|find|search)\b",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
-    private static partial Regex ActionRequestPattern();
+    private static partial Regex ActionVerbPattern();
+
+    [GeneratedRegex(
+        @"\b(song|track|playlist|music|video|yt|youtube|game|window|app|folder|file)\b",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex MediaNounPattern();
+
+    [GeneratedRegex(
+        @"^\s*(what|which|who|when|where|why|how|is|are|was|were|do|does|did|can|could|should|would|will|shall|any)\b",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex QuestionShapePattern();
 }

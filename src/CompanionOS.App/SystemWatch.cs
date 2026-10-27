@@ -48,12 +48,21 @@ public static class SystemWatch
     private static int _ticksSincePumpLine;
     private static double _syncEwmaMs;
     private static bool _stackToolWarned;
+    private static long _lastUiFaultToastTimestamp;
     private static RollingJsonLinesWriter? _logWriter;
     private static readonly WindowsNative.CpuLoadSampler HostCpuSampler = new();
     private static long _lastHostSnapshotTick;
     private static double _lastProcessCpuMilliseconds;
 
     public static event Action<string>? LineWritten;
+
+    /// <summary>
+    /// Raised for UI-thread faults that were caught and recorded, for layers that need
+    /// to say so in person. Rate-limited to one raising per ten seconds — a faulting
+    /// screen must not turn the shell into a strobe; the log keeps every occurrence.
+    /// Subscribers must marshal to the UI thread themselves and never throw.
+    /// </summary>
+    public static event Action<string, Exception, string>? UiFaultObserved;
 
     public static IReadOnlyList<string> Recent(int maximumLines = 200)
     {
@@ -94,6 +103,7 @@ public static class SystemWatch
         Dispatcher.UIThread.UnhandledException += (_, eventArgs) =>
         {
             Fault("ui", eventArgs.Exception, "unhandled on the UI thread");
+            RaiseUiFaultToast(eventArgs.Exception, "unhandled on the UI thread");
             eventArgs.Handled = true;
         };
 
@@ -176,6 +186,36 @@ public static class SystemWatch
         Trace(area, "exception", context + (string.IsNullOrEmpty(context) ? "" : " | ") +
             exception.GetType().Name + ": " + exception.Message + Environment.NewLine +
             Clean(exception.StackTrace));
+    }
+
+    /// <summary>
+    /// Surfaces a caught UI-thread fault exactly once per quiet period. The old flow
+    /// marked the exception Handled and only file-logged it: half-rendered view state
+    /// with no word to the user (2026-10-27 audit).
+    /// </summary>
+    private static void RaiseUiFaultToast(Exception? exception, string context)
+    {
+        if (exception is null)
+        {
+            return;
+        }
+
+        long now = Environment.TickCount64;
+        long previous = Interlocked.Read(ref _lastUiFaultToastTimestamp);
+        if (now - previous < 10_000)
+        {
+            return;
+        }
+
+        Interlocked.Exchange(ref _lastUiFaultToastTimestamp, now);
+        try
+        {
+            UiFaultObserved?.Invoke("ui", exception, context);
+        }
+        catch
+        {
+            // A subscriber may never break the black box.
+        }
     }
 
     private static void HeartbeatTick(object? sender, EventArgs e)

@@ -51,6 +51,23 @@ public sealed partial class ShellModel : ObservableObject
         _subscriptions.Add(events.Subscribe<NoticeEvent>(payload => OnUiThread(() => HandleNotice(payload))));
         _subscriptions.Add(events.Subscribe<TranscriptEvent>(payload => OnUiThread(() => HandleTranscript(payload))));
         _subscriptions.Add(events.Subscribe<EarsEvent>(payload => OnUiThread(() => HandleEars(payload))));
+
+        // The shell's own black box: a caught UI-thread fault is no longer just file
+        // data — the user is told, so a half-rendered screen never happens silently.
+        // SystemWatch rate-limits the raising; Detach unsubscribes.
+        SystemWatch.UiFaultObserved += OnSystemWatchFault;
+    }
+
+    private void OnSystemWatchFault(string area, Exception exception, string context)
+    {
+        OnUiThread(() =>
+        {
+            string contextNote = string.IsNullOrWhiteSpace(context) ? string.Empty : $" ({context})";
+            _runtime.Events.PublishNotice(
+                $"A shell fault was caught in the {area} area and she kept running — the log " +
+                $"has the details. {Trim(exception.Message, 80)}{contextNote}",
+                NoticeSeverity.Warning);
+        });
     }
 
     private static void OnUiThread(Action action)
@@ -480,6 +497,7 @@ public sealed partial class ShellModel : ObservableObject
     /// <summary>Releases every subscription. Called when the window really closes.</summary>
     public void Detach()
     {
+        SystemWatch.UiFaultObserved -= OnSystemWatchFault;
         _streamFlushTimer.Stop();
         _noticeTimer.Stop();
         _permissionTimer.Stop();
