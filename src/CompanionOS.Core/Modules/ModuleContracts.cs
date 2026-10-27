@@ -7,6 +7,17 @@ using CompanionOS.Core.Perception;
 namespace CompanionOS.Core.Modules;
 
 /// <summary>
+/// What a Windows media command produced. The success marker used to survive as a
+/// "starts with 'Windows confirmed'" prefix check four files away — one wording drift
+/// and a confirmed action became a reported failure. Now the fact travels typed.
+/// </summary>
+public sealed record MediaControlResult(bool Succeeded, string Message)
+{
+    public static MediaControlResult Success(string message) => new(true, message);
+    public static MediaControlResult Failure(string message) => new(false, message);
+}
+
+/// <summary>
 /// How dangerous an action is. The guard decides whether it runs silently,
 /// runs but is logged, or stops and asks the user first.
 /// </summary>
@@ -129,7 +140,7 @@ public interface IAssistantHostServices
     string DescribeSituation();
 
     /// <summary>Controls the currently active Windows media session, if one is available.</summary>
-    Task<string> ControlMediaAsync(string action, CancellationToken cancellationToken);
+    Task<MediaControlResult> ControlMediaAsync(string action, CancellationToken cancellationToken);
 
     /// <summary>Short list of installed abilities, one per line.</summary>
     string DescribeCapabilities();

@@ -121,7 +121,31 @@ public sealed class PluginModuleAdapter : IAssistantModule, IModuleSurfaceProvid
         return result.Ok
             ? ToolResult.Ok(string.IsNullOrWhiteSpace(result.Text) ? "The plugin completed." : result.Text,
                 displayText: result.Text)
-            : ToolResult.Fail(string.IsNullOrWhiteSpace(result.Error) ? result.Text : result.Error);
+            : ToolResult.Fail(ComposePluginFailure(result));
+    }
+
+    /// <summary>
+    /// A failed command's stdout is half its evidence (progress lines, partial output,
+    /// "item X skipped because…"); it used to be dropped whenever stderr existed, so
+    /// the model retried blind. Now both halves reach it, stdout trimmed.
+    /// </summary>
+    private static string ComposePluginFailure(PluginResult result)
+    {
+        string error = result.Error?.Trim() ?? string.Empty;
+        string stdout = result.Text?.Trim() ?? string.Empty;
+
+        if (error.Length == 0)
+        {
+            return stdout.Length == 0 ? "The plugin failed without a word." : stdout;
+        }
+
+        if (stdout.Length == 0)
+        {
+            return error;
+        }
+
+        string printed = stdout.Length > 300 ? stdout[..300] + "…" : stdout;
+        return $"{error} — what it printed before failing: {printed}";
     }
 
     public Task ShutdownAsync() => Task.CompletedTask;

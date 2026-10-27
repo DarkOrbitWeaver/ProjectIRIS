@@ -354,13 +354,13 @@ public sealed class ModuleHost : IAsyncDisposable
             return invalidArguments;
         }
 
-        bool isAllowed = await _sandbox
+        AuthorizationOutcome authorization = await _sandbox
             .AuthorizeAsync(owner.Id, owner.DisplayName, tool, DescribeAction(owner, tool, arguments), cancellationToken)
             .ConfigureAwait(false);
 
-        if (!isAllowed)
+        if (!authorization.IsAllowed)
         {
-            ToolResult refusal = ToolResult.Fail("The user did not allow that action.");
+            ToolResult refusal = ToolResult.Fail(authorization.RefusalReason);
             PublishToolFinished(turnId, owner, tool, refusal);
             return refusal;
         }
@@ -450,12 +450,21 @@ public sealed class ModuleHost : IAsyncDisposable
                 // Caller cancellation is an interrupted turn; it is not a module timeout.
                 cancellationToken.ThrowIfCancellationRequested();
 
-                // A module can ignore cancellation and finish a side effect after we stop waiting.
-                // Observe a late fault and tell the brain the outcome is unknown.
-                _ = execution.ContinueWith(task => { _ = task.Exception; }, CancellationToken.None,
+                // A module can ignore cancellation and finish a side effect after we stop
+                // waiting. Its late fault used to be swallowed with `_ = task.Exception`
+                // — now it is logged, because an outcome the agent never sees still has
+                // to exist somewhere in the day's records.
+                _ = execution.ContinueWith(task =>
+                {
+                    Exception fault = task.Exception!.GetBaseException();
+                    CompanionLog.Warning("Modules",
+                        $"Late result from '{tool.Name}' after the {ToolTimeoutSeconds}s wait: {fault.Message}. " +
+                        "Waiting stopped; the module kept running.");
+                }, CancellationToken.None,
                     TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
                     TaskScheduler.Default);
-                result = ToolResult.Uncertain($"I stopped waiting for {tool.Name} because it took too long.");
+                result = ToolResult.Uncertain($"I stopped waiting for {tool.Name} after {ToolTimeoutSeconds} seconds. " +
+                    "It may have finished without telling anyone — check the current state before repeating it.");
             }
         }
         catch (OperationCanceledException)

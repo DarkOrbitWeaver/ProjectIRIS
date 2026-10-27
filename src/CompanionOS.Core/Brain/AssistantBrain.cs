@@ -324,7 +324,7 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
     public string DescribeSituation() => _perception.DescribeForPrompt();
 
     /// <summary>Controls Windows media through the current media-session sensor.</summary>
-    public Task<string> ControlMediaAsync(string action, CancellationToken cancellationToken) =>
+    public Task<MediaControlResult> ControlMediaAsync(string action, CancellationToken cancellationToken) =>
         _perception.ControlMediaAsync(action, cancellationToken);
 
     /// <summary>One line per installed ability.</summary>

@@ -738,20 +738,20 @@ public sealed class CoreRegressionTests
             ModuleTool sendMessage = new("send_message", "Send a message.", ToolTier.SystemCritical,
                 "{}") { PermissionScope = "messages.send", AlwaysConfirm = true };
 
-            Assert.True(await guard.AuthorizeAsync("plugin:telegram", "Telegram", readContact,
-                "Telegram wants to read Alex's contact.", CancellationToken.None));
+            Assert.True((await guard.AuthorizeAsync("plugin:telegram", "Telegram", readContact,
+                "Telegram wants to read Alex's contact.", CancellationToken.None)).IsAllowed);
             Assert.True(grants.IsScopeGranted("plugin:telegram", "contacts.read"));
             Assert.False(grants.IsScopeGranted("plugin:telegram", "messages.send"));
-            Assert.True(await guard.AuthorizeAsync("plugin:telegram", "Telegram", listContacts,
-                "Telegram wants to list contacts.", CancellationToken.None));
+            Assert.True((await guard.AuthorizeAsync("plugin:telegram", "Telegram", listContacts,
+                "Telegram wants to list contacts.", CancellationToken.None)).IsAllowed);
             Assert.Equal(1, promptCount);
-            Assert.True(await guard.AuthorizeAsync("plugin:telegram", "Telegram", sendMessage,
-                "Telegram wants to send a message.", CancellationToken.None));
+            Assert.True((await guard.AuthorizeAsync("plugin:telegram", "Telegram", sendMessage,
+                "Telegram wants to send a message.", CancellationToken.None)).IsAllowed);
             Assert.Equal(2, promptCount);
             Assert.False(grants.IsScopeGranted("plugin:telegram", "messages.send"));
             Assert.False(allowAlwaysWasOfferedForSend);
-            Assert.True(await guard.AuthorizeAsync("plugin:telegram", "Telegram", sendMessage,
-                "Telegram wants to send a second message.", CancellationToken.None));
+            Assert.True((await guard.AuthorizeAsync("plugin:telegram", "Telegram", sendMessage,
+                "Telegram wants to send a second message.", CancellationToken.None)).IsAllowed);
             Assert.Equal(3, promptCount);
             Assert.False(grants.IsScopeGranted("plugin:telegram", "messages.send"));
 

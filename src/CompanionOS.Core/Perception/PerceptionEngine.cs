@@ -1,6 +1,7 @@
 using CompanionOS.Core.Configuration;
 using CompanionOS.Core.Diagnostics;
 using CompanionOS.Core.Events;
+using CompanionOS.Core.Modules;
 
 namespace CompanionOS.Core.Perception;
 
@@ -348,7 +349,7 @@ public sealed class PerceptionEngine : IDisposable
     }
 
     /// <summary>Controls the active Windows media session and returns only confirmed outcomes.</summary>
-    public async Task<string> ControlMediaAsync(string action, CancellationToken cancellationToken = default)
+    public async Task<MediaControlResult> ControlMediaAsync(string action, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
         string normalized = action.Trim().ToLowerInvariant();
@@ -371,10 +372,11 @@ public sealed class PerceptionEngine : IDisposable
                 "play" or "resume" => "resumed",
                 _ => "controlled"
             };
-            return $"Windows confirmed that media {verb}.";
+            return MediaControlResult.Success($"Windows confirmed that media {verb}.");
         }
 
-        return "Windows did not confirm this media action. There may be no active controllable Windows media session.";
+        return MediaControlResult.Failure(
+            "Windows did not confirm this media action. There may be no active controllable Windows media session.");
     }
 
     /// <summary>Returns only media Iris paused for the current voice interaction.</summary>

@@ -199,28 +199,39 @@ public sealed class CoreToolsModule : IAssistantModule
 
             case "control_windows_media":
             {
-                string result = await context.Host.ControlMediaAsync(
+                MediaControlResult result = await context.Host.ControlMediaAsync(
                     invocation.GetString("action"), cancellationToken).ConfigureAwait(false);
-                return result.StartsWith("Windows confirmed", StringComparison.Ordinal)
-                    ? ToolResult.Ok(result, result)
-                    : ToolResult.Fail(result);
+                return result.Succeeded
+                    ? ToolResult.Ok(result.Message, result.Message)
+                    : ToolResult.Fail(result.Message);
             }
 
             case "set_operating_mode":
             {
-                string requestedMode = invocation.GetString("mode").ToLowerInvariant();
+                string requestedMode = invocation.GetString("mode").Trim().ToLowerInvariant();
                 OperatingMode targetMode = requestedMode switch
                 {
+                    "awake" or "wake" or "wake up" => OperatingMode.Awake,
                     "sleeping" or "sleep" or "rest" => OperatingMode.Sleeping,
                     "gaming" or "game" => OperatingMode.Gaming,
                     _ => OperatingMode.Awake
                 };
 
+                if (requestedMode is not ("awake" or "wake" or "wake up" or "sleeping" or "sleep" or "rest" or
+                    "gaming" or "game"))
+                {
+                    // The audit caught unknown input inventing Awake — which both woke an
+                    // idle creature and dropped the game hand-off. Unknown word, no
+                    // side effect, honest refusal with the valid set.
+                    return ToolResult.Fail(
+                        $"'{requestedMode}' is not a mode she has. Valid modes: awake, sleeping, gaming.");
+                }
+
                 if (targetMode == OperatingMode.Gaming)
                 {
                     await context.Host.SetManualGamingAsync(true, cancellationToken).ConfigureAwait(false);
                 }
-                else
+                else if (targetMode == OperatingMode.Awake)
                 {
                     await context.Host.SetManualGamingAsync(false, cancellationToken).ConfigureAwait(false);
                 }

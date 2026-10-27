@@ -6,6 +6,31 @@ using CompanionOS.Core.Events;
 
 namespace CompanionOS.Core.Modules;
 
+/// <summary>
+/// What the sandbox decided, including WHY a refusal happened. A 15-second unanswered
+/// prompt is not "the user said no" — the model reading the result deserves the truth
+/// so it can ask once more, plainly, or choose another path instead of treating a
+/// missed prompt as a forbidden action.
+/// </summary>
+public readonly record struct AuthorizationOutcome(bool IsAllowed, string RefusalReason)
+{
+    public static AuthorizationOutcome Allowed() => new(true, string.Empty);
+
+    public static AuthorizationOutcome Refused(string reason) => new(false, reason);
+}
+
+/// <summary>
+/// Shape of a permission stop, so the audit trail can record a timeout as a timeout
+/// instead of folding it into a plain denial.
+/// </summary>
+public enum PermissionStop
+{
+    Allowed,
+    Denied,
+    TimedOut,
+    Interrupted
+}
+
 /// <summary>What the user decided about a dangerous action.</summary>
 public enum PermissionDecision
 {
@@ -85,7 +110,7 @@ public sealed class SandboxGuard
     public PermissionGrantStore Grants => _grants;
 
     /// <summary>Asks for permission according to the tool's tier and the user's saved grants.</summary>
-    public async Task<bool> AuthorizeAsync(string moduleId, string moduleName, ModuleTool tool,
+    public async Task<AuthorizationOutcome> AuthorizeAsync(string moduleId, string moduleName, ModuleTool tool,
         string plainEnglishAction, CancellationToken cancellationToken)
     {
         string auditAction = string.IsNullOrWhiteSpace(tool.PermissionScope)
@@ -98,7 +123,7 @@ public sealed class SandboxGuard
                 data: new Dictionary<string, string?> { ["tool"] = tool.Name, ["module"] = moduleId, ["tier"] = "reflex" });
             await _audit.RecordAsync(moduleId, tool.Name, tool.Tier, "auto", auditAction, cancellationToken)
                 .ConfigureAwait(false);
-            return true;
+            return AuthorizationOutcome.Allowed();
         }
 
         if (!tool.AlwaysConfirm && !string.IsNullOrWhiteSpace(tool.PermissionScope) &&
@@ -113,7 +138,7 @@ public sealed class SandboxGuard
                 });
             await _audit.RecordAsync(moduleId, tool.Name, tool.Tier, "granted", auditAction, cancellationToken)
                 .ConfigureAwait(false);
-            return true;
+            return AuthorizationOutcome.Allowed();
         }
 
         if (!tool.AlwaysConfirm && tool.Tier == ToolTier.Scoped)
@@ -124,7 +149,7 @@ public sealed class SandboxGuard
                     data: new Dictionary<string, string?> { ["tool"] = tool.Name, ["module"] = moduleId, ["tier"] = "scoped" });
                 await _audit.RecordAsync(moduleId, tool.Name, tool.Tier, "granted", auditAction, cancellationToken)
                     .ConfigureAwait(false);
-                return true;
+                return AuthorizationOutcome.Allowed();
             }
         }
 
@@ -135,7 +160,7 @@ public sealed class SandboxGuard
                 data: new Dictionary<string, string?> { ["tool"] = tool.Name, ["module"] = moduleId, ["tier"] = "system-critical" });
             await _audit.RecordAsync(moduleId, tool.Name, tool.Tier, "granted", auditAction, cancellationToken)
                 .ConfigureAwait(false);
-            return true;
+            return AuthorizationOutcome.Allowed();
         }
 
         string question = string.IsNullOrWhiteSpace(tool.PermissionScope)
@@ -156,6 +181,7 @@ public sealed class SandboxGuard
             });
 
         PermissionDecision decision;
+        PermissionStop stop = PermissionStop.Denied;
         try
         {
             decision = await request.WaitAsync(PermissionTimeout, cancellationToken).ConfigureAwait(false);
@@ -163,11 +189,13 @@ public sealed class SandboxGuard
         catch (TimeoutException)
         {
             decision = PermissionDecision.Deny;
-            CompanionLog.Warning("Sandbox", $"No answer for '{tool.Name}' in 15 s, so it was refused.");
+            stop = PermissionStop.TimedOut;
+            CompanionLog.Warning("Sandbox", $"No answer for '{tool.Name}' in 15 s, so it was not allowed this time.");
         }
         catch (OperationCanceledException)
         {
             decision = PermissionDecision.Deny;
+            stop = PermissionStop.Interrupted;
         }
 
         if (tool.AlwaysConfirm && decision == PermissionDecision.AllowAlways)
@@ -187,11 +215,16 @@ public sealed class SandboxGuard
             }
         }
 
-        string outcome = decision switch
+        string outcome = stop switch
         {
-            PermissionDecision.AllowOnce => "allowed-once",
-            PermissionDecision.AllowAlways => "allowed-always",
-            _ => "denied"
+            PermissionStop.TimedOut => "timeout",
+            PermissionStop.Interrupted => "interrupted",
+            _ => decision switch
+            {
+                PermissionDecision.AllowOnce => "allowed-once",
+                PermissionDecision.AllowAlways => "allowed-always",
+                _ => "denied"
+            }
         };
 
         IrisEvent.Log("Sandbox", "permission.decided", LogLevel.Info,
@@ -206,7 +239,25 @@ public sealed class SandboxGuard
         await _audit.RecordAsync(moduleId, tool.Name, tool.Tier, outcome, auditAction, cancellationToken)
             .ConfigureAwait(false);
 
-        return decision != PermissionDecision.Deny;
+        if (decision != PermissionDecision.Deny)
+        {
+            return AuthorizationOutcome.Allowed();
+        }
+
+        // The refusal has to say what actually happened. The model that reads it must
+        // be able to tell a no from a missed prompt — they call for different answers.
+        string refusalReason = stop switch
+        {
+            PermissionStop.TimedOut =>
+                $"Permission timed out: no one answered the prompt for {tool.Name} within 15 seconds. " +
+                "Nobody refused — answer the truth and offer the next step in one short sentence.",
+            PermissionStop.Interrupted =>
+                $"Permission prompt for {tool.Name} was interrupted (turn stopped).",
+            _ =>
+                $"The user was asked about {tool.Name} and did not allow it. That is a no: state it plainly " +
+                "and do not ask again this turn."
+        };
+        return AuthorizationOutcome.Refused(refusalReason);
     }
 
     /// <summary>
