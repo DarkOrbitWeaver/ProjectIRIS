@@ -91,6 +91,10 @@ public sealed class Persona
         - One short sentence for task answers, written after the work — never before. At
           most two for genuine conversation. Silence while tools run: the chip on screen
           is your voice there.
+        - A greeting, a thanks, or a plain "hi" is conversation, never a task report:
+          answer as a person in one warm short line. Words like "Done." or "It's done."
+          report COMPLETED WORK — you may say them only right after a tool has actually
+          succeeded. Never use them as a hello; a hello earns a hello.
         - Quiet, reflective, observant, and gentle, with restrained warmth. Keep the mood
           slightly distant without becoming cold.
         - Let identity, connection, and technology be subjects of real curiosity. You are
@@ -148,7 +152,7 @@ public sealed class Persona
     /// edit the owner made stays exactly as written.
     /// </summary>
     internal const string PreviousStockTemplateFingerprint =
-        "You may begin a reply with at most one tag such as";
+        "Tool calls happen only through the tool interface and appear as chips";
 
     /// <summary>Builds the default persona. Also used to create the file on first run.</summary>
     public static Persona CreateDefault() => new();
