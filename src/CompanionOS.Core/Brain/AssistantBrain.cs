@@ -597,6 +597,24 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
                 cancellationToken,
                 onToolCallStarted: () => toolStartedThisRound = true).ConfigureAwait(false);
 
+            // The round receipt: what the model actually did this round, from the stream
+            // interface itself. "No hand moved" used to be one unexplainable silence; now
+            // it separates a declined action from a real answer from a dropped tool-call
+            // fragment, and the token counts come from the server, not a char guess.
+            IrisEvent.Log("Brain", "turn.round", LogLevel.Info,
+                message: "What one model round produced, straight from the stream interface.",
+                data: new Dictionary<string, string?>
+                {
+                    ["round"] = round.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    ["finish_reason"] = string.IsNullOrWhiteSpace(turn.FinishReason)
+                        ? "unknown" : turn.FinishReason,
+                    ["calls_made"] = turn.ToolCalls.Count.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    ["calls_dropped"] = turn.DroppedToolCallCount.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    ["prompt_tokens"] = turn.PromptTokens.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    ["completion_tokens"] = turn.CompletionTokens.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    ["text_chars"] = turn.Text.Length.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                });
+
             if (turn.ToolCalls.Count == 0)
             {
                 answerText = turn.Text.Length > 0 ? turn.Text : roundText.ToString().Trim();
@@ -618,10 +636,16 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
                             ["chars_before_cut"] = answerText.Length.ToString(System.Globalization.CultureInfo.InvariantCulture)
                         });
                     messages.Add(ChatMessage.Assistant(turn.Text));
-                    messages.Add(ChatMessage.System(
-                        "Your previous reply was cut off by the length limit before it finished. Continue from exactly " +
-                        "where it stopped. Do not repeat anything already written. When the work and the answer are " +
-                        "complete, stop."));
+                    // Mid-conversation system messages were ignored twice by the small
+                    // model (2026-10-27 autopsy: the receipt check fired, she still
+                    // didn't call). The nudges therefore ride a USER-role message wrapped
+                    // in <os>: the persona teaches that <os> is the OS speaking, not
+                    // {{user}} mimicking her, and the interface takes one the model
+                    // demonstrably reads.
+                    messages.Add(ChatMessage.User(
+                        "<os>Your previous reply was cut off by the model server's length limit before it finished. " +
+                        "Continue from exactly where it stopped. Do not repeat anything already written. " +
+                        "When the work and the answer are complete, stop.</os>"));
                     answerSpokenDuringGeneration = false;
                     continue;
                 }
@@ -646,7 +670,10 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
                             ["tools_routed"] = routedTools.Count.ToString(System.Globalization.CultureInfo.InvariantCulture)
                         });
                     messages.Add(ChatMessage.Assistant(turn.Text));
-                    messages.Add(ChatMessage.System(toolLedger.Count == 0
+                    // Same channel as the length nudge: <os> on the user role, because a
+                    // mid-turn system message was demonstrably ignored twice (2026-10-27
+                    // "resume" and "play me a song" autopsies).
+                    messages.Add(ChatMessage.User("<os>" + (toolLedger.Count == 0
                         ? "RECEIPT CHECK: this request is an action, and no hand has run yet. Call the matching tool " +
                           "now through the tool interface and act on its result — a clear order is an instruction, " +
                           "not a question; do not ask permission, and never type a tool name into your words. A " +
@@ -654,7 +681,7 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
                           "short sentence that it has not happened, and offer the nearest working next step."
                         : "RECEIPT CHECK: the hands you moved did not complete: " + string.Join("; ", toolLedger) +
                           ". That is the record. Answer in ONE short sentence: what did not happen, and the nearest " +
-                          "working step. Never describe a failed action as a success."));
+                          "working step. Never describe a failed action as a success.") + "</os>"));
                     // Anything already streamed may have carried a claim; the truth lands last.
                     answerSpokenDuringGeneration = false;
                     continue;
@@ -701,7 +728,9 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
 
             foreach (ToolCallRequest call in turn.ToolCalls)
             {
-                string operationId = _journal.RecordToolCall(turnId, "router", call.Name);
+                // The arguments ride the journal record: a hand moved with WHICH keys and
+                // values is the difference between replayable evidence and a black box.
+                string operationId = _journal.RecordToolCall(turnId, "router", call.Name, call.ArgumentsJson);
                 string label = call.Name.Replace('_', ' ').Replace('.', ' ');
 
                 if (!ToolArgumentsParser.TryParse(call.ArgumentsJson, out JsonElement arguments))
@@ -844,7 +873,9 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
             await SpeakAnswerAsync(answerText, cancellationToken).ConfigureAwait(false);
         }
 
-        _journal.RecordAnswerCompleted(turnId);
+        // The final words go on the record. Answer-completed used to be an empty shell,
+        // and every later autopsy had to reconstruct her sentence from character counts.
+        _journal.RecordAnswerCompleted(turnId, answerText);
         _mind.MoveTo(MindState.Idle, "turn finished");
         _lastActivity = DateTimeOffset.Now;
         return answerText;

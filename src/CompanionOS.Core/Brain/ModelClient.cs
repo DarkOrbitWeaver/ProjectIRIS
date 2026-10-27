@@ -57,6 +57,14 @@ public sealed class ModelTurn
     public int PromptTokens { get; init; }
     public int CompletionTokens { get; init; }
     public string FinishReason { get; init; } = string.Empty;
+
+    /// <summary>
+    /// Tool-call attempts the model started but that assembled into nothing usable
+    /// (a fragment that never carried a function name). Before this field existed the
+    /// drop was silent: "she chose not to act" and "her call arrived broken" looked
+    /// identical in the records, and no autopsy could tell the two apart.
+    /// </summary>
+    public int DroppedToolCallCount { get; init; }
 }
 
 /// <summary>
@@ -239,11 +247,22 @@ public sealed class ModelClient : IDisposable
             }
         }
 
-        List<ToolCallRequest> toolCalls = toolBuilders
-            .OrderBy(pair => pair.Key)
-            .Select(pair => pair.Value.Build())
-            .Where(call => !string.IsNullOrWhiteSpace(call.Name))
-            .ToList();
+        List<ToolCallRequest> toolCalls = new();
+        int droppedToolCalls = 0;
+        foreach ((int key, ToolCallBuilder builder) in toolBuilders.OrderBy(pair => pair.Key))
+        {
+            ToolCallRequest built = builder.Build();
+            if (string.IsNullOrWhiteSpace(built.Name))
+            {
+                // The model started a call but it never assembled a name. Count it: the
+                // turn receipt has to be able to say "she tried and the fragment died"
+                // instead of reading like she declined to act.
+                droppedToolCalls++;
+                continue;
+            }
+
+            toolCalls.Add(built);
+        }
 
         return new ModelTurn
         {
@@ -251,7 +270,8 @@ public sealed class ModelClient : IDisposable
             ToolCalls = toolCalls,
             PromptTokens = promptTokens,
             CompletionTokens = completionTokens,
-            FinishReason = finishReason
+            FinishReason = finishReason,
+            DroppedToolCallCount = droppedToolCalls
         };
     }
 
@@ -291,7 +311,11 @@ public sealed class ModelClient : IDisposable
             ["temperature"] = profile.Temperature,
             ["top_p"] = profile.TopP,
             ["max_tokens"] = profile.MaxResponseTokens,
-            ["messages"] = messageArray
+            ["messages"] = messageArray,
+            // Ask the server for true token counts in the final chunk; without this the
+            // usage object never arrives and every turn receipt guesses from chars.
+            // (OpenAI-compatible field; llama.cpp and LM Studio both honor it.)
+            ["stream_options"] = new JsonObject { ["include_usage"] = true }
         };
 
         if (tools.Count > 0)

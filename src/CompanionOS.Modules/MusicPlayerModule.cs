@@ -139,107 +139,43 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
 
     public IReadOnlyList<ModuleTool> Tools { get; } = new List<ModuleTool>
     {
+        // One player, one library, one folder page, one playlist tool. Twenty
+        // single-verb tools (play_music, pause_music, resume_music, …) used to share a
+        // name family that read as near-identical to a small model and ate 16 slots of
+        // the 64-tool offer cap besides. Each remaining tool now has a purpose no other
+        // one covers, and every action lives behind one enum the schema enforces.
         new(
-            "play_music",
-            "Play a track from her music library. \"A song\", \"anything\", \"any track\" and similar vague asks mean: call this WITHOUT a query and let the library pick; do not invent mood filters.",
+            "music_player",
+            "HER OWN music player: the tracks indexed from her music folders. Stops, pauses, resumes, skips, shuffles, sets the volume, ducks while she speaks, and shows/hides its overlay controls. " +
+            "A 'song', 'anything', 'a track' ask means action=play with NO query — the library picks; do not pass a mood filter. " +
+            "This is not the right hand for saved playlists (\"a song from my playlist\" belongs to music_playlists) nor for Windows system media like a browser YouTube video (that is control_windows_media).",
             ToolTier.Reflex,
-            """{"type":"object","properties":{"query":{"type":"string","description":"Track or artist name. Optional — leave empty to play whatever the library serves."}},"required":[]}""",
-            "play music", "play", "song", "track", "put on"),
-
-        new("pause_music", "Pause the currently playing music.", ToolTier.Reflex,
-            """{"type":"object","properties":{},"required":[]}""", "pause"),
-
-        new("resume_music", "Resume the paused track.", ToolTier.Reflex,
-            """{"type":"object","properties":{},"required":[]}""", "resume", "continue"),
-
-        new("next_track", "Skip to the next track in the library.", ToolTier.Reflex,
-            """{"type":"object","properties":{},"required":[]}""", "next", "skip"),
-
-        new("shuffle_music", "Shuffle her music library and play the first track. Next and previous keep following the shuffled order.",
-            ToolTier.Reflex, """{"type":"object","properties":{},"required":[]}""",
-            "shuffle", "random songs", "mix it up"),
-
-        new("stop_music", "Stop playback completely.", ToolTier.Reflex,
-            """{"type":"object","properties":{},"required":[]}""", "stop music", "silence"),
+            """{"type":"object","properties":{"action":{"type":"string","enum":["play","pause","resume","stop","next","previous","shuffle","set_volume","duck","show_controls","hide_controls"],"description":"What to do"},"query":{"type":"string","description":"Only for action=play: track or artist name. Leave empty to play whatever the library serves."},"level":{"type":"integer","description":"Only for action=set_volume: 0 to 100"},"ducked":{"type":"boolean","description":"Only for action=duck: true lowers the volume while she speaks, false restores it."}},"required":["action"]}""",
+            "play music", "play", "song", "track", "put on", "pause", "resume", "skip", "next", "previous",
+            "shuffle", "stop music", "volume", "louder", "quieter"),
 
         new(
-            "set_music_volume",
-            "Set the music volume.",
+            "music_library",
+            "Her own music library: action=list shows the indexed track titles, action=refresh re-scans her music folders and reports what is playable.",
             ToolTier.Reflex,
-            """{"type":"object","properties":{"level":{"type":"integer","description":"0 to 100"}},"required":["level"]}""",
-            "volume", "louder", "quieter"),
-
-        new("list_music", "List the tracks available in her music library. Pass limit for more than the default first 20.",
-            ToolTier.Reflex,
-            """{"type":"object","properties":{"limit":{"type":"integer","description":"How many titles to show, 1-200 (default 20)"}},"required":[]}""",
-            "what music", "library", "playlist", "player"),
+            """{"type":"object","properties":{"action":{"type":"string","enum":["list","refresh"],"description":"What to do with the library"},"limit":{"type":"integer","description":"Only for action=list: how many titles to show, 1-200 (default 20)."}},"required":["action"]}""",
+            "what music", "library", "list tracks", "refresh music", "rescan music", "scan music", "update library"),
 
         new(
-            "add_music_folder",
-            "Add an existing folder anywhere on this PC to the music library and scan it. Ask for confirmation first. An empty path means the folder most recently opened with browse_music_folder.",
+            "music_library_folders",
+            "Music library folders: action=add indexes an existing folder and scans it (with confirmation), action=browse safely lists the folders in one location so the user can walk the tree, action=remove stops indexing a configured folder — this never deletes files. An empty path uses the folder most recently browsed.",
             ToolTier.SystemCritical,
-            """{"type":"object","properties":{"path":{"type":"string","description":"Existing folder containing music, for example D:\\Music. Empty uses the currently browsed folder."}},"required":[]}""",
-            "add music folder", "music folder", "my music is", "scan folder", "find my music"),
+            """{"type":"object","properties":{"action":{"type":"string","enum":["add","browse","remove"],"description":"What to do with music folders"},"path":{"type":"string","description":"For add: an existing folder such as D:\\Music. For browse: an absolute folder, a shown child-folder name, or 'up'. For remove: a configured music folder. Empty uses the currently browsed folder."}},"required":["action"]}""",
+            "add music folder", "music folder", "browse music", "open folder", "go into", "remove music folder",
+            "where is my music"),
 
         new(
-            "browse_music_folder",
-            "Safely list folders in a location while helping the user navigate to their music. Use an empty path for the current location, 'up' for its parent, or a shown child folder name. Ask permission before browsing a new location.",
-            ToolTier.SystemCritical,
-            """{"type":"object","properties":{"path":{"type":"string","description":"Absolute folder, shown child-folder name, 'up', or empty for the current location"}},"required":[]}""",
-            "browse music", "open folder", "go here", "go into", "find folder", "where is my music"),
-
-        new(
-            "remove_music_folder",
-            "Stop scanning one configured music folder. This never deletes its files.",
-            ToolTier.SystemCritical,
-            """{"type":"object","properties":{"path":{"type":"string","description":"Configured music folder to remove"}},"required":["path"]}""",
-            "remove music folder", "forget music folder", "stop scanning folder"),
-
-        new("refresh_music_library", "Re-scan configured music folders and report playable tracks.",
-            ToolTier.Scoped, """{"type":"object","properties":{},"required":[]}""",
-            "refresh music", "rescan music", "scan music", "update library"),
-
-        new("show_music_overlay", "Show the small always-on-top music controls while music is playing.",
-            ToolTier.Reflex, """{"type":"object","properties":{},"required":[]}""",
-            "show music player", "show music overlay", "show player", "expand music"),
-
-        new("hide_music_overlay", "Hide the small music controls without stopping music. The player can be shown again at any time.",
-            ToolTier.Reflex, """{"type":"object","properties":{},"required":[]}""",
-            "hide music player", "hide music overlay", "minimize music", "minimize player"),
-
-        new(
-            "duck_music",
-            "Lower the music while she speaks, then restore it. Used automatically when she talks.",
+            "music_playlists",
+            "Her saved playlists: action=list shows them with sizes, action=create makes one (name required; an optional query adds matching tracks immediately), action=add appends tracks matching query to a named playlist, action=play starts one from the beginning. " +
+            "\"Play a song from my playlist\" is action=play: give the playlist name, or the closest real spelling — the result lists the real names to pick from.",
             ToolTier.Reflex,
-            """{"type":"object","properties":{"ducked":{"type":"boolean"}},"required":["ducked"]}""",
-            "duck", "lower volume while talking"),
-
-        new("previous_track", "Go back to the previous track.", ToolTier.Reflex,
-            """{"type":"object","properties":{},"required":[]}""", "previous", "last song", "back"),
-
-        new("list_playlists", "List her saved playlists and their sizes.", ToolTier.Reflex,
-            """{"type":"object","properties":{},"required":[]}""", "playlists", "what playlists"),
-
-        new(
-            "create_playlist",
-            "Create an empty playlist, or create one and immediately add tracks that match a query.",
-            ToolTier.Reflex,
-            """{"type":"object","properties":{"name":{"type":"string"},"query":{"type":"string","description":"Optional: add matching tracks right away"}},"required":["name"]}""",
-            "new playlist", "create playlist", "make playlist"),
-
-        new(
-            "add_to_playlist",
-            "Add tracks that match a query to a saved playlist.",
-            ToolTier.Reflex,
-            """{"type":"object","properties":{"name":{"type":"string"},"query":{"type":"string","description":"Part of the track name"}},"required":["name","query"]}""",
-            "add song", "add to playlist", "add track"),
-
-        new(
-            "play_playlist",
-            "Play a saved playlist from the start.",
-            ToolTier.Reflex,
-            """{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}""",
-            "play playlist", "play my")
+            """{"type":"object","properties":{"action":{"type":"string","enum":["list","create","add","play"],"description":"What to do with playlists"},"name":{"type":"string","description":"For create/add/play: the playlist's name."},"query":{"type":"string","description":"For create/add: part of a track name; matching tracks join the playlist."}},"required":["action"]}""",
+            "playlist", "play my", "play playlist", "new playlist", "create playlist", "add song", "add to playlist")
     };
 
     public Task InitializeAsync(ModuleContext context, CancellationToken cancellationToken)
@@ -262,10 +198,28 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
     {
         switch (invocation.Tool.Name)
         {
-            case "play_music":
+            case "music_player":
+                return await InvokePlayerActionAsync(invocation, cancellationToken).ConfigureAwait(false);
+            case "music_library":
+                return await InvokeLibraryActionAsync(invocation, cancellationToken).ConfigureAwait(false);
+            case "music_library_folders":
+                return await InvokeFolderActionAsync(invocation, cancellationToken).ConfigureAwait(false);
+            case "music_playlists":
+                return await InvokePlaylistActionAsync(invocation, cancellationToken).ConfigureAwait(false);
+            default:
+                return ToolResult.Fail($"Unknown music tool '{invocation.Tool.Name}'.");
+        }
+    }
+
+    private async Task<ToolResult> InvokePlayerActionAsync(ToolInvocation invocation, CancellationToken cancellationToken)
+    {
+        string action = invocation.GetString("action").Trim().ToLowerInvariant();
+        switch (action)
+        {
+            case "play":
                 await RefreshLibraryAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
                 return Play(invocation.GetString("query"));
-            case "pause_music":
+            case "pause":
                 lock (_playerLock)
                 {
                     if (_outputDevice is null) return ToolResult.Fail("Nothing is playing.");
@@ -273,7 +227,7 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
                     _nowPlaying.Status = "Paused";
                     return ToolResult.Ok("Music paused.", "Paused.");
                 }
-            case "resume_music":
+            case "resume":
                 lock (_playerLock)
                 {
                     if (_outputDevice is null) return Play(string.Empty);
@@ -281,15 +235,17 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
                     _nowPlaying.Status = "Playing";
                     return ToolResult.Ok("Music resumed.", "Back on.");
                 }
-            case "next_track":
+            case "next":
                 return PlayNext();
-            case "shuffle_music":
+            case "previous":
+                return PlayPrevious();
+            case "shuffle":
                 await RefreshLibraryAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
                 return ShuffleMusic();
-            case "stop_music":
+            case "stop":
                 StopPlayback();
                 return ToolResult.Ok("Music stopped.", "Stopped.");
-            case "set_music_volume":
+            case "set_volume":
             {
                 int level = Math.Clamp(invocation.GetInt32("level", 60), 0, 100);
                 lock (_playerLock)
@@ -303,7 +259,42 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
                 }
                 return ToolResult.Ok($"Music volume set to {level} percent.");
             }
-            case "list_music":
+            case "duck":
+            {
+                bool shouldDuck = invocation.GetBoolean("ducked", true);
+                lock (_playerLock)
+                {
+                    _isDucked = shouldDuck;
+                    if (_audioReader is not null)
+                    {
+                        // Restore remembers the user's level, not full blast: the old
+                        // hard 1.0 erased a chosen 40% after every spoken reply.
+                        double target = shouldDuck
+                            ? Math.Max(0.05, _context?.Settings.Voice.MusicDuckLevel ?? 0.25)
+                            : _currentVolume;
+                        _audioReader.Volume = (float)target;
+                    }
+                }
+                return ToolResult.Ok(shouldDuck ? "Music lowered." : "Music restored.");
+            }
+            case "show_controls":
+                return SetMusicOverlayVisible(true);
+            case "hide_controls":
+                return SetMusicOverlayVisible(false);
+            default:
+                return ToolResult.Fail(
+                    $"Unknown music player action '{action}'. Call again with exactly one of: play, pause, resume, " +
+                    "stop, next, previous, shuffle, set_volume (needs level), duck (needs ducked), show_controls, " +
+                    "hide_controls.");
+        }
+    }
+
+    private async Task<ToolResult> InvokeLibraryActionAsync(ToolInvocation invocation, CancellationToken cancellationToken)
+    {
+        string action = invocation.GetString("action").Trim().ToLowerInvariant();
+        switch (action)
+        {
+            case "list":
             {
                 MusicLibraryScanResult scan = await RefreshLibraryAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
                 if (_library.Count == 0)
@@ -320,14 +311,7 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
                     $"showing first {Math.Min(limit, _library.Count)}: {listing}",
                     displayText: listing);
             }
-            case "add_music_folder":
-                return await AddMusicFolderAsync(invocation.GetString("path"), cancellationToken).ConfigureAwait(false);
-            case "browse_music_folder":
-                return await Task.Run(() => BrowseMusicFolder(invocation.GetString("path")), cancellationToken)
-                    .ConfigureAwait(false);
-            case "remove_music_folder":
-                return await RemoveMusicFolderAsync(invocation.GetString("path"), cancellationToken).ConfigureAwait(false);
-            case "refresh_music_library":
+            case "refresh":
             {
                 IModuleTaskHandle? card = _context?.Ui.BeginTask(new ModuleTaskSpec
                 {
@@ -366,46 +350,52 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
                 return ToolResult.Ok(DescribeScan(scan),
                     spokenText: _library.Count == 0 ? "I couldn't find playable music there yet." : ScanSpokenSummary(scan));
             }
-            case "show_music_overlay":
-                return SetMusicOverlayVisible(true);
-            case "hide_music_overlay":
-                return SetMusicOverlayVisible(false);
-            case "duck_music":
-            {
-                bool shouldDuck = invocation.GetBoolean("ducked", true);
-                lock (_playerLock)
-                {
-                    _isDucked = shouldDuck;
-                    if (_audioReader is not null)
-                    {
-                        // Restore remembers the user's level, not full blast: the old
-                        // hard 1.0 erased a chosen 40% after every spoken reply.
-                        double target = shouldDuck
-                            ? Math.Max(0.05, _context?.Settings.Voice.MusicDuckLevel ?? 0.25)
-                            : _currentVolume;
-                        _audioReader.Volume = (float)target;
-                    }
-                }
-                return ToolResult.Ok(shouldDuck ? "Music lowered." : "Music restored.");
-            }
-            case "previous_track":
-                return PlayPrevious();
-            case "list_playlists":
+            default:
+                return ToolResult.Fail(
+                    $"Unknown music library action '{action}'. Call again with action list or refresh.");
+        }
+    }
+
+    private async Task<ToolResult> InvokeFolderActionAsync(ToolInvocation invocation, CancellationToken cancellationToken)
+    {
+        string action = invocation.GetString("action").Trim().ToLowerInvariant();
+        string path = invocation.GetString("path");
+        switch (action)
+        {
+            case "add":
+                return await AddMusicFolderAsync(path, cancellationToken).ConfigureAwait(false);
+            case "browse":
+                return await Task.Run(() => BrowseMusicFolder(path), cancellationToken)
+                    .ConfigureAwait(false);
+            case "remove":
+                return await RemoveMusicFolderAsync(path, cancellationToken).ConfigureAwait(false);
+            default:
+                return ToolResult.Fail(
+                    $"Unknown music folder action '{action}'. Call again with action add, browse or remove.");
+        }
+    }
+
+    private async Task<ToolResult> InvokePlaylistActionAsync(ToolInvocation invocation, CancellationToken cancellationToken)
+    {
+        string action = invocation.GetString("action").Trim().ToLowerInvariant();
+        string name = invocation.GetString("name");
+        string query = invocation.GetString("query");
+        switch (action)
+        {
+            case "list":
                 return ListPlaylists();
-            case "create_playlist":
-            {
-                string query = invocation.GetString("query");
+            case "create":
                 if (!string.IsNullOrWhiteSpace(query))
                     await RefreshLibraryAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
-                return CreatePlaylist(invocation.GetString("name"), query);
-            }
-            case "add_to_playlist":
+                return CreatePlaylist(name, query);
+            case "add":
                 await RefreshLibraryAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
-                return AddToPlaylist(invocation.GetString("name"), invocation.GetString("query"));
-            case "play_playlist":
-                return PlayPlaylist(invocation.GetString("name"));
+                return AddToPlaylist(name, query);
+            case "play":
+                return PlayPlaylist(name);
             default:
-                return ToolResult.Fail($"Unknown music tool '{invocation.Tool.Name}'.");
+                return ToolResult.Fail(
+                    $"Unknown playlist action '{action}'. Call again with action list, create, add or play.");
         }
     }
 
@@ -426,24 +416,35 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
                                arguments.TryGetProperty("path", out JsonElement pathValue)
             ? pathValue.ValueKind == JsonValueKind.String ? pathValue.GetString() ?? string.Empty : pathValue.ToString()
             : string.Empty;
-        string target = tool.Name switch
-        {
-            "browse_music_folder" => ResolveBrowseDirectory(requestedPath),
-            "add_music_folder" => string.IsNullOrWhiteSpace(requestedPath)
-                ? _browseDirectory
-                : ExpandDirectory(requestedPath),
-            "remove_music_folder" => ExpandDirectory(requestedPath),
-            _ => string.Empty
-        };
-        string safeTarget = SanitizePermissionTarget(target);
+        string action = arguments.ValueKind == JsonValueKind.Object &&
+                        arguments.TryGetProperty("action", out JsonElement actionValue) &&
+                        actionValue.ValueKind == JsonValueKind.String
+            ? actionValue.GetString() ?? string.Empty
+            : string.Empty;
 
-        return tool.Name switch
+        if (tool.Name == "music_library_folders")
         {
-            "browse_music_folder" => $"read the folder names and supported-audio count inside '{safeTarget}' (read-only)",
-            "add_music_folder" => $"add '{safeTarget}' to the music library and index its audio files; no source files will be changed",
-            "remove_music_folder" => $"stop indexing '{safeTarget}' in the music library; no files will be deleted",
-            _ => tool.Description.TrimEnd('.').ToLowerInvariant()
-        };
+            string target = action switch
+            {
+                "browse" => ResolveBrowseDirectory(requestedPath),
+                "add" => string.IsNullOrWhiteSpace(requestedPath)
+                    ? _browseDirectory
+                    : ExpandDirectory(requestedPath),
+                "remove" => ExpandDirectory(requestedPath),
+                _ => string.Empty
+            };
+            string safeTarget = SanitizePermissionTarget(target);
+
+            return action switch
+            {
+                "browse" => $"read the folder names and supported-audio count inside '{safeTarget}' (read-only)",
+                "add" => $"add '{safeTarget}' to the music library and index its audio files; no source files will be changed",
+                "remove" => $"stop indexing '{safeTarget}' in the music library; no files will be deleted",
+                _ => tool.Description.TrimEnd('.').ToLowerInvariant()
+            };
+        }
+
+        return tool.Description.TrimEnd('.').ToLowerInvariant();
     }
 
     private static string SanitizePermissionTarget(string path)

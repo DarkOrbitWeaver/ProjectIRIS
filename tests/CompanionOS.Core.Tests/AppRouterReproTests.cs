@@ -23,11 +23,11 @@ public class AppRouterReproTests
     }
 
     [Theory]
-    [InlineData("play the playlist", "play_playlist")]
-    [InlineData("play hollowlight", "play_music")]
-    [InlineData("its in your custom player", "list_music")]
+    [InlineData("play the playlist", "music_playlists")]
+    [InlineData("play hollowlight", "music_player")]
+    [InlineData("its in your custom player", "music_library")]
     [InlineData("Uh open up calculator", "open_application")]
-    [InlineData("can you use the music player", "play_music")]
+    [InlineData("can you use the music player", "music_player")]
     public async Task TheOwnersMusicRequestsRouteHerOwnPlayer(string request, string expectedTool)
     {
         EventBus events = new();

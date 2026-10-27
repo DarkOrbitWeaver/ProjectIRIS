@@ -88,7 +88,11 @@ public sealed class CoreToolsModule : IAssistantModule
 
         new(
             "control_windows_media",
-            "Pause or resume the active media player on Windows, including a browser video when Windows exposes its media session. Use this for requests to pause or resume the current video/music. This is separate from Iris's own Music Player. Report only the tool result; never claim success when Windows does not confirm it.",
+            "Windows' system media keys, for OTHER apps' media: pause, or play/resume, the video or music a browser " +
+            "(YouTube), Spotify, or any desktop app exposed to Windows' media session. Its actions are pause and play " +
+            "only. NOT for her own music library or playlists — those belong to the music module's tools. If no media " +
+            "session is exposed, say it did not happen. Report only the tool result; never claim success when Windows " +
+            "does not confirm it.",
             ToolTier.Reflex,
             """{"type":"object","properties":{"action":{"type":"string","enum":["pause","play"]}},"required":["action"]}""",
             "pause video", "pause youtube", "pause playback", "resume video", "play video", "current video", "media player", "youtube"),

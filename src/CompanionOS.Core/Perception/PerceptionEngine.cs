@@ -660,18 +660,40 @@ public sealed class PerceptionEngine : IDisposable
             return;
         }
 
-        if (string.IsNullOrWhiteSpace(snapshot.MediaTitle))
+        // The title used to gate the whole line: a session with no metadata reported
+        // "did not provide a track title" and said NOTHING about state — so "resume"
+        // arrived while she had never been shown that anything was paused. The state
+        // and the owning app are the facts she needs; the title is garnish.
+        lines.Add(DescribeMediaSource(snapshot.MediaTitle, snapshot.MediaArtist,
+            snapshot.MediaPlaybackStatus, snapshot.MediaApplication));
+    }
+
+    /// <summary>
+    /// The one-line media fact that rides the turn's machine context. Always names the
+    /// playback state when it is known and the app that owns the session when Windows
+    /// reports one; the track title is included when the session provides it. A
+    /// title-less session is still a controllable session — browser videos often are —
+    /// so the line must never collapse to "no track title" and end there.
+    /// </summary>
+    public static string DescribeMediaSource(string title, string artist, string playbackStatus, string application)
+    {
+        string app = string.IsNullOrWhiteSpace(application) ? string.Empty : $" — owned by {application}";
+
+        if (string.IsNullOrWhiteSpace(title))
         {
-            lines.Add("An active Windows media session did not provide a track title.");
-            return;
+            string stateSuffix = string.IsNullOrWhiteSpace(playbackStatus)
+                ? string.Empty
+                : $" ({playbackStatus.ToLowerInvariant()})";
+            return $"A Windows media session{app} is active but reports no track title{stateSuffix}; " +
+                   "it can still be controlled with system media transport commands.";
         }
 
-        string state = string.IsNullOrWhiteSpace(snapshot.MediaPlaybackStatus)
-            ? string.Empty
-            : $" ({snapshot.MediaPlaybackStatus.ToLowerInvariant()})";
-        string artist = string.IsNullOrWhiteSpace(snapshot.MediaArtist) ? string.Empty : $" by {snapshot.MediaArtist}";
-        lines.Add($"Media: \"{snapshot.MediaTitle}\"{artist}{state}.");
+        string artistPart = string.IsNullOrWhiteSpace(artist) ? string.Empty : $" by {artist}";
+        return $"Media: \"{title}\"{artistPart} is {SafeStatus(playbackStatus)}{app}.";
     }
+
+    private static string SafeStatus(string? playbackStatus) =>
+        string.IsNullOrWhiteSpace(playbackStatus) ? "in an unknown state" : playbackStatus.ToLowerInvariant();
 
     public void Dispose()
     {

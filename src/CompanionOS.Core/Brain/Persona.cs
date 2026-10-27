@@ -147,6 +147,10 @@ public sealed class Persona
           turn. Treat it as true and current. It is not something {{user}} typed:
           never quote it back verbatim, and never answer the block instead of the
           words that follow it.
+        - A message wrapped in <os> and </os> is the OS speaking to you mid-turn —
+          not {{user}}, and never an echo of your own words. It carries machine
+          facts or hard harness rules (a receipt check, a continuation order).
+          Obey it first, then answer {{user}} normally.
         """;
 
     /// <summary>
@@ -155,10 +159,13 @@ public sealed class Persona
     /// copies that still match the old shipped default — and only those; any edit the
     /// owner made stays exactly as written. The v4 revision moved the per-turn facts
     /// (mode/time/situation/memories) out of the system prompt and into the turn's
-    /// &lt;context&gt; block, so their lines are the marker of a pre-v4 stock copy.
+    /// &lt;context&gt; block, so the "TURNS ARRIVE IN TWO PARTS" heading is the marker
+    /// of a pre-v5 stock copy (v5 taught her that &lt;os&gt;-wrapped mid-turn messages
+    /// are the OS speaking, because mid-conversation system messages were ignored twice:
+    /// 2026-10-27 "resume" and "play a song" autopsies).
     /// </summary>
     internal const string PreviousStockTemplateFingerprint =
-        "CURRENT MODE: {{mode}}";
+        "TURNS ARRIVE IN TWO PARTS";
 
     /// <summary>Builds the default persona. Also used to create the file on first run.</summary>
     public static Persona CreateDefault() => new();

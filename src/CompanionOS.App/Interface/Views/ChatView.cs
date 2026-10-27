@@ -197,9 +197,10 @@ public sealed class ChatView : UserControl
     }
 
     /// <summary>Runs one of her real music tools, so the transport is folded into her.</summary>
-    private void InvokeMusicTool(string tool)
+    private void InvokeMusicTool(string tool, string action)
     {
-        _ = _model.Runtime.Modules.ExecuteAsync(tool, System.Text.Json.JsonDocument.Parse("{}").RootElement.Clone(),
+        _ = _model.Runtime.Modules.ExecuteAsync(tool,
+            System.Text.Json.JsonDocument.Parse($"{{\"action\":\"{action}\"}}").RootElement.Clone(),
             Guid.NewGuid().ToString("N")[..8], CancellationToken.None);
     }
 

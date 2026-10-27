@@ -26,12 +26,13 @@ namespace CompanionOS.App.Interface;
 /// The music card, board spec: #161821, radius 12, padding 16, gap 8 — a 15 px title,
 /// a 13 px secondary line, a 2 px progress line and three centred transport icons.
 ///
-/// <paramref name="invokeTool"/> receives the real module tool name, so pressing the
-/// transport is exactly the same as asking her to play something with her voice.
+/// <paramref name="invokeTool"/> receives the real module tool name and its player
+/// action, so pressing the transport is exactly the same as asking her to play
+/// something with her voice.
 /// </summary>
 public sealed class MusicRailPanel : Border
 {
-    private readonly Action<string> _invokeTool;
+    private readonly Action<string, string> _invokeTool;
     private readonly Border _fill;
     private readonly TextBlock _title;
     private readonly TextBlock _secondary;
@@ -41,7 +42,7 @@ public sealed class MusicRailPanel : Border
     private bool _isSubscribed;
     private bool _isAttached;
 
-    public MusicRailPanel(NowPlayingModel? nowPlaying, Action<string> invokeTool)
+    public MusicRailPanel(NowPlayingModel? nowPlaying, Action<string, string> invokeTool)
     {
         _invokeTool = invokeTool;
         _nowPlaying = nowPlaying;
@@ -174,9 +175,9 @@ public sealed class MusicRailPanel : Border
     private Control TransportRow()
     {
         Button previous = TransportButton(IconGlyph.PlayPrevious, Palette.TextSecondaryBrush, "Previous track",
-            () => _invokeTool("previous_track"));
+            () => _invokeTool("music_player", "previous"));
         Button next = TransportButton(IconGlyph.PlayNext, Palette.TextSecondaryBrush, "Next track",
-            () => _invokeTool("next_track"));
+            () => _invokeTool("music_player", "next"));
 
         // The board centers three icons with a 20 px breathing gap between them.
         return new StackPanel
@@ -219,18 +220,18 @@ public sealed class MusicRailPanel : Border
 
     private void OnTransportPressed()
     {
-        // The truth of the moment decides which real tool runs: playing → pause her
+        // The truth of the moment decides which real action runs: playing → pause her
         // music, paused → resume it, stopped → start it.
         switch (NowPlaying?.Status)
         {
             case "Playing":
-                _invokeTool("pause_music");
+                _invokeTool("music_player", "pause");
                 break;
             case "Paused":
-                _invokeTool("resume_music");
+                _invokeTool("music_player", "resume");
                 break;
             default:
-                _invokeTool("play_music");
+                _invokeTool("music_player", "play");
                 break;
         }
     }

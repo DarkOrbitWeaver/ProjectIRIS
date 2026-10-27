@@ -117,11 +117,11 @@ internal sealed class MusicOverlayWindow : Window
             Spacing = 18,
             Children =
             {
-                TransportButton(IconGlyph.PlayPrevious, "Previous track", () => Invoke("previous_track"),
+                TransportButton(IconGlyph.PlayPrevious, "Previous track", () => Invoke("previous"),
                     Palette.TextSecondaryBrush),
                 _playPause,
-                TransportButton(IconGlyph.Stop, "Stop music", () => Invoke("stop_music"), Palette.TextSecondaryBrush),
-                TransportButton(IconGlyph.PlayNext, "Next track", () => Invoke("next_track"),
+                TransportButton(IconGlyph.Stop, "Stop music", () => Invoke("stop"), Palette.TextSecondaryBrush),
+                TransportButton(IconGlyph.PlayNext, "Next track", () => Invoke("next"),
                     Palette.TextSecondaryBrush)
             }
         };
@@ -239,7 +239,7 @@ internal sealed class MusicOverlayWindow : Window
 
     private void TogglePlayPause()
     {
-        Invoke(_nowPlaying?.Status == "Playing" ? "pause_music" : "resume_music");
+        Invoke(_nowPlaying?.Status == "Playing" ? "pause" : "resume");
     }
 
     private void HideForNow()
@@ -250,10 +250,11 @@ internal sealed class MusicOverlayWindow : Window
         Hide();
     }
 
-    private void Invoke(string tool)
+    private void Invoke(string action)
     {
-        using System.Text.Json.JsonDocument arguments = System.Text.Json.JsonDocument.Parse("{}");
-        _ = _model.Runtime.Modules.ExecuteAsync(tool, arguments.RootElement.Clone(),
+        using System.Text.Json.JsonDocument arguments = System.Text.Json.JsonDocument.Parse(
+            $"{{\"action\":\"{action}\"}}");
+        _ = _model.Runtime.Modules.ExecuteAsync("music_player", arguments.RootElement.Clone(),
             Guid.NewGuid().ToString("N")[..8], CancellationToken.None);
     }
 

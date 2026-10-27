@@ -17,6 +17,14 @@ public sealed class JournalEntry
     public string State { get; set; } = string.Empty;
     public string Text { get; set; } = string.Empty;
     public string Detail { get; set; } = string.Empty;
+
+    /// <summary>
+    /// A tool call's argument object as the model sent it. The journal used to keep
+    /// only the tool name — evidence of THAT a hand moved, never WITH WHAT — which
+    /// made every misdirected action ("play from the playlist" resumed YouTube)
+    /// unexplainable from the records alone.
+    /// </summary>
+    public string Arguments { get; set; } = string.Empty;
 }
 
 /// <summary>What the journal could work out after a restart.</summary>
@@ -83,13 +91,29 @@ public sealed class TurnJournal
     public void RecordAnswerProgress(string turnId, string textSoFar) =>
         Append(new JournalEntry { Kind = "answer-progress", TurnId = turnId, Text = textSoFar });
 
-    /// <summary>Records a tool call before it runs; a crash leaves evidence of it.</summary>
-    public string RecordToolCall(string turnId, string moduleId, string toolName)
+    /// <summary>
+    /// Records a tool call before it runs; a crash leaves evidence of it, and the
+    /// arguments the model chose ride the same record. Arguments are capped: they are
+    /// spoken-form data, never image payloads, but a runaway generation must not be
+    /// able to inflate a single journal line.
+    /// </summary>
+    public string RecordToolCall(string turnId, string moduleId, string toolName, string? argumentsJson = null)
     {
+        const int maximumJournaledArguments = 4000;
+        string arguments = argumentsJson ?? string.Empty;
+        if (arguments.Length > maximumJournaledArguments)
+        {
+            arguments = arguments[..maximumJournaledArguments] + "… (truncated)";
+        }
+
         string operationId = Guid.NewGuid().ToString("N");
         Append(new JournalEntry
         {
-            Kind = "tool", TurnId = turnId, OperationId = operationId, Detail = moduleId + "/" + toolName
+            Kind = "tool",
+            TurnId = turnId,
+            OperationId = operationId,
+            Detail = moduleId + "/" + toolName,
+            Arguments = arguments
         });
         return operationId;
     }
@@ -116,9 +140,19 @@ public sealed class TurnJournal
             State = state
         });
 
-    /// <summary>Records that the turn finished cleanly.</summary>
-    public void RecordAnswerCompleted(string turnId) =>
-        Append(new JournalEntry { Kind = "answer-completed", TurnId = turnId });
+    /// <summary>
+    /// Records that the turn finished cleanly, with her final words. The journal used
+    /// to close the turn on an empty shell — the answer text existed only in the limits
+    /// of the app's lifetime — so every post-mortem of a wrong reply began with a
+    /// character count instead of a sentence.
+    /// </summary>
+    public void RecordAnswerCompleted(string turnId, string? finalAnswer = null) =>
+        Append(new JournalEntry
+        {
+            Kind = "answer-completed",
+            TurnId = turnId,
+            Text = finalAnswer ?? string.Empty
+        });
 
     /// <summary>Records an intentional cancellation so recovery does not call it a crash.</summary>
     public void RecordAnswerCancelled(string turnId) =>

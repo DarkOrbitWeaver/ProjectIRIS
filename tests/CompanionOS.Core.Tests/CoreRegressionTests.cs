@@ -282,7 +282,8 @@ public sealed class CoreRegressionTests
 
             journal.RecordUserMessage("interrupted-turn", "continue later");
             journal.RecordAnswerProgress("interrupted-turn", "partial reply");
-            string completedOperation = journal.RecordToolCall("interrupted-turn", "music", "add_to_playlist");
+            string completedOperation = journal.RecordToolCall("interrupted-turn", "music", "music_playlists",
+                "{\"action\":\"add\",\"name\":\"Night Drive\",\"query\":\"hollow\"}");
             journal.RecordToolResult("interrupted-turn", completedOperation, JournalToolStatus.Succeeded);
             string uncertainOperation = journal.RecordToolCall("interrupted-turn", "telegram", "send_message");
             string backgroundOperation = journal.RecordToolCall("interrupted-turn", "web", "search");
@@ -1722,13 +1723,12 @@ public sealed class CoreRegressionTests
     public void MusicPermissionDescriptionsNameTheResolvedFolderAndDoNotEchoControlCharacters()
     {
         using MusicPlayerModule module = new();
-        ModuleTool browseTool = module.Tools.Single(tool => tool.Name == "browse_music_folder");
-        ModuleTool addTool = module.Tools.Single(tool => tool.Name == "add_music_folder");
-        using JsonDocument browseArguments = JsonDocument.Parse("{\"path\":\"Downloads\\\\New Music\"}");
-        using JsonDocument addArguments = JsonDocument.Parse("{\"path\":\"C:\\\\Music\\n'quoted'\"}");
+        ModuleTool browseTool = module.Tools.Single(tool => tool.Name == "music_library_folders");
+        using JsonDocument browseArguments = JsonDocument.Parse("{\"action\":\"browse\",\"path\":\"Downloads\\\\New Music\"}");
+        using JsonDocument addArguments = JsonDocument.Parse("{\"action\":\"add\",\"path\":\"C:\\\\Music\\n'quoted'\"}");
 
         string browseDescription = module.DescribeAction(browseTool, browseArguments.RootElement);
-        string addDescription = module.DescribeAction(addTool, addArguments.RootElement);
+        string addDescription = module.DescribeAction(browseTool, addArguments.RootElement);
         string downloads = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
             "Downloads", "New Music");
 
