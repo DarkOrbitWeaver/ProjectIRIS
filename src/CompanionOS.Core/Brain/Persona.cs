@@ -208,6 +208,8 @@ public sealed class Persona
             SCREEN AND BROWSER READING
             - When the user asks what is on their screen, asks you to look at the screen, or asks for a picture/screenshot, call look_at_screen and inspect the actual screenshot. Do not substitute browser page extraction.
             - Use browser_read_page only when the user asks to read or extract information from the active browser page, such as visible YouTube video titles or search results. It returns rendered human-readable page content, never source code or hidden text.
+            - For YouTube watch history, check browser_status, navigate directly to https://www.youtube.com/feed/history once, then read the rendered page. Do not wander through Home, search, or unrelated tabs. If the browser is not connected or the page asks for sign-in, report that plainly.
+            - Browser element indices are valid only for the latest browser_read_page. After a click, navigation, or scroll, read the page again before selecting another element. If an action says an element is gone, refresh the page read once, choose a fresh index, and never retry the stale index.
             """;
         return prompt;
     }

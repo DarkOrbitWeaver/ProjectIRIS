@@ -164,21 +164,21 @@ public sealed partial class ShellModel : ObservableObject
                     Role = ChatRole.Tool,
                     Text = payload.Text,
                     Detail = payload.Detail ?? string.Empty,
+                    IconKey = payload.IconKey,
                     TurnId = payload.TurnId,
-                    IsToolRunning = true
+                    IsToolRunning = true,
+                    ToolStatus = "Running"
                 });
                 break;
 
             case ConversationPhase.ToolFinished:
                 ChatEntry? activeTool = Messages.LastOrDefault(message =>
                     message.Role == ChatRole.Tool && message.TurnId == payload.TurnId && message.IsToolRunning);
-                string toolResult = string.IsNullOrEmpty(payload.Detail)
-                    ? payload.Text
-                    : $"{payload.Text} — {Trim(payload.Detail, 160)}";
                 if (activeTool is not null)
                 {
-                    activeTool.Text = toolResult;
+                    activeTool.Detail = Trim(payload.Detail ?? string.Empty, 160);
                     activeTool.IsToolRunning = false;
+                    activeTool.ToolStatus = payload.Succeeded == false ? "Failed" : "Finished";
                 }
                 else
                 {
@@ -187,8 +187,11 @@ public sealed partial class ShellModel : ObservableObject
                     Messages.Add(new ChatEntry
                     {
                         Role = ChatRole.Tool,
-                        Text = toolResult,
-                        TurnId = payload.TurnId
+                        Text = payload.Text,
+                        Detail = Trim(payload.Detail ?? string.Empty, 160),
+                        IconKey = payload.IconKey,
+                        TurnId = payload.TurnId,
+                        ToolStatus = payload.Succeeded == false ? "Failed" : "Finished"
                     });
                 }
 
@@ -224,8 +227,8 @@ public sealed partial class ShellModel : ObservableObject
         foreach (ChatEntry entry in Messages.Where(message =>
                      message.Role == ChatRole.Tool && message.TurnId == turnId && message.IsToolRunning))
         {
-            entry.Text = $"{entry.Text} — {outcome}";
             entry.IsToolRunning = false;
+            entry.ToolStatus = outcome;
         }
     }
 

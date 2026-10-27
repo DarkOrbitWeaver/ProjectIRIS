@@ -902,29 +902,86 @@ public sealed class ChatView : UserControl
 
     private static Control BuildToolCapsule(ChatEntry entry)
     {
-        StackPanel stack = new() { Spacing = 2, Margin = new Thickness(36, 0, 48, 0) };
-        stack.Children.Add(new TextBlock
+        TextBlock title = new()
         {
-            Text = entry.Text,
+            Text = string.Empty,
+            FontSize = Palette.FontCaption,
+            FontWeight = FontWeight.SemiBold,
+            LineHeight = 16,
+            Foreground = Palette.TextPrimaryBrush,
+            TextWrapping = TextWrapping.NoWrap,
+            TextTrimming = TextTrimming.CharacterEllipsis
+        };
+        TextBlock status = new()
+        {
             FontSize = Palette.FontCaption,
             FontWeight = FontWeight.Medium,
-            LineHeight = 16,
-            Foreground = Palette.TextSecondaryBrush,
-            TextWrapping = TextWrapping.Wrap
-        });
+            Foreground = Palette.AccentSoftBrush,
+            TextWrapping = TextWrapping.NoWrap
+        };
+        TextBlock? detail = null;
+        void Refresh()
+        {
+            title.Text = entry.Text;
+            if (detail is not null)
+            {
+                detail.Text = entry.Detail;
+            }
+            status.Text = string.IsNullOrWhiteSpace(entry.ToolStatus)
+                ? entry.IsToolRunning ? "Running" : "Tool result"
+                : entry.ToolStatus;
+            status.Foreground = entry.IsToolRunning
+                ? Palette.AccentSoftBrush
+                : status.Text.Contains("error", StringComparison.OrdinalIgnoreCase) ||
+                  status.Text.Contains("fail", StringComparison.OrdinalIgnoreCase)
+                    ? Palette.DangerBrush
+                    : status.Text.Contains("cancel", StringComparison.OrdinalIgnoreCase)
+                        ? Palette.TextSecondaryBrush
+                        : Palette.SuccessBrush;
+        }
+
+        Refresh();
+        entry.PropertyChanged += (_, _) => Dispatcher.UIThread.Post(Refresh);
+
+        Grid titleRow = new() { ColumnDefinitions = new ColumnDefinitions("*,Auto"), ColumnSpacing = 8 };
+        titleRow.Children.Add(title);
+        Grid.SetColumn(status, 1);
+        titleRow.Children.Add(status);
+        StackPanel copy = new() { Spacing = 2 };
+        copy.Children.Add(titleRow);
         if (!string.IsNullOrWhiteSpace(entry.Detail))
         {
-            stack.Children.Add(new TextBlock
+            detail = new TextBlock
             {
                 Text = entry.Detail,
                 FontSize = Palette.FontCaption,
                 LineHeight = 16,
                 Foreground = Palette.TextFaintBrush,
-                TextWrapping = TextWrapping.Wrap
-            });
+                TextWrapping = TextWrapping.NoWrap,
+                TextTrimming = TextTrimming.CharacterEllipsis
+            };
+            copy.Children.Add(detail);
         }
 
-        return stack;
+        Grid row = new()
+        {
+            ColumnDefinitions = new ColumnDefinitions("Auto,*"),
+            ColumnSpacing = 9,
+            Margin = new Thickness(36, 3, 48, 3)
+        };
+        row.Children.Add(ModuleIconGlyph.Create(entry.IconKey, 16, Palette.AccentSoftBrush));
+        Grid.SetColumn(copy, 1);
+        row.Children.Add(copy);
+        return new Border
+        {
+            Background = Palette.ElevatedBrush,
+            BorderBrush = Palette.StrokeBrush,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(Palette.RadiusControl),
+            Padding = new Thickness(9, 7),
+            MaxWidth = 680,
+            Child = row
+        };
     }
 
     private void OnComposerKeyDown(object? sender, KeyEventArgs eventArgs)

@@ -24,7 +24,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const init = await rpc('initialize', { protocolVersion: '2024-11-05' });
   assert.equal(init.result.serverInfo.name, 'iris-browser');
   const list = await rpc('tools/list', {});
-  assert.equal(list.result.tools.length, 9);
+  assert.equal(list.result.tools.length, 10);
+  assert.match(list.result.tools.find((tool) => tool.name === 'browser_click').description, /fresh index/);
+  assert.match(list.result.tools.find((tool) => tool.name === 'browser_type').description, /stale index/);
 
   // 1. not connected: honest error, not a hang
   let r = await call('browser_read_page');

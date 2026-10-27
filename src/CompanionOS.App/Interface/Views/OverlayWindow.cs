@@ -31,11 +31,9 @@ namespace CompanionOS.App.Interface.Views;
 /// the main window, so orb state and levels are identical in both places.
 ///
 /// Hover is read from the whole window, not from the orb cell. A 5 px transparent inset
-/// leaves room for the called-state contour. When the portrait is present, the outer
-/// window stays at its expanded width so revealing controls cannot shift the avatar;
-/// without it, the window resizes away from its docked edge. Leaving collapses after a
-/// short grace period instead of flickering. The window is shown without activation so
-/// opening the overlay never steals focus from a game.
+/// leaves room for the called-state contour. Hover opens a smooth agent-chat panel beside
+/// the mascot, growing away from the docked screen edges; clicking the composer explicitly
+/// activates the window. Leaving collapses after a short grace period instead of flickering.
 /// </summary>
 public sealed class OverlayWindow : Window
 {
@@ -43,6 +41,13 @@ public sealed class OverlayWindow : Window
     // space around it gives the attention halo room without clipping the pill's contents.
     private const double PillHeight = 44;
     private const double AvatarSize = 220;
+    private const double ExpandedAvatarSize = 180;
+    private const double ChatPanelWidth = 320;
+    private const double ChatPanelHeight = 360;
+    private const double ExpandedPadding = 12;
+    private const double ExpandedWidth = ExpandedAvatarSize + Gap + ChatPanelWidth + (ExpandedPadding * 2);
+    private const double ExpandedHeight = ChatPanelHeight + (ExpandedPadding * 2);
+    private const double HomeHeight = AvatarSize + Gap + PillHeight + (AttentionAuraInset * 2);
     private const double OrbSize = 22;
     private const double DotSize = 6;
     private const double Gap = 10;
@@ -62,6 +67,7 @@ public sealed class OverlayWindow : Window
     private const double OrbOnlyWidth = (Hairline * 2) + (OrbitOnlyPadding * 2) + OrbSize;
 
     private static readonly TimeSpan CollapseDelay = TimeSpan.FromMilliseconds(280);
+    private static readonly TimeSpan ResizeDuration = TimeSpan.FromMilliseconds(260);
 
     /// <summary>Few pixels between her docked edge and the screen edge.</summary>
     private const double DockMargin = 8;
@@ -83,9 +89,14 @@ public sealed class OverlayWindow : Window
     private readonly Grid _pillSurface;
     private readonly Border _avatarFrame;
     private readonly WebView2 _mascotView;
+    private readonly StackPanel _homeGroup;
+    private readonly StackPanel _expandedGroup;
+    private readonly Border _surface;
+    private readonly AgentChatPanel _chatPanel;
     private readonly AttentionContour _attentionContour = new() { IsHitTestVisible = false };
     private readonly DispatcherTimer _syncTimer;
     private readonly DispatcherTimer _collapseTimer;
+    private readonly DispatcherTimer _resizeTimer;
     private readonly DispatcherTimer _backgroundCompletionTimer;
     private readonly MusicOverlayWindow _musicOverlay;
     private readonly TimerOverlayWindow _timerOverlay;
@@ -113,6 +124,8 @@ public sealed class OverlayWindow : Window
     private bool _pointerInside;
     private bool _dragging;
     private bool _growsLeft;
+    private bool _growsDown;
+    private bool _chatExpanded;
     private bool _hasPosition;
     private bool _mascotReady;
     private string? _lastMascotState;
@@ -120,6 +133,15 @@ public sealed class OverlayWindow : Window
     private DateTimeOffset _mascotEventStateUntil = DateTimeOffset.MinValue;
     private int _lastMascotAmplitudeStep = -1;
     private DateTimeOffset _attentionUntil = DateTimeOffset.MinValue;
+    private DateTimeOffset _resizeStartedAt;
+    private double _resizeFromWidth;
+    private double _resizeFromHeight;
+    private double _resizeToWidth;
+    private double _resizeToHeight;
+    private double _resizeFromAvatarSize;
+    private double _resizeToAvatarSize;
+    private PixelPoint _resizeFromPosition;
+    private PixelPoint _resizeToPosition;
 
     /// <summary>The pill's four shapes; each one fixes the window's width.</summary>
     private enum PillShape
@@ -155,7 +177,8 @@ public sealed class OverlayWindow : Window
         ShowActivated = false;
         CanResize = false;
         WindowStartupLocation = WindowStartupLocation.Manual;
-        Height = PillHeight + (AttentionAuraInset * 2);
+        Width = AvatarSize;
+        Height = HomeHeight;
 
         _dot = new Border
         {
@@ -254,10 +277,10 @@ public sealed class OverlayWindow : Window
         {
             Width = AvatarSize,
             Height = AvatarSize,
-            CornerRadius = new CornerRadius(12),
+            CornerRadius = new CornerRadius(14),
             BorderThickness = new Thickness(1),
             BorderBrush = Palette.StrokeBrush,
-            Background = new SolidColorBrush(Color.FromRgb(18, 20, 28)),
+            Background = Palette.BackgroundBrush,
             ClipToBounds = true,
             Child = _mascotView
         };
@@ -271,19 +294,38 @@ public sealed class OverlayWindow : Window
         _pillSurface.Children.Add(_pill);
         _pillSurface.Children.Add(_attentionContour);
 
-        StackPanel dockedGroup = new()
+        _homeGroup = new StackPanel
         {
             Orientation = Orientation.Vertical,
             Spacing = Gap,
-            HorizontalAlignment = HorizontalAlignment.Center,
-            VerticalAlignment = VerticalAlignment.Top
+            HorizontalAlignment = HorizontalAlignment.Center
         };
-        dockedGroup.Children.Add(_avatarFrame);
-        dockedGroup.Children.Add(_pillSurface);
+        _homeGroup.Children.Add(_avatarFrame);
+        _homeGroup.Children.Add(_pillSurface);
 
-        Content = dockedGroup;
-        Width = Math.Max(WindowWidth(PillShape.Buttons), AvatarSize);
-        Height = AvatarSize + Gap + PillHeight + (AttentionAuraInset * 2);
+        _chatPanel = new AgentChatPanel(_model, ActivateChatInput)
+        {
+            Width = ChatPanelWidth,
+            Height = ChatPanelHeight,
+            IsVisible = false
+        };
+        _expandedGroup = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = Gap,
+            HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Bottom
+        };
+        _expandedGroup.Children.Add(_homeGroup);
+        _surface = new Border
+        {
+            Background = Brushes.Transparent,
+            BorderThickness = new Thickness(0),
+            CornerRadius = new CornerRadius(18),
+            ClipToBounds = true,
+            Child = _expandedGroup
+        };
+        Content = _surface;
 
         // Apply the resting shape before the first paint. Previously the construction
         // width was the compact one while both button and equalizer hosts still had their
@@ -300,6 +342,10 @@ public sealed class OverlayWindow : Window
             }
         });
         _collapseTimer.Stop();
+
+        _resizeTimer = new DispatcherTimer(TimeSpan.FromMilliseconds(16), DispatcherPriority.Render,
+            (_, _) => AdvanceWindowResize());
+        _resizeTimer.Stop();
 
         // One hover surface: the window. Entering anywhere expands; leaving starts a short
         // grace period, cancelled by re-entry. Moving across a child button never counts
@@ -358,6 +404,7 @@ public sealed class OverlayWindow : Window
         {
             _syncTimer.Stop();
             _collapseTimer.Stop();
+            _resizeTimer.Stop();
             _backgroundCompletionTimer.Stop();
             _moduleRegistrySubscription?.Dispose();
             _conversationSubscription?.Dispose();
@@ -560,6 +607,8 @@ public sealed class OverlayWindow : Window
         // unfolds to the left, a pill on the left unfolds to the right. This is what keeps
         // the hovered pill under the pointer instead of moving it.
         _growsLeft = Position.X + (pixelWidth / 2.0) > work.X + (work.Width / 2.0);
+        _growsDown = Position.Y + (pixelHeight / 2.0) < work.Y + (work.Height / 2.0);
+        UpdateExpandedGroupOrder();
     }
 
     /// <summary>True while her window sits within the dock tolerance of the screen's
@@ -1261,6 +1310,8 @@ public sealed class OverlayWindow : Window
     /// </summary>
     private void RefreshShapeFromState()
     {
+        SetChatExpanded(_pointerInside && !_dragging);
+
         PillShape shape;
         if (_model.State == MindState.Gaming)
         {
@@ -1306,6 +1357,8 @@ public sealed class OverlayWindow : Window
                 }
 
                 _growsLeft = Position.X + (PixelWidth() / 2.0) > work.X + (work.Width / 2.0);
+                _growsDown = Position.Y + (PixelHeight() / 2.0) < work.Y + (work.Height / 2.0);
+                UpdateExpandedGroupOrder();
             }
 
             _model.Runtime.Settings.Current.Interface.OverlayPositionPx =
@@ -1320,17 +1373,20 @@ public sealed class OverlayWindow : Window
     }
 
     /// <summary>
-    /// Swaps the pill's contents for a new shape. Without a portrait, resize the window
-    /// around its docked edge; with one, keep the outer width fixed so the avatar stays put.
+    /// Updates the pill and animates the whole card from its docked edge, keeping the
+    /// portrait anchored while the chat surface unfolds beside it.
     /// </summary>
     private void ApplyShape(PillShape shape, bool initial = false)
     {
-        if (!initial && _shape == shape)
+        double targetWidth = _chatExpanded ? ExpandedWidth : AvatarSize;
+        double targetHeight = _chatExpanded ? ExpandedHeight : HomeHeight;
+        if (!initial && _shape == shape &&
+            Math.Abs(_resizeToWidth - targetWidth) < 0.1 &&
+            Math.Abs(_resizeToHeight - targetHeight) < 0.1)
         {
             return;
         }
 
-        double oldWidth = Width;
         _shape = shape;
 
         bool orbOnly = shape == PillShape.OrbOnly;
@@ -1345,32 +1401,119 @@ public sealed class OverlayWindow : Window
             ? new Thickness(OrbitOnlyPadding, 0, OrbitOnlyPadding, 0)
             : new Thickness(PadLeft, 0, PadRight, 0);
 
-        Width = _avatarFrame.IsVisible
-            ? Math.Max(WindowWidth(PillShape.Buttons), AvatarSize)
-            : WindowWidth(shape);
         _pillSurface.Width = WindowWidth(shape);
         _pill.Width = FixedWidth(shape);
 
-        if (initial || !_hasPosition || !IsVisible || Math.Abs(oldWidth - Width) < 0.1)
+        if (initial || !_hasPosition || !IsVisible)
         {
+            Width = targetWidth;
+            Height = targetHeight;
+            _avatarFrame.Width = _chatExpanded ? ExpandedAvatarSize : AvatarSize;
+            _avatarFrame.Height = _chatExpanded ? ExpandedAvatarSize : AvatarSize;
+            _resizeToWidth = targetWidth;
+            _resizeToHeight = targetHeight;
             return;
         }
 
-        // Window width is DIPs; screen coordinates are physical pixels.
-        int delta = (int)Math.Round((Width - oldWidth) * Scaling);
-        if (delta == 0)
-        {
-            return;
-        }
+        AnimateWindowBounds(targetWidth, targetHeight);
+    }
 
+    private void AnimateWindowBounds(double targetWidth, double targetHeight)
+    {
         if (WorkArea() is not { } work)
         {
+            Width = targetWidth;
+            Height = targetHeight;
             return;
         }
 
-        int x = _growsLeft ? Position.X - delta : Position.X;
-        x = Math.Clamp(x, work.X, Math.Max(work.X, work.Right - PixelWidth()));
-        Position = new PixelPoint(x, Position.Y);
+        _resizeTimer.Stop();
+        _resizeFromWidth = Width;
+        _resizeFromHeight = Height;
+        _resizeToWidth = targetWidth;
+        _resizeToHeight = targetHeight;
+        _resizeFromAvatarSize = _avatarFrame.Width;
+        _resizeToAvatarSize = _chatExpanded ? ExpandedAvatarSize : AvatarSize;
+        _resizeFromPosition = Position;
+        int widthDelta = (int)Math.Round((targetWidth - Width) * Scaling);
+        int heightDelta = (int)Math.Round((targetHeight - Height) * Scaling);
+        int x = _growsLeft ? Position.X - widthDelta : Position.X;
+        int y = _growsDown ? Position.Y : Position.Y - heightDelta;
+        int targetPixelWidth = Math.Max(1, (int)Math.Ceiling(targetWidth * Scaling));
+        int targetPixelHeight = Math.Max(1, (int)Math.Ceiling(targetHeight * Scaling));
+        _resizeToPosition = new PixelPoint(
+            Math.Clamp(x, work.X, Math.Max(work.X, work.Right - targetPixelWidth)),
+            Math.Clamp(y, work.Y, Math.Max(work.Y, work.Bottom - targetPixelHeight)));
+        _resizeStartedAt = DateTimeOffset.UtcNow;
+        _resizeTimer.Start();
+    }
+
+    private void AdvanceWindowResize()
+    {
+        double progress = Math.Clamp(
+            (DateTimeOffset.UtcNow - _resizeStartedAt).TotalMilliseconds / ResizeDuration.TotalMilliseconds,
+            0,
+            1);
+        double eased = 1 - Math.Pow(1 - progress, 3);
+        Width = _resizeFromWidth + ((_resizeToWidth - _resizeFromWidth) * eased);
+        Height = _resizeFromHeight + ((_resizeToHeight - _resizeFromHeight) * eased);
+        double avatarSize = _resizeFromAvatarSize + ((_resizeToAvatarSize - _resizeFromAvatarSize) * eased);
+        _avatarFrame.Width = avatarSize;
+        _avatarFrame.Height = avatarSize;
+        Position = new PixelPoint(
+            (int)Math.Round(_resizeFromPosition.X + ((_resizeToPosition.X - _resizeFromPosition.X) * eased)),
+            (int)Math.Round(_resizeFromPosition.Y + ((_resizeToPosition.Y - _resizeFromPosition.Y) * eased)));
+        if (progress >= 1)
+        {
+            Width = _resizeToWidth;
+            Height = _resizeToHeight;
+            Position = _resizeToPosition;
+            _resizeTimer.Stop();
+        }
+    }
+
+    private void SetChatExpanded(bool expanded)
+    {
+        if (_chatExpanded == expanded)
+        {
+            return;
+        }
+
+        _chatExpanded = expanded;
+        _chatPanel.IsVisible = expanded;
+        _surface.Background = expanded ? Palette.BackgroundBrush : Brushes.Transparent;
+        _surface.BorderBrush = expanded ? Palette.StrokeBrush : Brushes.Transparent;
+        _surface.BorderThickness = expanded ? new Thickness(1) : new Thickness(0);
+        _surface.Padding = expanded ? new Thickness(ExpandedPadding - 1) : new Thickness(0);
+        UpdateExpandedGroupOrder();
+    }
+
+    private void UpdateExpandedGroupOrder()
+    {
+        _expandedGroup.Children.Clear();
+        if (_chatExpanded && _growsLeft)
+        {
+            _expandedGroup.Children.Add(_chatPanel);
+            _expandedGroup.Children.Add(_homeGroup);
+        }
+        else
+        {
+            _expandedGroup.Children.Add(_homeGroup);
+            if (_chatExpanded)
+            {
+                _expandedGroup.Children.Add(_chatPanel);
+            }
+        }
+
+        _expandedGroup.VerticalAlignment = _growsDown ? VerticalAlignment.Top : VerticalAlignment.Bottom;
+        _expandedGroup.HorizontalAlignment = _growsLeft ? HorizontalAlignment.Right : HorizontalAlignment.Left;
+        _homeGroup.VerticalAlignment = _growsDown ? VerticalAlignment.Top : VerticalAlignment.Bottom;
+    }
+
+    private void ActivateChatInput()
+    {
+        ShowActivated = true;
+        Activate();
     }
 
     private static bool IsInsideButton(object? source)

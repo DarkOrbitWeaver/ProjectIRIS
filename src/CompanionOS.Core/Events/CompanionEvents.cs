@@ -68,6 +68,7 @@ public sealed class ConversationEvent : CompanionEvent
     public string? Detail { get; init; }
     public string ModuleId { get; init; } = string.Empty;
     public string IconKey { get; init; } = "body";
+    public bool? Succeeded { get; init; }
 }
 
 /// <summary>A memory node was created, strengthened or forgotten.</summary>

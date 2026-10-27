@@ -130,7 +130,7 @@ function callExtension(cmd, args, timeoutMs = 15000) {
 // ---- MCP tools --------------------------------------------------------------------------
 
 const obj = (properties, required = []) => ({ type: 'object', properties, required, additionalProperties: false });
-const index = { type: 'integer', minimum: 0, maximum: 500, description: 'Element number from the latest browser_read_page.' };
+const index = { type: 'integer', minimum: 0, maximum: 500, description: 'Element number from the latest browser_read_page. Refresh that page read after any click, navigation, or scroll; never reuse an old index.' };
 const color = { type: 'string', pattern: '^#[0-9a-fA-F]{6}$', description: 'Optional border colour like #ff3b4d.' };
 
 const TOOLS = [
@@ -142,8 +142,8 @@ const TOOLS = [
   { name: 'browser_attend', description: 'Sweep the attention border across the page headings or a list of elements, like reading titles one after another.', inputSchema: obj({ targets: { type: 'string', enum: ['headings'] }, indices: { type: 'array', items: index, maxItems: 8 }, dwellMs: { type: 'integer', minimum: 300, maximum: 1500 }, color }) },
   { name: 'browser_scroll', description: 'Scroll the active tab.', inputSchema: obj({ direction: { type: 'string', enum: ['up', 'down', 'top', 'bottom'] } }, ['direction']) },
   { name: 'browser_navigate', description: 'Open an http or https address in the active tab.', inputSchema: obj({ url: { type: 'string', maxLength: 2000 } }, ['url']) },
-  { name: 'browser_click', description: 'Click one element from browser_read_page.', inputSchema: obj({ index }, ['index']) },
-  { name: 'browser_type', description: 'Type text into one field from browser_read_page. Password and payment fields are refused.', inputSchema: obj({ index, text: { type: 'string', maxLength: 2000 }, submit: { type: 'boolean' } }, ['index', 'text']) },
+  { name: 'browser_click', description: 'Click one element from the latest browser_read_page. If the element is gone, read the page again and select a fresh index; do not retry the stale index.', inputSchema: obj({ index }, ['index']) },
+  { name: 'browser_type', description: 'Type text into one field from the latest browser_read_page. Password and payment fields are refused. If the element is gone, read the page again and select a fresh index; do not retry the stale index.', inputSchema: obj({ index, text: { type: 'string', maxLength: 2000 }, submit: { type: 'boolean' } }, ['index', 'text']) },
 ];
 
 function parseHttpUrl(value) {

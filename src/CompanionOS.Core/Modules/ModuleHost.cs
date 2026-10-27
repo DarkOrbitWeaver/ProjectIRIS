@@ -747,7 +747,8 @@ public sealed class ModuleHost : IAsyncDisposable
             Text = tool.ShortLabel,
             Detail = result.Succeeded ? result.DisplayText ?? result.ModelText : result.ModelText,
             ModuleId = owner.Id,
-            IconKey = owner.IconKey
+            IconKey = owner.IconKey,
+            Succeeded = result.Succeeded
         });
     }
 

@@ -23,15 +23,28 @@ public enum ChatRole
 public sealed class ChatEntry : ObservableObject
 {
     private string _text = string.Empty;
+    private string _detail = string.Empty;
+    private string _toolStatus = string.Empty;
     private bool _isStreaming;
     private bool _isToolRunning;
     private IReadOnlyList<RecalledMemory> _recalledMemories = Array.Empty<RecalledMemory>();
 
     public ChatRole Role { get; init; }
     public DateTimeOffset Time { get; init; } = DateTimeOffset.Now;
-    public string Detail { get; init; } = string.Empty;
+    public string Detail
+    {
+        get => _detail;
+        set => SetProperty(ref _detail, value);
+    }
     /// <summary>Turn that produced this line, for linking conversation and activity state.</summary>
     public string TurnId { get; init; } = string.Empty;
+    public string IconKey { get; init; } = "body";
+
+    public string ToolStatus
+    {
+        get => _toolStatus;
+        set => SetProperty(ref _toolStatus, value);
+    }
 
     /// <summary>
     /// Memory evidence that contributed to this turn, shown as inspectable chips.

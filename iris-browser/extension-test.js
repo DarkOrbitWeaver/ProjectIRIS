@@ -13,12 +13,13 @@ const dom = new JSDOM(`<body>
   <input id="card" autocomplete="cc-number" aria-label="Card">
   <input id="card2" name="credit_card_number" aria-label="Payment number">
   <div contenteditable="true" id="editor">draft private text</div>
-  <input id="locked" readonly value="locked">
-  <select id="size"><option value="s">Small</option><option value="l">Large</option></select>
+  <input id="locked" aria-label="Locked" readonly value="locked">
+  <select id="size" aria-label="Size"><option value="s">Small</option><option value="l">Large</option></select>
   <p style="display:none">hidden</p>
 </body>`, { runScripts: 'outside-only', url: 'https://example.com/' });
 const { window } = dom;
 window.Element.prototype.getBoundingClientRect = () => ({ left: 10, top: 10, width: 120, height: 24, right: 130, bottom: 34 });
+window.Range.prototype.getClientRects = () => [{ left: 10, top: 10, width: 120, height: 24, right: 130, bottom: 34 }];
 window.Element.prototype.scrollIntoView = () => {};
 window.scrollTo = window.scrollBy = () => {};
 // jsdom has no innerText; mimic Chrome by skipping display:none subtrees.
@@ -58,7 +59,7 @@ let clicks = 0; window.document.getElementById('go').addEventListener('click', (
     assert.ok(!r.ok && /password or payment/.test(r.error), label + ' refused');
   }
   assert.equal(window.document.getElementById('pw').value, '', 'password untouched');
-  r = await ask('type', { index: idx('field', 'locked'), text: 'changed' });
+  r = await ask('type', { index: idx('field', 'Locked'), text: 'changed' });
   assert.ok(!r.ok && /disabled or read-only/.test(r.error), 'read-only field refused');
 
   const sel = page.elements.find((e) => e.type === 'select-one');
@@ -74,6 +75,7 @@ let clicks = 0; window.document.getElementById('go').addEventListener('click', (
   assert.ok(r.ok && r.result.visited === 2 && r.result.titles[0] === 'Main title', 'sweeps headings and reports them');
 
   r = await ask('click', { index: 999 });
-  assert.ok(!r.ok && /gone/.test(r.error), 'stale index reported');
+  assert.ok(!r.ok && /browser_read_page/.test(r.error) && /stale index/.test(r.error),
+    'stale index instructs the agent to read the page again and not retry');
   console.log('ALL EXTENSION CHECKS PASSED');
-})().catch((e) => { console.error('FAILED:', e.message); process.exit(1); });
+})().catch((e) => { console.error('FAILED:', e.stack || e.message); process.exit(1); });
