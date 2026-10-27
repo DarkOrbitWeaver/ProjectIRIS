@@ -33,7 +33,7 @@ public sealed class WakeHotKey : IDisposable
     [DllImport("user32.dll", SetLastError = true)]
     private static extern int GetMessageW(out Message message, nint window, uint min, uint max);
 
-    [DllImport("kernel32.dll", SetLastError = true)]
+    [DllImport("user32.dll", SetLastError = true)]
     private static extern bool PostThreadMessageW(uint threadId, int message, nint wParam, nint lParam);
 
     [DllImport("kernel32.dll")]
