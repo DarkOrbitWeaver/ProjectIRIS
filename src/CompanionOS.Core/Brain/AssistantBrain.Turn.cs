@@ -524,7 +524,8 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
         }
     }
 
-    private void OnUserRequested(RecognizedVoiceRequest request) => _ = HandleVoiceRequestAsync(request);
+    private void OnUserRequested(RecognizedVoiceRequest request) =>
+        ForgetWithReceipt(HandleVoiceRequestAsync(request), "voice request");
 
     private void OnUserInterrupted()
     {
@@ -542,7 +543,7 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
         _lastActivity = DateTimeOffset.Now;
         _voice.OpenConversationWindow();
         _mind.MoveTo(MindState.Listening, "called by name");
-        _ = HandleUserCallAsync(interactionId);
+        ForgetWithReceipt(HandleUserCallAsync(interactionId), "user call");
     }
 
     /// <summary>
@@ -583,6 +584,12 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
             catch (OperationCanceledException)
             {
                 // A real request arrived, or Iris was closed. The request owns the next step.
+            }
+            catch (Exception exception)
+            {
+                // Media resume is best-effort — the music keeps playing anyway. Anything
+                // past cancellation used to vanish unobserved here (2026-10-27 audit).
+                CompanionLog.Trace("Voice", $"Background media resume failed: {exception.Message}");
             }
         }, timeoutToken);
     }
@@ -644,11 +651,11 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
         if (shouldEnterGaming)
         {
             _pendingGameRequest = new GameModeRequest { RequestedAt = DateTimeOffset.Now };
-            _ = SetOperatingModeAsync(OperatingMode.Gaming, CancellationToken.None);
+            ForgetWithReceipt(SetOperatingModeAsync(OperatingMode.Gaming, CancellationToken.None), "enter gaming mode");
         }
         else if (shouldLeaveGaming)
         {
-            _ = SetOperatingModeAsync(OperatingMode.Awake, CancellationToken.None);
+            ForgetWithReceipt(SetOperatingModeAsync(OperatingMode.Awake, CancellationToken.None), "leave gaming mode");
             if (_settings.Current.Voice.ReflexPhrasesEnabled)
             {
                 _ = SpeakReflexInBackgroundAsync("gamingEnd");
@@ -676,7 +683,7 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
                 idle > TimeSpan.FromMinutes(autoSleepMinutes) &&
                 _perception.Current.IsUserIdle)
             {
-                _ = SetOperatingModeAsync(OperatingMode.Sleeping, CancellationToken.None);
+                ForgetWithReceipt(SetOperatingModeAsync(OperatingMode.Sleeping, CancellationToken.None), "idle sleep");
             }
 
             MemorySettings memorySettings = _settings.Current.Memory;

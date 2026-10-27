@@ -274,6 +274,29 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
         }
     }
 
+    /// <summary>
+    /// Records every fire-and-forget that goes wrong. The old bare `_ =` discards let a
+    /// faulted voice turn or a failed mode switch vanish into the finalizer thread — her
+    /// state stayed intact and no one ever read why the thing silently never happened
+    /// (2026-10-27 audit). Bodies that already observe themselves keep their own catch;
+    /// this is for callbacks that cannot await.
+    /// </summary>
+    private void ForgetWithReceipt(Task work, string description)
+    {
+        _ = work.ContinueWith(done =>
+        {
+            if (done.IsFaulted)
+            {
+                Exception failure = done.Exception!.GetBaseException();
+                CompanionLog.Warning("Brain", $"Background work '{description}' failed: {failure.Message}");
+            }
+            else if (done.IsCanceled)
+            {
+                CompanionLog.Trace("Brain", $"Background work '{description}' was cancelled.");
+            }
+        }, TaskScheduler.Default);
+    }
+
     /// <summary>Sleeps, wakes or steps aside for a game.</summary>
     public async Task SetOperatingModeAsync(OperatingMode mode, CancellationToken cancellationToken)
     {

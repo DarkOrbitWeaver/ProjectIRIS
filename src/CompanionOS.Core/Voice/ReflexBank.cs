@@ -42,6 +42,42 @@ public sealed class ReflexBank
         Dictionary<string, List<string>> categories = DescribeCategories();
         Directory.CreateDirectory(_cacheDirectory);
 
+        // Every voice/rate change mints a new signature folder and each carries all its
+        // WAVs. The old bank never evicted them: months of timbre tuning accumulated
+        // megabytes in the user's cache forever (2026-10-27 audit). The two newest
+        // folders stay — the live one and one before it, so a quick voice revert does
+        // not force a full re-render — and everything older is swept. A folder that is
+        // locked or already gone just stays; this is housework, not law.
+        string parent = Path.GetDirectoryName(_cacheDirectory)!;
+        try
+        {
+            List<string> staleFolders = Directory.GetDirectories(parent)
+                .Where(folder => !string.Equals(Path.GetFullPath(folder), Path.GetFullPath(_cacheDirectory),
+                    StringComparison.OrdinalIgnoreCase))
+                .OrderByDescending(Directory.GetLastWriteTime)
+                .Skip(1)
+                .ToList();
+
+            foreach (string stale in staleFolders)
+            {
+                try
+                {
+                    Directory.Delete(stale, recursive: true);
+                    CompanionLog.Trace("Voice", $"Evicted a stale reflex voice folder: {Path.GetFileName(stale)}.");
+                }
+                catch (Exception exception)
+                {
+                    CompanionLog.Trace("Voice", $"Stale reflex folder stayed on disk: {exception.Message}");
+                }
+            }
+        }
+        catch (Exception exception)
+        {
+            // A cache directory that cannot be enumerated just keeps its folders; her
+            // voice still works from memory.
+            CompanionLog.Trace("Voice", $"Reflex cache sweep skipped: {exception.Message}");
+        }
+
         foreach (KeyValuePair<string, List<string>> category in categories)
         {
             List<SpeechAudio> rendered = new();

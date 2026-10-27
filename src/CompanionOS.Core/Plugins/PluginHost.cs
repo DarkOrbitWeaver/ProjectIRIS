@@ -122,6 +122,21 @@ public sealed class PluginHost : IDisposable
                     await CloseMcpSessionAsync(plugin.Id).ConfigureAwait(false);
                 }
                 CompanionLog.Warning("Plugins", $"Tool discovery failed for '{plugin.Name}': {exception.Message}");
+
+                // The plugin stays ENABLED with zero tools, and only the user-visible
+                // layers can say why her abilities vanished this run. The old path kept
+                // the failure as a log line nobody reads: the model believed she could
+                // and the user saw nothing (2026-10-27 audit).
+                _events.PublishNotice(
+                    $"The {plugin.Name} plugin could not start this run ({exception.Message}); " +
+                    "its tools are out of service until she reloads plugins.",
+                    NoticeSeverity.Warning);
+                IrisEvent.Log("Plugins", "plugin.discovery_failed", LogLevel.Warning,
+                    data: new Dictionary<string, string?>
+                    {
+                        ["plugin"] = plugin.Id,
+                        ["reason"] = exception.Message
+                    });
             }
         }
     }
