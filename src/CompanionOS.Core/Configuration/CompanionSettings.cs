@@ -16,8 +16,11 @@ public sealed class CompanionSettings
     /// exactly once by the settings loader (see SettingsStore.Normalize) and then skip
     /// the legacy heuristics forever — instead of every boot re-deciding what a user's
     /// saved voices meant (audit: this property existed but nothing ever consumed it).
+    /// Version 3 (2026-10-27): the auto-unload policy default moved from 20 idle
+    /// minutes to stay-warm; the migration moves only files still carrying that
+    /// historical default, never a deliberate custom timeout.
     /// </summary>
-    public const int CurrentSchemaVersion = 2;
+    public const int CurrentSchemaVersion = 3;
 
     /// <summary>
     /// The schema generation of files that predate version stamping. A file whose
@@ -167,8 +170,13 @@ public sealed class BrainSettings
         }
     };
 
-    /// <summary>Unloads the brain after this many idle minutes. Zero keeps it awake.</summary>
-    public int AutoSleepIdleMinutes { get; set; } = 20;
+    /// <summary>
+    /// Unloads the brain after this many idle minutes. Zero keeps it awake: a desktop
+    /// companion's GPU is freed by Gaming mode on demand, and every auto-unload here
+    /// made the NEXT message pay a full model load before it could think at all
+    /// (2026-10-27 speed autopsy).
+    /// </summary>
+    public int AutoSleepIdleMinutes { get; set; } = 0;
 
     /// <summary>Path to llama-server.exe. Empty means "look in the runtimes folder, then PATH".</summary>
     public string ServerExecutablePath { get; set; } = string.Empty;

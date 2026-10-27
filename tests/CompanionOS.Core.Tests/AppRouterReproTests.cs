@@ -12,6 +12,7 @@ namespace CompanionOS.Core.Tests;
 /// Reproduces the owner's own sentences against the real module list, so a routed
 /// hand that betrayed a music request is caught the same way it betrayed her live.
 /// </summary>
+[Collection("settings-store-serial")]
 public class AppRouterReproTests
 {
     private readonly ITestOutputHelper _output;

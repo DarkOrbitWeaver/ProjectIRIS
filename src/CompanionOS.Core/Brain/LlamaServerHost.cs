@@ -431,6 +431,21 @@ public sealed class LlamaServerHost : IAsyncDisposable
         arguments.Add(ResolvePort(profile).ToString());
         arguments.Add("--jinja");
 
+        // One slot, one cache. She is a single-user companion serialized behind the
+        // turn gate; llama.cpp otherwise sizes several parallel slots, and a turn can
+        // land on a slot whose cache matches nothing and must prefill from zero.
+        // Verified against the shipped binary's --help on 2026-10-27.
+        arguments.AddRange(new[] { "--parallel", "1" });
+
+        // Cache-reuse keeps the KV cache alive even when a few tokens shift inside
+        // the history (window trimming) instead of reusing only the strict common
+        // token prefix that the trim just shortened.
+        arguments.AddRange(new[] { "--cache-reuse", "256" });
+
+        // The server otherwise keeps a small web UI alive; she serves nothing at this
+        // endpoint but her own completions.
+        arguments.Add("--no-webui");
+
         if (profile.SupportsVision)
         {
             string projectorPath = CompanionPaths.Model(profile.ProjectorFile);

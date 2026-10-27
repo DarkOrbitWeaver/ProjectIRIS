@@ -486,12 +486,15 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
                 ["source_states"] = sourceStates
             });
 
+        // 4. Prompt assembly. The cache contract: the system prompt is static for the
+        //    session and history carries plain turns, so the model server can reuse its
+        //    KV prefix; everything that changes per turn rides in the <context> block
+        //    inside the LATEST user message, where it can never invalidate the cache
+        //    for the tool block and the conversation that sits before it. Per-turn
+        //    time/CPU/memory strings used to live inside the system prompt and threw
+        //    that cache away on every single turn (2026-10-27 speed autopsy).
         string systemPrompt = _personaStore.Current.BuildSystemPrompt(
-            situation,
-            intuition,
-            _modules.DescribeCapabilitiesOverview(),
-            DescribeMode(),
-            DateTime.Now.ToString("dddd HH:mm"));
+            _modules.DescribeCapabilitiesOverview());
 
         // Spoken conversation has no scrollback and no skimming: a long answer is a wall
         // of sound. Keep heard replies short unless the user explicitly asks for detail.
@@ -505,9 +508,15 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
                 "- If you used a tool, report the outcome in one plain sentence.";
         }
 
+        string turnContext = _personaStore.Current.BuildTurnContext(
+            situation,
+            intuition,
+            DescribeMode(),
+            DateTime.Now.ToString("dddd HH:mm"));
+
         List<ChatMessage> messages = new() { ChatMessage.System(systemPrompt) };
         messages.AddRange(TakeHistoryWindow());
-        messages.Add(ChatMessage.User(userText, attachedImage));
+        messages.Add(ChatMessage.User($"{turnContext}\n\n{userText}", attachedImage));
 
         PublishContextTelemetry(messages);
 
@@ -535,9 +544,19 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
 
             StringBuilder roundText = new();
             StringBuilder speechBuffer = new();
-            bool maySpeakWhileGenerating = origin.Equals("voice", StringComparison.OrdinalIgnoreCase) &&
-                                           routedTools.Count == 0 && _settings.Current.Voice.SpeakReplies &&
-                                           !honestyRetryUsed && !lengthContinued;
+
+            // Speech may stream while the model is still writing words — until it starts
+            // a tool call THIS round, signalled by the native tool_calls stream itself,
+            // never guessed from the text. The old "may speak only when no tools were
+            // routed" gate was always false, because the router hands her every enabled
+            // tool every turn, so voice waited for the entire answer plus full synthesis
+            // before its first word (2026-10-27 speed autopsy). Rounds that must not
+            // stream: the continuation of a cut answer and the receipt-check recovery
+            // round — those are spoken whole at the end, exactly once.
+            bool voiceTurn = origin.Equals("voice", StringComparison.OrdinalIgnoreCase) &&
+                             _settings.Current.Voice.SpeakReplies;
+            bool speakThisRound = voiceTurn && !lengthContinued && !honestyRetryUsed;
+            bool toolStartedThisRound = false;
             bool streamedAnySpeech = false;
             Task speechTail = Task.CompletedTask;
             ModelTurn turn = await _modelClient.StreamChatAsync(
@@ -547,7 +566,7 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
                 async delta =>
                 {
                     roundText.Append(delta);
-                    if (maySpeakWhileGenerating)
+                    if (speakThisRound && !toolStartedThisRound)
                     {
                         speechBuffer.Append(delta);
                         foreach (string sentence in TakeCompleteSpeechSentences(speechBuffer,
@@ -575,7 +594,8 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
                     });
                     await Task.CompletedTask.ConfigureAwait(false);
                 },
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken,
+                onToolCallStarted: () => toolStartedThisRound = true).ConfigureAwait(false);
 
             if (turn.ToolCalls.Count == 0)
             {
@@ -652,7 +672,7 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
                         data: ReceiptData(toolLedger));
                 }
 
-                if (maySpeakWhileGenerating && streamedAnySpeech)
+                if (speakThisRound && streamedAnySpeech)
                 {
                     string remainingSpeech = SpeechPlanner.TrimForSpeech(
                         SpeechTextSanitizer.CleanForSpeech(speechBuffer.ToString()),

@@ -89,12 +89,18 @@ public sealed class ModelClient : IDisposable
     /// <param name="tools">Tools the model may call (already routed).</param>
     /// <param name="onTextDelta">Called for every text fragment, on a background thread.</param>
     /// <param name="cancellationToken">Cancels the stream; used for barge-in and stop.</param>
+    /// <param name="onToolCallStarted">
+    /// Fired once, the moment the first native <c>tool_calls</c> delta arrives, so the
+    /// caller can stop speculative speech before she narrates over her own hands. This
+    /// is a signal from the tool interface itself — nothing is inferred from the text.
+    /// </param>
     public async Task<ModelTurn> StreamChatAsync(
         BrainProfile profile,
         IReadOnlyList<ChatMessage> messages,
         IReadOnlyList<ModuleTool> tools,
         Func<string, Task>? onTextDelta,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Action? onToolCallStarted = null)
     {
         JsonObject requestBody = BuildRequestBody(profile, messages, tools);
 
@@ -125,6 +131,7 @@ public sealed class ModelClient : IDisposable
         string finishReason = string.Empty;
         int promptTokens = 0;
         int completionTokens = 0;
+        bool toolCallSignalled = false;
 
         while (!reader.EndOfStream)
         {
@@ -204,6 +211,15 @@ public sealed class ModelClient : IDisposable
 
             if (delta["tool_calls"] is JsonArray toolCallArray)
             {
+                // The native signal fires on the first fragment of the first call: a
+                // tool decision can arrive broken across many deltas, and the caller
+                // must stop streaming speech before any call has fully assembled.
+                if (toolCallArray.Count > 0 && !toolCallSignalled)
+                {
+                    toolCallSignalled = true;
+                    onToolCallStarted?.Invoke();
+                }
+
                 foreach (JsonNode? toolCallNode in toolCallArray)
                 {
                     if (toolCallNode is null)

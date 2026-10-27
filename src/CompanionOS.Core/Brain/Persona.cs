@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using CompanionOS.Core.Configuration;
 using CompanionOS.Core.Diagnostics;
@@ -64,8 +65,12 @@ public sealed class Persona
     public ReflexPhrases Reflex { get; set; } = new();
 
     /// <summary>
-    /// The full instruction text. Placeholders are replaced by the brain:
-    /// {{name}} {{user}} {{time}} {{mode}} {{situation}} {{intuition}} {{capabilities}}
+    /// The static instruction text. Placeholders are filled once: {{name}} {{user}}
+    /// {{capabilities}}. Facts that change per turn (time, mode, the machine's state,
+    /// surfaced memories) ride in the &lt;context&gt; block the brain prepends to the
+    /// latest user message — see BuildTurnContext — so this text stays byte-stable
+    /// across requests and the model server keeps its prompt cache instead of
+    /// re-prefilling the tool block and history every turn.
     /// </summary>
     public string SystemPromptTemplate { get; set; } = DefaultTemplate;
 
@@ -133,42 +138,48 @@ public sealed class Persona
           when an image is attached to the current message or a successful screen tool result.
           Never imply that a screenshot means you are watching continuously.
 
-        CURRENT MODE: {{mode}}
-        CURRENT TIME: {{time}}
-
-        WHAT THE MACHINE IS DOING
-        {{situation}}
-
-        {{intuition}}
-
         WHAT YOU CAN DO RIGHT NOW
         {{capabilities}}
+
+        TURNS ARRIVE IN TWO PARTS
+        - Your message can begin with a <context> block written by the OS: the time,
+          the mode, what the machine is doing, and memories that surfaced for this
+          turn. Treat it as true and current. It is not something {{user}} typed:
+          never quote it back verbatim, and never answer the block instead of the
+          words that follow it.
         """;
 
     /// <summary>
-    /// A line that only the immediately previous stock template carried. The persona
-    /// file keeps its own copy of the template, so after a contract revision the store
-    /// refreshes copies that still match the old shipped default — and only those; any
-    /// edit the owner made stays exactly as written.
+    /// A line that only the previous stock templates carried. The persona file keeps
+    /// its own copy of the template, so after a contract revision the store refreshes
+    /// copies that still match the old shipped default — and only those; any edit the
+    /// owner made stays exactly as written. The v4 revision moved the per-turn facts
+    /// (mode/time/situation/memories) out of the system prompt and into the turn's
+    /// &lt;context&gt; block, so their lines are the marker of a pre-v4 stock copy.
     /// </summary>
     internal const string PreviousStockTemplateFingerprint =
-        "Tool calls happen only through the tool interface and appear as chips";
+        "CURRENT MODE: {{mode}}";
 
     /// <summary>Builds the default persona. Also used to create the file on first run.</summary>
     public static Persona CreateDefault() => new();
 
-    /// <summary>Fills the template placeholders for one turn.</summary>
-    public string BuildSystemPrompt(string situation, string intuition, string capabilities,
-        string mode, string time)
+    /// <summary>
+    /// Fills the STATIC placeholders. Deliberately free of anything per-turn: the
+    /// prompt-cache contract keeps this text identical between consecutive requests
+    /// so the model server reuses its KV cache instead of re-prefilling the whole
+    /// tool block and history every turn (2026-10-27 speed autopsy). Legacy per-turn
+    /// placeholders inside owner-edited templates collapse to nothing.
+    /// </summary>
+    public string BuildSystemPrompt(string capabilities)
     {
         string prompt = SystemPromptTemplate
             .Replace("{{name}}", Name)
             .Replace("{{user}}", UserAddress)
-            .Replace("{{situation}}", string.IsNullOrWhiteSpace(situation) ? "(nothing unusual)" : situation)
-            .Replace("{{intuition}}", string.IsNullOrWhiteSpace(intuition) ? "(no relevant memories yet)" : intuition)
             .Replace("{{capabilities}}", string.IsNullOrWhiteSpace(capabilities) ? "(no tools available)" : capabilities)
-            .Replace("{{mode}}", mode)
-            .Replace("{{time}}", time);
+            .Replace("{{situation}}", string.Empty)
+            .Replace("{{intuition}}", string.Empty)
+            .Replace("{{mode}}", string.Empty)
+            .Replace("{{time}}", string.Empty);
 
         if (ToneRules.Count > 0)
         {
@@ -188,6 +199,33 @@ public sealed class Persona
             - Task reports stay one short clause: a long spoken answer costs real seconds of silence.
             """;
         return prompt;
+    }
+
+    /// <summary>
+    /// The dynamic half of a turn, rendered as a small block that PRECEDES the user's
+    /// words inside the latest user message. Time, mode, machine state and surfaced
+    /// memories live here — at the END of the request, never inside the system prompt —
+    /// so the request's common prefix stays stable and the server reuses its KV cache:
+    /// per-turn strings inside the system prompt used to throw that cache away on
+    /// every turn (2026-10-27 speed autopsy).
+    /// </summary>
+    public string BuildTurnContext(string situation, string intuition, string mode, string time)
+    {
+        StringBuilder context = new();
+        context.AppendLine("<context>");
+        context.AppendLine($"mode: {mode}");
+        context.AppendLine($"time: {time}");
+        if (!string.IsNullOrWhiteSpace(situation))
+        {
+            context.AppendLine($"machine: {situation.Trim()}");
+        }
+        if (!string.IsNullOrWhiteSpace(intuition))
+        {
+            context.AppendLine("memories:");
+            context.AppendLine(intuition.Trim());
+        }
+        context.Append("</context>");
+        return context.ToString();
     }
 }
 

@@ -140,8 +140,16 @@ public sealed class SettingsStore
 
         if (Current.SchemaVersion < CompanionSettings.CurrentSchemaVersion)
         {
-            MigrateLegacyVoiceSettings(voice);
             int previousVersion = Current.SchemaVersion;
+            if (previousVersion < 2)
+            {
+                MigrateLegacyVoiceSettings(voice);
+            }
+            if (previousVersion < 3)
+            {
+                MigrateAutoSleepPolicy();
+            }
+
             Current.SchemaVersion = CompanionSettings.CurrentSchemaVersion;
             CompanionLog.Info("Settings",
                 $"Settings migrated from schema version {previousVersion} to {CompanionSettings.CurrentSchemaVersion}.");
@@ -167,6 +175,24 @@ public sealed class SettingsStore
         if (string.IsNullOrWhiteSpace(voice.PocketLanguage))
         {
             voice.PocketLanguage = "english_18m_2026-10";
+        }
+    }
+
+    /// <summary>
+    /// The schema-2-to-3 migration: move files still carrying the historical 20-minute
+    /// auto-unload default to the stay-warm policy. A deliberate custom timeout keeps
+    /// its meaning; only the old untouched default moves. The GPU is freed on demand
+    /// by Gaming mode, so a periodic unload costs every next message a full model
+    /// load (2026-10-27 speed autopsy), and silent surprise migrations are exactly
+    /// what this store refuses — hence the schema step and the receipt.
+    /// </summary>
+    private void MigrateAutoSleepPolicy()
+    {
+        if (Current.Brain.AutoSleepIdleMinutes == 20)
+        {
+            Current.Brain.AutoSleepIdleMinutes = 0;
+            IrisEvent.Log("Settings", "settings.autosleep_migrated", LogLevel.Info,
+                message: "Auto-unload after idle moved to stay-warm; gaming mode still frees the GPU on demand.");
         }
     }
 

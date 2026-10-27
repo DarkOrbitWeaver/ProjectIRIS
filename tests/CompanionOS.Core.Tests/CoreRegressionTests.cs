@@ -202,8 +202,7 @@ public sealed class CoreRegressionTests
     [Fact]
     public void DefaultPersonaDoesNotClaimPassiveScreenAccess()
     {
-        string prompt = Persona.CreateDefault().BuildSystemPrompt(
-            "Screen capture setting: ondemand.", "", "", "awake", "Monday 12:00");
+        string prompt = Persona.CreateDefault().BuildSystemPrompt("");
 
         Assert.DoesNotContain("you can reason, see the screen and act", prompt, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("the desktop is not continuously visible to you", prompt, StringComparison.OrdinalIgnoreCase);
