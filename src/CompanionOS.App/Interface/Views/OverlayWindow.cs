@@ -41,11 +41,10 @@ public sealed class OverlayWindow : Window
     // space around it gives the attention halo room without clipping the pill's contents.
     private const double PillHeight = 44;
     private const double AvatarSize = 220;
-    private const double ExpandedAvatarSize = 180;
     private const double ChatPanelWidth = 320;
     private const double ChatPanelHeight = 360;
     private const double ExpandedPadding = 12;
-    private const double ExpandedWidth = ExpandedAvatarSize + Gap + ChatPanelWidth + (ExpandedPadding * 2);
+    private const double ExpandedWidth = AvatarSize + Gap + ChatPanelWidth + (ExpandedPadding * 2);
     private const double ExpandedHeight = ChatPanelHeight + (ExpandedPadding * 2);
     private const double HomeHeight = AvatarSize + Gap + PillHeight + (AttentionAuraInset * 2);
     private const double OrbSize = 22;
@@ -138,8 +137,6 @@ public sealed class OverlayWindow : Window
     private double _resizeFromHeight;
     private double _resizeToWidth;
     private double _resizeToHeight;
-    private double _resizeFromAvatarSize;
-    private double _resizeToAvatarSize;
     private PixelPoint _resizeFromPosition;
     private PixelPoint _resizeToPosition;
 
@@ -273,6 +270,9 @@ public sealed class OverlayWindow : Window
         _mascotView.CoreWebView2InitializationCompleted += OnMascotWebViewInitialized;
         _mascotView.Source = mascotPage.Uri;
 
+        // WebView2 is a native HWND hosted above Avalonia's visual tree; ancestor
+        // clipping and animated frame resizing can desynchronize its visible bounds.
+        // Keep it fixed-size and inset within the expanded card instead.
         _avatarFrame = new Border
         {
             Width = AvatarSize,
@@ -281,7 +281,6 @@ public sealed class OverlayWindow : Window
             BorderThickness = new Thickness(1),
             BorderBrush = Palette.StrokeBrush,
             Background = Palette.BackgroundBrush,
-            ClipToBounds = true,
             Child = _mascotView
         };
 
@@ -322,7 +321,6 @@ public sealed class OverlayWindow : Window
             Background = Brushes.Transparent,
             BorderThickness = new Thickness(0),
             CornerRadius = new CornerRadius(18),
-            ClipToBounds = true,
             Child = _expandedGroup
         };
         Content = _surface;
@@ -673,7 +671,6 @@ public sealed class OverlayWindow : Window
 
         // Keep the live mascot visible, except when the user dims gaming.
         double speechMotion = _model.IsSpeaking ? Math.Clamp(_model.SpeechLevel, 0, 1) : 0;
-        _avatarFrame.BorderBrush = new SolidColorBrush(StatusOrb.ColorForState(state));
         _avatarFrame.Opacity = state == MindState.Gaming &&
                                _model.Runtime.Settings.Current.Interface.DimWhileGaming
             ? 0.4
@@ -1408,8 +1405,6 @@ public sealed class OverlayWindow : Window
         {
             Width = targetWidth;
             Height = targetHeight;
-            _avatarFrame.Width = _chatExpanded ? ExpandedAvatarSize : AvatarSize;
-            _avatarFrame.Height = _chatExpanded ? ExpandedAvatarSize : AvatarSize;
             _resizeToWidth = targetWidth;
             _resizeToHeight = targetHeight;
             return;
@@ -1432,8 +1427,6 @@ public sealed class OverlayWindow : Window
         _resizeFromHeight = Height;
         _resizeToWidth = targetWidth;
         _resizeToHeight = targetHeight;
-        _resizeFromAvatarSize = _avatarFrame.Width;
-        _resizeToAvatarSize = _chatExpanded ? ExpandedAvatarSize : AvatarSize;
         _resizeFromPosition = Position;
         int widthDelta = (int)Math.Round((targetWidth - Width) * Scaling);
         int heightDelta = (int)Math.Round((targetHeight - Height) * Scaling);
@@ -1457,9 +1450,6 @@ public sealed class OverlayWindow : Window
         double eased = 1 - Math.Pow(1 - progress, 3);
         Width = _resizeFromWidth + ((_resizeToWidth - _resizeFromWidth) * eased);
         Height = _resizeFromHeight + ((_resizeToHeight - _resizeFromHeight) * eased);
-        double avatarSize = _resizeFromAvatarSize + ((_resizeToAvatarSize - _resizeFromAvatarSize) * eased);
-        _avatarFrame.Width = avatarSize;
-        _avatarFrame.Height = avatarSize;
         Position = new PixelPoint(
             (int)Math.Round(_resizeFromPosition.X + ((_resizeToPosition.X - _resizeFromPosition.X) * eased)),
             (int)Math.Round(_resizeFromPosition.Y + ((_resizeToPosition.Y - _resizeFromPosition.Y) * eased)));
