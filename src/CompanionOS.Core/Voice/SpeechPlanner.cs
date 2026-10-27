@@ -218,6 +218,13 @@ public static partial class SpeechPlanner
         return ContainsOneEditAwayVerb(text);
     }
 
+    // Question shape is searched for anywhere in the sentence, not only at the start:
+    // spoken questions arrive behind an address ("Hey Ares, what song is playing on my
+    // PC?"), and the anchored pattern erased the interrogative, so the bare media noun
+    // alone re-drew the receipt-check nudge on a question that has no tool — she was
+    // nudged, repeated the answer verbatim, and the refusal stamp was written into her
+    // history for an honest perception reply (2026-10-27 owner session, turn 3fbae79b).
+
     private static readonly string[] ActionVerbs =
     {
         "play", "pause", "resume", "unpause", "shuffle", "skip", "next", "previous", "open", "launch",
@@ -320,7 +327,7 @@ public static partial class SpeechPlanner
     private static partial Regex MediaNounPattern();
 
     [GeneratedRegex(
-        @"^\s*(what|which|who|when|where|why|how|is|are|was|were|do|does|did|can|could|should|would|will|shall|any)\b",
+        @"\b(what|whats|which|whose|whom|who|where|when|why|how|is|are|was|were|do|does|did|can|could|should|would|will|shall|any)\b",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex QuestionShapePattern();
 }

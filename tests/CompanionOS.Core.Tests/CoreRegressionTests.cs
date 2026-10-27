@@ -1522,11 +1522,19 @@ public sealed class CoreRegressionTests
     [Theory]
     [InlineData("play a song from our playlist", true)]
     [InlineData("resume the music", true)]
+    [InlineData("Hey Ares, can you resume it", true)]
     [InlineData("whats am i watching rn", false)]
     [InlineData("any", false)]
     [InlineData("whats on your mind", false)]
+    [InlineData("Hey Ares, what song is playing on my PC?", false)]
+    [InlineData("Is you're my song.", false)]
+    [InlineData("How we don't.", false)]
+    [InlineData("Yeah, Jules.", false)]
     public void ClearOrdersAreRecognizedAsActionRequests(string userText, bool expected)
     {
+        // The four false lines are the owner's real chatter from the live session on this
+        // build: questions behind an address, and burps with a bare media noun, must not
+        // redraw the receipt-check nudge ("she kept answering my chatter with nothing").
         Assert.Equal(expected, SpeechPlanner.IsActionRequest(userText));
     }
 
