@@ -142,10 +142,15 @@ public sealed partial class MemoryGraph : IAsyncDisposable
                 }
 
                 double similarity = TextVectorizer.Cosine(keep.Vector, candidate.Vector);
-                bool titlesMatch = keep.NormalizedTitle.Contains(candidate.NormalizedTitle, StringComparison.Ordinal) ||
-                                   candidate.NormalizedTitle.Contains(keep.NormalizedTitle, StringComparison.Ordinal);
+                bool exactTitle = string.Equals(keep.NormalizedTitle, candidate.NormalizedTitle,
+                    StringComparison.Ordinal);
 
-                if (similarity < 0.93 || (!titlesMatch && similarity < 0.985))
+                // A prefix-sibling title ("night drive" / "night drive 2") is a DIFFERENT
+                // fact the user deliberately numbered, not an expanded one; the old
+                // substring match let any 0.93 cosine fold numbered siblings into one
+                // while the user was away (2026-10-27 audit). Only exact titles claim
+                // the low band; everything else has to actually be near-identical.
+                if (similarity < 0.93 || (!exactTitle && similarity < 0.985))
                 {
                     continue;
                 }
@@ -167,6 +172,9 @@ public sealed partial class MemoryGraph : IAsyncDisposable
                         : keep.Content + " " + candidate.Content;
                     keep.Vector = TextVectorizer.Embed(keep.Title + " " + keep.Content);
                     await PersistNodeAsync(keep, cancellationToken).ConfigureAwait(false);
+                    // A forget that raced this upsert does not get resurrected: the
+                    // forget is the user's decision, the write is machine noise.
+                    await UndoIfForgottenAsync(keep.Id, cancellationToken).ConfigureAwait(false);
                 }
 
                 await ForgetNodeAsync(candidate.Id, cancellationToken).ConfigureAwait(false);
@@ -475,7 +483,10 @@ public sealed partial class MemoryGraph : IAsyncDisposable
         }
     }
 
-    private async Task<string?> ReadMetaAsync(string key, CancellationToken cancellationToken)
+    /// <summary>Reads one metadata row for the graph's home-maintenance keys
+    /// (decay stamps, one-time-repair stamps). Public because memory maintenance
+    /// that runs outside the graph needs the same bookkeeping honestly.</summary>
+    public async Task<string?> ReadMetaAsync(string key, CancellationToken cancellationToken)
     {
         await _writeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -492,7 +503,8 @@ public sealed partial class MemoryGraph : IAsyncDisposable
         }
     }
 
-    private async Task WriteMetaAsync(string key, string value, CancellationToken cancellationToken)
+    /// <summary>Upserts one metadata row for the graph's home-maintenance keys.</summary>
+    public async Task WriteMetaAsync(string key, string value, CancellationToken cancellationToken)
     {
         await _writeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try

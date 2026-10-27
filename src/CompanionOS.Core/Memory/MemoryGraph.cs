@@ -140,13 +140,29 @@ public sealed partial class MemoryGraph : IAsyncDisposable
                 return;
             }
 
-            // The previous process checkpointed its WAL on the way out, so the main file
-            // holds a complete image. Copy the WAL too when one is left behind by a crash.
-            File.Copy(_databasePath, target, overwrite: true);
-            string wal = _databasePath + "-wal";
-            if (File.Exists(wal))
+            // One consistent image, not a main+WAL pair to trust blindly. VACUUM INTO
+            // materialises the ACTIVE database — including anything a crashed previous
+            // process left uncheckpointed in its WAL sidecar — as a single standalone
+            // file (2026-10-27 audit: the copied pair could disagree after a power cut
+            // and the restore never said so).
+            try
             {
-                File.Copy(wal, target + "-wal", overwrite: true);
+                using SqliteConnection snapshotConnection = new($"Data Source={_databasePath};Mode=ReadWrite;");
+                snapshotConnection.Open();
+                using SqliteCommand vacuum = snapshotConnection.CreateCommand();
+                vacuum.CommandText = $"VACUUM INTO '{target.Replace("'", "''")}';";
+                vacuum.ExecuteNonQuery();
+            }
+            catch (Exception vacuumFailure)
+            {
+                CompanionLog.Trace("Memory",
+                    $"Snapshot by checkpoint-copy failed; falling back to a plain file copy: {vacuumFailure.Message}");
+                File.Copy(_databasePath, target, overwrite: true);
+                string wal = _databasePath + "-wal";
+                if (File.Exists(wal))
+                {
+                    File.Copy(wal, target + "-wal", overwrite: true);
+                }
             }
 
             // Keep today plus the three newest previous days; delete the rest.
@@ -266,12 +282,11 @@ public sealed partial class MemoryGraph : IAsyncDisposable
                 existing.Vector = TextVectorizer.Embed(existing.Title + " " + existing.Content);
             }
 
-            if (layer < existing.Layer)
-            {
-                existing.Layer = layer;
-            }
-
+            // The re-record's ambient capture formerly DEMOTED a stored Semantic fact to
+            // Episodic here (a rerun carried its layer in and overwrote the better one):
+            // a core fact silently faded with each mention. Layers only move up.
             await PersistNodeAsync(existing, cancellationToken).ConfigureAwait(false);
+            await UndoIfForgottenAsync(existing.Id, cancellationToken).ConfigureAwait(false);
             NotifyNodeChanged(existing, "strengthened");
             return existing;
         }
@@ -373,16 +388,31 @@ public sealed partial class MemoryGraph : IAsyncDisposable
         node.UseCount++;
         node.Strength = Math.Min(1.0, node.Strength + 0.01);
         await PersistNodeAsync(node, cancellationToken).ConfigureAwait(false);
+        if (await UndoIfForgottenAsync(nodeId, cancellationToken).ConfigureAwait(false))
+        {
+            return;
+        }
+
         NotifyNodeChanged(node, "used");
     }
 
     /// <summary>Marks a synapse as traversed, strengthening the pathway.</summary>
     public async Task TouchSynapseAsync(MemorySynapse synapse, CancellationToken cancellationToken = default)
     {
+        string fromNodeId = synapse.FromNodeId;
+        string toNodeId = synapse.ToNodeId;
         synapse.LastUsedAt = DateTimeOffset.Now;
         synapse.UseCount++;
         synapse.Strength = Math.Min(1.0, synapse.Strength + 0.01);
         await PersistSynapseAsync(synapse, isNew: false, cancellationToken).ConfigureAwait(false);
+
+        // If a forget took one of the endpoints while this touch was in flight, the
+        // surviving pathway row would be a synapse into nothing. The truth is the
+        // forget, so the late write gets undone (2026-10-27 audit).
+        if (FindById(fromNodeId) is null || FindById(toNodeId) is null)
+        {
+            await DeleteSynapseRowAsync(synapse.Id, cancellationToken).ConfigureAwait(false);
+        }
     }
 
     /// <summary>Changes a node's strength by hand (inspector buttons).</summary>
@@ -397,6 +427,11 @@ public sealed partial class MemoryGraph : IAsyncDisposable
         node.Strength = Math.Clamp(node.Strength + change, 0.05, 1.0);
         node.UpdatedAt = DateTimeOffset.Now;
         await PersistNodeAsync(node, cancellationToken).ConfigureAwait(false);
+        if (await UndoIfForgottenAsync(nodeId, cancellationToken).ConfigureAwait(false))
+        {
+            return;
+        }
+
         NotifyNodeChanged(node, change >= 0 ? "strengthened" : "weakened");
     }
 
@@ -416,10 +451,84 @@ public sealed partial class MemoryGraph : IAsyncDisposable
         node.Pinned = pinned;
         node.UpdatedAt = DateTimeOffset.Now;
         await PersistNodeAsync(node, cancellationToken).ConfigureAwait(false);
+        if (await UndoIfForgottenAsync(nodeId, cancellationToken).ConfigureAwait(false))
+        {
+            return;
+        }
+
         NotifyNodeChanged(node, pinned ? "pinned" : "unpinned");
         CompanionLog.Info("Memory", $"{(pinned ? "Pinned" : "Unpinned")}: {node.Title}.");
         Core.Diagnostics.IrisEvent.Log("Memory", pinned ? "memory.pinned" : "memory.unpinned", LogLevel.Debug,
             data: new Dictionary<string, string?> { ["title"] = node.Title });
+    }
+
+    /// <summary>
+    /// A persist that started from a live cache object can race a concurrent forget and
+    /// upsert the just-deleted row back into existence — resurrection #2. Callers
+    /// re-check the cache after writing: a forgotten node means the forget wins, and
+    /// this compensating write removes the row the late write re-created. Returns true
+    /// when the row was re-deleted (true callers must skip their follow-ups).
+    /// </summary>
+    private async Task<bool> UndoIfForgottenAsync(string nodeId, CancellationToken cancellationToken)
+    {
+        lock (_cacheLock)
+        {
+            if (_nodesById.ContainsKey(nodeId))
+            {
+                return false;
+            }
+        }
+
+        CompanionLog.Trace("Memory",
+            "A memory write raced a forget; the resurrected row is being re-deleted.");
+        await _writeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await using SqliteTransaction transaction = (SqliteTransaction)
+                await _connection!.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+            await using (SqliteCommand command = _connection.CreateCommand())
+            {
+                command.Transaction = transaction;
+                command.CommandText = "DELETE FROM synapses WHERE from_node = $id OR to_node = $id;";
+                command.Parameters.AddWithValue("$id", nodeId);
+                await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            await using (SqliteCommand command = _connection.CreateCommand())
+            {
+                command.Transaction = transaction;
+                command.CommandText = "DELETE FROM nodes WHERE id = $id;";
+                command.Parameters.AddWithValue("$id", nodeId);
+                await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _writeGate.Release();
+        }
+
+        return true;
+    }
+
+    /// <summary>Removes one resurrected synapse row by id.</summary>
+    private async Task DeleteSynapseRowAsync(string synapseId, CancellationToken cancellationToken)
+    {
+        CompanionLog.Trace("Memory",
+            "A synapse touch raced a forget of its endpoint; the stranded row is deleted.");
+        await _writeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await using SqliteCommand command = _connection!.CreateCommand();
+            command.CommandText = "DELETE FROM synapses WHERE id = $id;";
+            command.Parameters.AddWithValue("$id", synapseId);
+            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _writeGate.Release();
+        }
     }
 
     /// <summary>Removes a node and every link that touched it.</summary>

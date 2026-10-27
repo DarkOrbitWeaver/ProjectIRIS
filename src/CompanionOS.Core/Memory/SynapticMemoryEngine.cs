@@ -567,6 +567,19 @@ public sealed class SynapticMemoryEngine : IMemoryAccess
     /// </summary>
     public async Task<int> ForgetUnverifiedRequestEpisodesAsync(CancellationToken cancellationToken = default)
     {
+        // The prefix scan used to run on EVERY boot with no cutoff: anything a user
+        // legitimately recorded that happened to start with the words "Heard: " was
+        // purged again, boot after boot, forever (2026-10-27 audit). Legacy formats
+        // are no longer written, so the repair only needs to complete ONCE; a stamp
+        // in the graph's meta table ends it, and everything recorded after is safe
+        // by construction.
+        string? previousRun = await _graph
+            .ReadMetaAsync("repair.unverified_episodes_done", cancellationToken).ConfigureAwait(false);
+        if (!string.IsNullOrWhiteSpace(previousRun))
+        {
+            return 0;
+        }
+
         // Two historic formats told stories without truth: "Requested: …" (an intention
         // recorded as a fact) and "Heard: …" (raw transcript debris, often ASR junk like
         // "Heard: - Where is?" — not something said, just something the ears caught).
@@ -589,6 +602,12 @@ public sealed class SynapticMemoryEngine : IMemoryAccess
                     ["removed_chars"] = node.Content.Length.ToString()
                 });
         }
+
+        // The stamp is written even when nothing matched: a graph that never carried
+        // the legacy formats owes nothing to the scan, and later honest entries with
+        // those prefixes must never fall under it.
+        await _graph.WriteMetaAsync("repair.unverified_episodes_done",
+            DateTimeOffset.Now.ToString("O"), cancellationToken).ConfigureAwait(false);
 
         if (unverified.Count > 0)
         {
