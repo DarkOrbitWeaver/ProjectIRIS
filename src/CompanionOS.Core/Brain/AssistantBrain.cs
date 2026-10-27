@@ -54,7 +54,7 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
     private readonly object _backgroundTaskJournalLock = new();
     private readonly Dictionary<string, string> _lastBackgroundTaskStates = new(StringComparer.Ordinal);
 
-    private readonly List<ChatMessage> _history = new();
+    private readonly List<IReadOnlyList<ChatMessage>> _historyTurns = new();
     private readonly object _historyLock = new();
     private readonly SemaphoreSlim _turnGate = new(1, 1);
     private readonly SemaphoreSlim _modeGate = new(1, 1);
@@ -516,6 +516,7 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
 
         List<ChatMessage> messages = new() { ChatMessage.System(systemPrompt) };
         messages.AddRange(TakeHistoryWindow());
+        int turnStartIndex = messages.Count;
         messages.Add(ChatMessage.User($"{turnContext}\n\n{userText}", attachedImage));
 
         PublishContextTelemetry(messages);
@@ -541,6 +542,22 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
         for (int round = 0; round < MaximumToolRounds; round++)
         {
             cancellationToken.ThrowIfCancellationRequested();
+
+            // The request receipt: the exact conversation she was handed this round —
+            // roles, sizes and the head of the last messages. Every failed-behavior
+            // autopsy before this event had to guess what the model actually saw.
+            IrisEvent.Log("Brain", "turn.request", LogLevel.Info,
+                message: "What this model round was asked with: message roles, sizes, and the shape of the tail.",
+                data: new Dictionary<string, string?>
+                {
+                    ["round"] = round.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    ["messages"] = messages.Count.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    ["roles"] = string.Join(",", messages.Select(message => message.Role)),
+                    ["chars_total"] = messages.Sum(message => message.Content.Length)
+                        .ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    ["tail"] = string.Join(" | ", messages.TakeLast(3)
+                        .Select(message => $"{message.Role}: {MessageHeadPreview(message.Content)}"))
+                });
 
             StringBuilder roundText = new();
             StringBuilder speechBuffer = new();
@@ -865,7 +882,31 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
             Detail = string.Join(",", selectedModules.Select(module => module.Id))
         });
 
-        RememberExchange(userText, answerText, toolLedger, anyToolSucceeded);
+        // The dispatched memory is the REAL round, not a flat claim. Turns that ran
+        // hands are stored with their native tool_calls and role:"tool" messages, so
+        // the next request shows the model actual hand work in the shape it wrote;
+        // turns that claimed work with no hand are stamped with the record truth, or
+        // the claim would sit in her window looking like a success and teach the next
+        // turn to repeat it (2026-10-27 "Resuming your song." loop autopsy).
+        List<ChatMessage> turnSpan;
+        if (toolLedger.Count > 0)
+        {
+            turnSpan = new List<ChatMessage> { ChatMessage.User(userText) };
+            turnSpan.AddRange(messages.Skip(turnStartIndex));
+            turnSpan.Add(ChatMessage.Assistant(answerText));
+        }
+        else
+        {
+            string rememberedAnswer = answerText;
+            if (routedTools.Count > 0 && SpeechPlanner.IsActionRequest(userText))
+            {
+                rememberedAnswer += " (records: no tool ran this turn; this sentence was not backed by a tool result.)";
+            }
+
+            turnSpan = new List<ChatMessage> { ChatMessage.User(userText), ChatMessage.Assistant(rememberedAnswer) };
+        }
+
+        RememberExchange(userText, answerText, toolLedger, anyToolSucceeded, turnSpan);
 
         if (_settings.Current.Voice.SpeakReplies && !answerSpokenDuringGeneration)
         {

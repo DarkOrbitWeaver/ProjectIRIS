@@ -306,32 +306,26 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
         }
     }
 
-    /// <summary>Keeps the sliding conversation window and writes episodes worth keeping.</summary>
+    /// <summary>
+    /// Keeps the sliding conversation window and writes episodes worth keeping.
+    ///
+    /// The window stores TURN SPANS, not flat pairs: a turn that ran hands keeps its
+    /// native assistant tool_calls and role:"tool" messages so the next request shows
+    /// the model real hand work in the exact interface shape it emitted. The window is
+    /// trimmed whole-span-at-once; trimming mid-span could orphan a tool result from
+    /// the call that asked for it and hand the model a structurally broken sequence.
+    /// </summary>
     private void RememberExchange(string userText, string answerText, IReadOnlyList<string> toolLedger,
-        bool toolsSucceeded)
+        bool toolsSucceeded, IReadOnlyList<ChatMessage> turnSpan)
     {
-        string durableAnswer = answerText;
-        if (toolLedger.Count > 0)
-        {
-            // Tool receipts ride inside the assistant message: the next turn still
-            // knows what ran, what failed, and under which real names. Evidence that
-            // used to die with the loop (why the same bad-playlist refusal repeated
-            // turn after turn) now keeps working across the whole session window.
-            // Parentheses, deliberately: square-bracket fragments taught a small
-            // model to imitate the shape — "[ list_music ]" once appeared in her chat
-            // as a faked call, so her context stops waving brackets at her.
-            durableAnswer = $"{answerText} (receipts: {string.Join("; ", toolLedger.Take(6))})";
-        }
-
         lock (_historyLock)
         {
-            _history.Add(ChatMessage.User(userText));
-            _history.Add(ChatMessage.Assistant(durableAnswer));
+            _historyTurns.Add(turnSpan.ToList());
 
             int maximumMessages = Math.Max(4, _settings.Current.Memory.ConversationWindowMessages);
-            while (_history.Count > maximumMessages)
+            while (_historyTurns.Count > 1 && _historyTurns.Sum(span => span.Count) > maximumMessages)
             {
-                _history.RemoveAt(0);
+                _historyTurns.RemoveAt(0);
             }
         }
 
@@ -523,8 +517,20 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
     {
         lock (_historyLock)
         {
-            return _history.ToList();
+            return _historyTurns.SelectMany(span => span).ToList();
         }
+    }
+
+    /// <summary>One line, newline-free, for the request receipt's tail preview.</summary>
+    private static string MessageHeadPreview(string? content)
+    {
+        string flat = (content ?? string.Empty).Replace("\r", " ").Replace("\n", " ");
+        if (flat.Length > 90)
+        {
+            flat = flat[..90] + "…";
+        }
+
+        return flat;
     }
 
     private void OnUserRequested(RecognizedVoiceRequest request) =>

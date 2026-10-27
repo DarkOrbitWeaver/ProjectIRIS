@@ -90,7 +90,8 @@ public sealed class CoreToolsModule : IAssistantModule
             "control_windows_media",
             "Windows' system media keys, for OTHER apps' media: pause, or play/resume, the video or music a browser " +
             "(YouTube), Spotify, or any desktop app exposed to Windows' media session. Its actions are pause and play " +
-            "only. NOT for her own music library or playlists — those belong to the music module's tools. If no media " +
+            "only — action=play is ALSO how you resume a paused session: play and resume are the same hand here. " +
+            "NOT for her own music library or playlists — those belong to the music module's tools. If no media " +
             "session is exposed, say it did not happen. Report only the tool result; never claim success when Windows " +
             "does not confirm it.",
             ToolTier.Reflex,

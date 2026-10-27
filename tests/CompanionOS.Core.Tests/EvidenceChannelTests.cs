@@ -130,23 +130,35 @@ public class EvidenceChannelTests
     }
 
     [Fact]
-    public void PlayerActionDispatchAnswersTheActionListWhenTheActionIsUnknown()
+    public async Task PlayerActionDispatchAnswersTheActionListWhenTheActionIsUnknown()
     {
         using MusicPlayerModule module = new();
         ModuleTool player = module.Tools.Single(tool => tool.Name == "music_player");
 
-        ToolResult result = module.ExecuteAsync(new ToolInvocation
+        ToolResult result = await module.ExecuteAsync(new ToolInvocation
         {
             ModuleId = "music",
             Tool = player,
             Arguments = JsonDocument.Parse("{\"action\":\"explode\"}").RootElement.Clone(),
             TurnId = "t1"
-        }, CancellationToken.None).GetAwaiter().GetResult();
+        }, CancellationToken.None);
 
         Assert.False(result.Succeeded);
         // Corrective evidence, not a bare no: the model needs the valid actions in reach.
         Assert.Contains("set_volume", result.ModelText, StringComparison.Ordinal);
         Assert.Contains("show_controls", result.ModelText, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void SystemMediaToolSaysPlayIsHowResumeHappens()
+    {
+        // The boss's "resume my song" ask died twice while Qwen saw `play` and
+        // `resume` as different verbs on different tools. The description now says
+        // the mapping outright.
+        CoreToolsModule module = new();
+        ModuleTool smtc = module.Tools.Single(tool => tool.Name == "control_windows_media");
+
+        Assert.Contains("action=play is ALSO how you resume", smtc.Description, StringComparison.Ordinal);
     }
 
     [Fact]
