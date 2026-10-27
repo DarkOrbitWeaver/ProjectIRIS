@@ -2431,6 +2431,11 @@ public sealed class CoreRegressionTests
             MemoryForgetResult missed = await memory.ForgetAsync("Synth", CancellationToken.None);
             Assert.False(missed.Succeeded);
             Assert.NotNull(graph.FindByTitle("Synthwave"));
+            // A miss returns the closest titles as evidence (2026-10-27 audit) —
+            // never the dead-end directive, and the similar memory stays untouched.
+            Assert.Contains("Synthwave", missed.Candidates);
+            Assert.Contains("Synthwave", missed.Message);
+            Assert.DoesNotContain("Open Memory", missed.Message);
 
             MemoryForgetResult forgotten = await memory.ForgetAsync("Synthwave", CancellationToken.None);
             Assert.True(forgotten.Succeeded);

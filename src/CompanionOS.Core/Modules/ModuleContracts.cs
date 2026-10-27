@@ -411,6 +411,13 @@ public sealed class MemoryForgetResult
 {
     public required bool Succeeded { get; init; }
     public required string Message { get; init; }
+
+    /// <summary>
+    /// Closest existing titles when the exact name was not found — evidence she can
+    /// decide from. The old failure was a directive ("open Memory and inspect its
+    /// name"), a dead end when the forget happens mid-turn.
+    /// </summary>
+    public IReadOnlyList<string> Candidates { get; init; } = [];
 }
 
 /// <summary>One fact she should keep, expressed the way a person would say it.</summary>

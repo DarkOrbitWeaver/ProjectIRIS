@@ -289,13 +289,16 @@ public sealed partial class MemoryGraph : IAsyncDisposable
             Vector = TextVectorizer.Embed(displayTitle + " " + content)
         };
 
+        // Store first, cache second. The old order inserted the node into the live
+        // cache BEFORE the DB persist with no rollback: a failed write left a phantom
+        // memory that recall and consolidation could see and strengthen all session,
+        // then vanish next boot.
+        await PersistNodeAsync(node, cancellationToken).ConfigureAwait(false);
         lock (_cacheLock)
         {
             _nodesById[node.Id] = node;
             _nodeIdByNormalizedTitle[node.NormalizedTitle] = node.Id;
         }
-
-        await PersistNodeAsync(node, cancellationToken).ConfigureAwait(false);
         NotifyNodeChanged(node, "created");
         return node;
     }
@@ -309,45 +312,45 @@ public sealed partial class MemoryGraph : IAsyncDisposable
             throw new ArgumentException("A memory cannot link to itself.", nameof(toNodeId));
         }
 
-        MemorySynapse? existing;
+        // Check and insert under one lock. The old release-then-reinsert window let
+        // two concurrent links of the same pair each see "no existing synapse" and
+        // insert two fresh Guids — and the duplicate's later update then matched zero
+        // rows in the store (affected-rows was never checked), silently dropping the
+        // bookkeeping write.
+        MemorySynapse synapse;
+        bool isNew;
         lock (_cacheLock)
         {
-            existing = _outgoing.TryGetValue(fromNodeId, out List<MemorySynapse>? list)
-                ? list.FirstOrDefault(synapse => synapse.ToNodeId == toNodeId && synapse.Type == type)
+            MemorySynapse? existing = _outgoing.TryGetValue(fromNodeId, out List<MemorySynapse>? list)
+                ? list.FirstOrDefault(candidate => candidate.ToNodeId == toNodeId && candidate.Type == type)
                 : null;
-        }
 
-        if (existing is not null)
-        {
-            existing.Strength = Math.Min(1.0, existing.Strength + Math.Max(0.05, strength * 0.3));
-            existing.LastUsedAt = DateTimeOffset.Now;
-            existing.UseCount++;
-            await PersistSynapseAsync(existing, isNew: false, cancellationToken).ConfigureAwait(false);
-            if (FindById(fromNodeId) is { } sourceNode)
+            if (existing is not null)
             {
-                NotifyNodeChanged(sourceNode, "linked");
+                existing.Strength = Math.Min(1.0, existing.Strength + Math.Max(0.05, strength * 0.3));
+                existing.LastUsedAt = DateTimeOffset.Now;
+                existing.UseCount++;
+                synapse = existing;
+                isNew = false;
             }
-
-            return existing;
+            else
+            {
+                synapse = new MemorySynapse
+                {
+                    Id = Guid.NewGuid().ToString("N"),
+                    FromNodeId = fromNodeId,
+                    ToNodeId = toNodeId,
+                    Type = type,
+                    Strength = Math.Clamp(strength, 0.1, 1.0),
+                    Provenance = provenance ?? string.Empty
+                };
+                AddToIndex(_outgoing, synapse.FromNodeId, synapse);
+                AddToIndex(_incoming, synapse.ToNodeId, synapse);
+                isNew = true;
+            }
         }
 
-        MemorySynapse synapse = new()
-        {
-            Id = Guid.NewGuid().ToString("N"),
-            FromNodeId = fromNodeId,
-            ToNodeId = toNodeId,
-            Type = type,
-            Strength = Math.Clamp(strength, 0.1, 1.0),
-            Provenance = provenance ?? string.Empty
-        };
-
-        lock (_cacheLock)
-        {
-            AddToIndex(_outgoing, synapse.FromNodeId, synapse);
-            AddToIndex(_incoming, synapse.ToNodeId, synapse);
-        }
-
-        await PersistSynapseAsync(synapse, isNew: true, cancellationToken).ConfigureAwait(false);
+        await PersistSynapseAsync(synapse, isNew, cancellationToken).ConfigureAwait(false);
 
         if (FindById(fromNodeId) is { } changedNode)
         {

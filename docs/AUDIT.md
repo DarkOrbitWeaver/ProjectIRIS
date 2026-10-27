@@ -16,34 +16,34 @@ Everything below is an instance of one of those three.
 ## P0 — CRITICAL (capability blockers + correctness lies)
 
 ### Axle 1: routing in front of the model
-- [ ] **ModuleHost.cs:267-271 — router is a hard keyword/cosine gate.** Score ≥0.08 only, `Take(2)` modules, 4-of-11 core budget. Below the floor the tool definition never reaches the model: she *cannot* call it. Multi-intent sentences structurally can't be served. (Comment at 353-358 claims "not a hard gate" — false.)
-- [ ] **ModuleHost.cs:346-349 — routing evidence is bidirectional substring matching.** "my" ⊆ "media", "me" ⊆ "remem…": inflated hit counts crowd real matches out of the 2-module / 4-core budgets.
-- [ ] **ModuleHost.cs:587-590 + CoreToolsModule.cs:298-308 — capability self-knowledge is broken.** `DescribeCapabilities()` returns one generic sentence; `search_capabilities` (her ability-discovery tool) greps that sentence and can never answer "can you do X".
-- [ ] **AssistantBrain.cs:34/701-706 — `MaximumToolRounds = 4`, then a canned permission-ask fallback** ("Tell me if you want me to continue."). Multi-step work (scan → filter → act → verify) dies mid-chain and requires a re-ask that restarts a whole turn with tool context gone.
+- [x] **ModuleHost.cs:267-271 — router is a hard keyword/cosine gate.** Score ≥0.08 only, `Take(2)` modules, 4-of-11 core budget. Below the floor the tool definition never reaches the model: she *cannot* call it. Multi-intent sentences structurally can't be served. (Comment at 353-358 claims "not a hard gate" — false.)
+- [x] **ModuleHost.cs:346-349 — routing evidence is bidirectional substring matching.** "my" ⊆ "media", "me" ⊆ "remem…": inflated hit counts crowd real matches out of the 2-module / 4-core budgets.
+- [x] **ModuleHost.cs:587-590 + CoreToolsModule.cs:298-308 — capability self-knowledge is broken.** `DescribeCapabilities()` returns one generic sentence; `search_capabilities` (her ability-discovery tool) greps that sentence and can never answer "can you do X".
+- [x] **AssistantBrain.cs:34/701-706 — `MaximumToolRounds = 4`, then a canned permission-ask fallback** ("Tell me if you want me to continue."). Multi-step work (scan → filter → act → verify) dies mid-chain and requires a re-ask that restarts a whole turn with tool context gone.
 - [ ] **AssistantBrain.cs:553-554 + SpeechPlanner — `IsActionRequest` keyword decides who gets the receipt-check nudge.** Broad noun list (song/video/game/app/file…) — informational questions containing media nouns can trigger "call the matching tool" nagging.
-- [ ] **AssistantBrain.cs:624-631 — invalid tool args get a canned string, not the schema/evidence.** A 4B re-emits the same bad args and burns a round with nothing corrective to reason from.
+- [x] **AssistantBrain.cs:624-631 — invalid tool args get a canned string, not the schema/evidence.** A 4B re-emits the same bad args and burns a round with nothing corrective to reason from.
 
 ### Axle 2: evidence dies at borders
-- [ ] **AssistantBrain.Turn.cs:276-289 — tool results vanish from history between turns.** `_history` keeps user/assistant text only; what failed, what real playlist names exist, what she launched — all gone next turn. The evidence-refusal philosophy stops working across turns.
-- [ ] **CoreToolsModule.cs:153-154 — `recall_memory` returns titles only.** The model learns node *names*, never the facts. Memory capability pinned at titles-length.
-- [ ] **SynapticMemoryEngine.cs:83-86 — seed truncation before task-log filter.** Top-4 taken first, diary filtered after: four recent task-log matches = a full turn with **zero** recalled memory while real facts sit below the cutoff. (Verified: filter order is exactly that.)
-- [ ] **CoreToolsModule.cs:186-193 — Windows media success detected by string prefix** (`StartsWith("Windows confirmed")`): wording drift flips confirmed actions to Fail. Canonical stringly-typed control flow.
+- [x] **AssistantBrain.Turn.cs:276-289 — tool results vanish from history between turns.** `_history` keeps user/assistant text only; what failed, what real playlist names exist, what she launched — all gone next turn. The evidence-refusal philosophy stops working across turns.
+- [x] **CoreToolsModule.cs:153-154 — `recall_memory` returns titles only.** The model learns node *names*, never the facts. Memory capability pinned at titles-length.
+- [x] **SynapticMemoryEngine.cs:83-86 — seed truncation before task-log filter.** Top-4 taken first, diary filtered after: four recent task-log matches = a full turn with **zero** recalled memory while real facts sit below the cutoff. (Verified: filter order is exactly that.)
+- [x] **CoreToolsModule.cs:186-193 — Windows media success detected by string prefix** (`StartsWith("Windows confirmed")`): wording drift flips confirmed actions to Fail. Canonical stringly-typed control flow.
 - [ ] **ModuleHost.cs:454-478 — every `BackgroundCapable` call becomes fire-and-forget.** Model gets "started in background" instead of the result; follow-up status tools may not even be routed; 5-round cap leaves no room to check outcomes.
-- [ ] **ModuleHost.cs:541-544 + MainWindow/others — late faults after timeout are observed and silently discarded** (`_ = task.Exception;`): outcome stays "unknown" forever even when the finished result was clean gold for the next round.
+- [x] **ModuleHost.cs:541-544 + MainWindow/others — late faults after timeout are observed and silently discarded** (`_ = task.Exception;`): outcome stays "unknown" forever even when the finished result was clean gold for the next round.
 - [ ] **PluginHost.cs:471-475 + PluginModuleAdapter.cs:121-124 — plugin stdout dropped on failure** (model gets stderr only); failed 10s discovery leaves a plugin registered with **zero tools**, silent to user and model (PluginHost.cs:117-125).
 
 ### Axle 3: caps, silent deaths, corruption
 - [ ] **MusicLibraryScanner.cs:31 + MusicPlayerModule.cs:1244 — library scan has a 4-second budget.** Every play/list/shuffle call scans with it; big folder = permanently truncated index → "play X" fails when X exists. The flagship symptom.
-- [ ] **ModelClient.cs:277 + 183-239 — `max_tokens` 900-1200 always sent; `finish_reason` never checked.** Truncation mid-tool-call → fragmenting JSON silently vanishes (`Where(name not empty)`) → the turn reads as "she chose not to act". Direct cause of lazy-looking agents.
+- [x] **ModelClient.cs:277 + 183-239 — `max_tokens` 900-1200 always sent; `finish_reason` never checked.** Truncation mid-tool-call → fragmenting JSON silently vanishes (`Where(name not empty)`) → the turn reads as "she chose not to act". Direct cause of lazy-looking agents.
 - [ ] **ModuleHost.cs:32/522 — 45s foreground tool timeout.** Longer legit work becomes `Uncertain` while the job keeps running (uncancelled — see P1 find_files / MCP entries). Companion caps: 30s default MCP `tools/call`, 5min background (PluginHost.cs:1469-1495).
 - [ ] **MusicPlayerModule.cs:1145-1174 — track start destroys the playing player *before* validating the new file.** Bad file = current song dies, no rollback, model told playback "could not" — never that music stopped.
 - [ ] **MusicPlayerModule.cs:286/358-359 — volume is per-reader and lost every track change; duck-restore hard-sets 1.0.** "Quieter" lasts one song; user's chosen level erased, model reports success.
-- [ ] **SandboxGuard.cs:72/163-167 + ModuleHost.cs:447-449 — 15s permission timeout auto-denies and is misreported as "The user did not allow that action."** Model can't distinguish no / AFK / missed prompt; audit trail records both as plain "denied".
-- [ ] **MemoryGraph.cs:292-300 — node inserted into live cache BEFORE DB persist; no rollback on failure.** Phantom memory visible to recall/consolidation this session, vanished next boot.
-- [ ] **MemoryGraph.cs:312-351 — `LinkAsync` check-then-insert race duplicates synapses;** the duplicate's later UPDATE matches 0 rows (fresh Guid never inserted) and affected-rows is never checked — bookkeeping writes lost silently.
-- [ ] **MemoryGraph.Queries.cs:92-134 — consolidation iterates a stale snapshot;** a merged-away node can still be picked as `keep` later → `PersistNodeAsync` upsert **resurrects deleted rows with duplicated content**. Long-term memory corruption on exactly the runs consolidation exists for.
+- [x] **SandboxGuard.cs:72/163-167 + ModuleHost.cs:447-449 — 15s permission timeout auto-denies and is misreported as "The user did not allow that action."** Model can't distinguish no / AFK / missed prompt; audit trail records both as plain "denied".
+- [x] **MemoryGraph.cs:292-300 — node inserted into live cache BEFORE DB persist; no rollback on failure.** Phantom memory visible to recall/consolidation this session, vanished next boot.
+- [x] **MemoryGraph.cs:312-351 — `LinkAsync` check-then-insert race duplicates synapses;** the duplicate's later UPDATE matches 0 rows (fresh Guid never inserted) and affected-rows is never checked — bookkeeping writes lost silently.
+- [x] **MemoryGraph.Queries.cs:92-134 — consolidation iterates a stale snapshot;** a merged-away node can still be picked as `keep` later → `PersistNodeAsync` upsert **resurrects deleted rows with duplicated content**. Long-term memory corruption on exactly the runs consolidation exists for.
 - [ ] **SettingsStore.cs:56-74 — one malformed property (single typo'd enum) wipes the whole settings file to defaults.** Backup read also; then quarantine + `new CompanionSettings()`. User's profiles/hotkeys/endpoints destroyed by one bad line.
-- [ ] **CoreToolsModule.cs:197-213 — `set_operating_mode` maps unknown input → Awake and unconditionally clears manual gaming.** Garbage/other modes wake her and drop the game hand-off as a side effect.
+- [x] **CoreToolsModule.cs:197-213 — `set_operating_mode` maps unknown input → Awake and unconditionally clears manual gaming.** Garbage/other modes wake her and drop the game hand-off as a side effect.
 - [ ] **MusicPlayerModule.cs:1385-1389 — a corrupt file mid-playlist silently ends the whole queue.** No skip, no notice, no model feedback — silence is her only symptom.
 - [ ] **ModuleHost.cs:96-132 — a module whose `InitializeAsync` failed stays installed, enabled, and routable.** First call = "Object reference not set…" to the model.
 
@@ -62,7 +62,7 @@ Everything below is an instance of one of those three.
 - [ ] **SettingsStore.cs:156-169 — voice "normalization" overwrites the user's saved voice list and resets `ChosenByUser=false`** (one Kosoro id in list → whole list replaced + picker nags again).
 - [ ] **SettingsStore.cs:78-79 — settings.json rewritten on EVERY boot; user comments silently stripped.**
 - [ ] **MainWindow.Layout.cs:174-187 + App.axaml.cs:31 — closing the window with CloseToOverlay=false leaves an invisible fully-running process** (no tray, no overlay, VRAM occupied, "quit" believed).
-- [ ] **MemoryGraph.Queries.cs:36-58 — daily decay does a full fsync per node in a loop on the boot path, no transaction.** Tens of thousands of nodes = boot stall blocking every memory write.
+- [x] **MemoryGraph.Queries.cs:36-58 — daily decay does a full fsync per node in a loop on the boot path, no transaction.** Tens of thousands of nodes = boot stall blocking every memory write.
 - [ ] **ShellModel.Events.cs:292-294 + ShellModel.cs:36 — recall chips assigned without change notification → silently never render** when the recall event lands after AssistantStarted.
 - [ ] **CompanionSettings.cs:15 — `SchemaVersion` is dead;** migrations key on magic strings, unknown-vintage files get heuristics.
 - [ ] **PluginHost.cs:976-997 — one global MCP semaphore serializes every MCP call AND the process handshake.** One slow server stalls all other plugins' calls.
@@ -77,7 +77,7 @@ Everything below is an instance of one of those three.
 - [ ] MusicPlayerModule.cs:297-299 — `list_music` shows 20 of many thousands; no music-search tool exists (evidence gap).
 - [ ] ModuleHost.cs:29 — `MaximumToolsPerTurn = 24` is generous but unused since core budget 4 + Take(2) modules bind first.
 - [ ] ModuleHost.cs:522/541 — timeout keeps work running uncancelled even for cancellable modules (not just late faults).
-- [ ] CoreToolsModule.cs:62-65 — `forget_memory` description forces "ask user to open Memory" — in-tool permission-stall; should return candidates for her to decide (evidence pattern like MissingPlaylistResult).
+- [x] CoreToolsModule.cs:62-65 — `forget_memory` description forces "ask user to open Memory" — in-tool permission-stall; should return candidates for her to decide (evidence pattern like MissingPlaylistResult).
 - [ ] SystemControlModule.cs:332 — timer-completion speech fire-and-forget, silent failure.
 - [ ] CompanionLog.cs:137-143 — empty catches: once the log file fails (disk full/locked), logging dies silently forever; no once-flag, no notice.
 - [ ] CompanionLog.cs:48 + CompanionRuntime.cs:110-116 — `LogLevel` "debug" maps to Info (no case); null LogLevel string NREs app at startup; log-level change does nothing until restart (no SettingsChangedEvent listener).
@@ -126,6 +126,7 @@ Everything below is an instance of one of those three.
 - 2026-10-27: audit created. Core lane self-read (brain turn loop, ModelClient, ModuleHost router+execute, CoreToolsModule, CompanionRuntime, LlamaServerHost). Sweep A (tool machinery + modules + plugins) merged. Sweep B (memory/infra/app shell) merged. All CRITICAL claims spot-verified against source (SandboxGuard 15s deny, volume-per-reader, 4s scan budget, phantom-node order, consolidation resurrection, settings single-enum wipe, seed-filter order).
 - 2026-10-27 (later): Sweep C (voice/perception senses) landed and merged into the appendix above. Its two headline criticals (unbounded open speech segment VoicePipeline.cs:1361-1399/_speechSegment.AddRange 1365/1375 with no max duration anywhere; self-triggering barge-in at 2×30ms frames 1323/1330) and the 140-char hard floor (SpeechPlanner.cs:29/43, verified) spot-checked true.
 - ALL THREE SWEEPS COMPLETE. Fix-all pass next, P0 first, Boss re-ranks before any edit.
+- 2026-10-27 (fix round): Batch 1 (agentic core: router manifest, rounds, length-continue, receipts-in-history, recall content, token stocks), Batch 2 (sandbox truth: AuthorizationOutcome + PermissionStop, timeout hygiene with logged late faults, typed media result, plugin stdout evidence, mode rejection), Batch 3 (memory durability: persist-before-cache, LinkAsync under one lock + zero-row rewrite, consolidation live re-fetch, decay in one transaction, seed filter-then-take, forget evidence candidates). Each batch committed with the suite green (125/125).
 
 ## Appendix C — Sweep C findings (voice + perception senses)
 

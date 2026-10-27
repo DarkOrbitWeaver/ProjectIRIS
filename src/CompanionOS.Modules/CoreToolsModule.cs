@@ -59,7 +59,7 @@ public sealed class CoreToolsModule : IAssistantModule
 
         new(
             "forget_memory",
-            "Forget one exact, user-named memory. If the name is unclear, ask the user to open Memory and identify it; never guess which fact to erase.",
+            "Forget one exact, user-named memory. A miss lists the closest existing titles as evidence; pick the exact title from that list or say none matched. Never guess which fact to erase.",
             ToolTier.Reflex,
             """{"type":"object","properties":{"title":{"type":"string"}},"required":["title"]}""",
             "forget", "delete memory", "remove memory"),

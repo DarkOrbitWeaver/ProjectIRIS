@@ -33,31 +33,60 @@ public sealed partial class MemoryGraph : IAsyncDisposable
             return;
         }
 
+        // One transaction, one pass. The old per-node persist loop committed once per
+        // memory on the boot path — tens of thousands of fsyncs on a large graph while
+        // every memory write queued behind the whole decay (2026-10-27 audit). Replaced
+        // with two bulk UPDATEs and the meta stamp inside a single transaction; the
+        // in-memory cache is mirrored afterwards, only once the store has accepted it.
         List<MemoryNode> nodes = SnapshotNodes().ToList();
+        List<MemorySynapse> synapses = SnapshotSynapses().ToList();
+
+        await _writeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await using SqliteTransaction transaction = (SqliteTransaction)
+                await _connection!.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+            await using SqliteCommand command = _connection.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText = "UPDATE nodes SET strength = max(0.05, strength * $dailyDecay) WHERE pinned = 0;";
+            command.Parameters.AddWithValue("$dailyDecay", dailyDecay);
+            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+            command.Parameters.Clear();
+            command.CommandText =
+                "UPDATE synapses SET strength = max(0.05, strength * $dailyDecay) WHERE strength > 0.05;";
+            command.Parameters.AddWithValue("$dailyDecay", dailyDecay);
+            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+            command.Parameters.Clear();
+            command.CommandText =
+                """
+                INSERT INTO meta (key, value) VALUES ('last_decay', $stamp)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value;
+                """;
+            command.Parameters.AddWithValue("$stamp", DateTimeOffset.Now.ToString("O"));
+            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _writeGate.Release();
+        }
+
         foreach (MemoryNode node in nodes)
         {
-            if (node.Pinned)
+            if (!node.Pinned)
             {
-                continue;
+                node.Strength = Math.Max(0.05, node.Strength * dailyDecay);
             }
-
-            node.Strength = Math.Max(0.05, node.Strength * dailyDecay);
-            await PersistNodeAsync(node, cancellationToken).ConfigureAwait(false);
         }
 
-        foreach (MemorySynapse synapse in SnapshotSynapses())
+        foreach (MemorySynapse synapse in synapses)
         {
-            double faded = Math.Max(0.05, synapse.Strength * dailyDecay);
-            if (Math.Abs(faded - synapse.Strength) < 0.001)
-            {
-                continue;
-            }
-
-            synapse.Strength = faded;
-            await PersistSynapseAsync(synapse, isNew: false, cancellationToken).ConfigureAwait(false);
+            synapse.Strength = Math.Max(0.05, synapse.Strength * dailyDecay);
         }
 
-        await WriteMetaAsync("last_decay", DateTimeOffset.Now.ToString("O"), cancellationToken).ConfigureAwait(false);
         CompanionLog.Info("Memory", "Applied daily decay to unused memories.");
     }
 
@@ -92,13 +121,22 @@ public sealed partial class MemoryGraph : IAsyncDisposable
         for (int outer = 0; outer < nodes.Count; outer++)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            MemoryNode keep = nodes[outer];
+
+            // Live re-fetch of both ends. The list above is a stale snapshot: a node
+            // this pass already merged away used to be processed anyway, and writing
+            // its stale copy upserted deleted rows back into existence with doubled
+            // content — permanent long-term corruption on exactly the runs this pass
+            // exists for. Absent nodes skip; the merge edits the live object.
+            MemoryNode? keep = FindById(nodes[outer].Id);
+            if (keep is null || keep.Pinned)
+            {
+                continue;
+            }
 
             for (int inner = outer + 1; inner < nodes.Count; inner++)
             {
-                MemoryNode candidate = nodes[inner];
-
-                if (keep.Layer != candidate.Layer)
+                MemoryNode? candidate = FindById(nodes[inner].Id);
+                if (candidate is null || candidate.Layer != keep.Layer)
                 {
                     continue;
                 }
@@ -394,17 +432,18 @@ public sealed partial class MemoryGraph : IAsyncDisposable
 
     private async Task PersistSynapseAsync(MemorySynapse synapse, bool isNew, CancellationToken cancellationToken)
     {
+        const string upsertSql = """
+            INSERT INTO synapses (id, from_node, to_node, type, strength, created_at, last_used_at, use_count, provenance)
+            VALUES ($id, $from, $to, $type, $strength, $created, $lastUsed, $useCount, $provenance)
+            ON CONFLICT(from_node, to_node, type) DO UPDATE SET strength = excluded.strength;
+            """;
+        const string updateSql = "UPDATE synapses SET strength = $strength, last_used_at = $lastUsed, use_count = $useCount WHERE id = $id;";
+
         await _writeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             await using SqliteCommand command = _connection!.CreateCommand();
-            command.CommandText = isNew
-                ? """
-                  INSERT INTO synapses (id, from_node, to_node, type, strength, created_at, last_used_at, use_count, provenance)
-                  VALUES ($id, $from, $to, $type, $strength, $created, $lastUsed, $useCount, $provenance)
-                  ON CONFLICT(from_node, to_node, type) DO UPDATE SET strength = excluded.strength;
-                  """
-                : "UPDATE synapses SET strength = $strength, last_used_at = $lastUsed, use_count = $useCount WHERE id = $id;";
+            command.CommandText = isNew ? upsertSql : updateSql;
 
             command.Parameters.AddWithValue("$id", synapse.Id);
             command.Parameters.AddWithValue("$from", synapse.FromNodeId);
@@ -417,7 +456,18 @@ public sealed partial class MemoryGraph : IAsyncDisposable
             command.Parameters.AddWithValue("$useCount", synapse.UseCount);
             command.Parameters.AddWithValue("$provenance", synapse.Provenance);
 
-            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            int touched = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            if (!isNew && touched == 0)
+            {
+                // The row lives in the cache but has gone from the store (a forget or a
+                // crash landed in between). A silent zero-row update would drop this
+                // bookkeeping forever, so re(insert it and say so instead of pretending
+                // the write landed.
+                command.CommandText = upsertSql;
+                await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                CompanionLog.Info("Memory",
+                    $"Synapse {synapse.Id} was missing from the store when its update ran; re-inserted it.");
+            }
         }
         finally
         {

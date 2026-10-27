@@ -80,9 +80,16 @@ public sealed class SynapticMemoryEngine : IMemoryAccess
         // hollowlight — play music: done") would otherwise light up every turn and
         // frame life as a replay of old task receipts. The diary itself stays —
         // recall_memory searches it whenever she genuinely wants her own history.
+        //
+        // Filter THEN trim (2026-10-27 audit): taking the top-N first meant a pocket
+        // of recent diary lines filled the seed budget outright — a whole turn with
+        // zero real memory while true facts sat just below the cutoff. Overfetch one
+        // page, drop the receipts, keep the strongest survivors.
+        int seedCount = Math.Max(1, settings.SeedCount);
         List<(MemoryNode Node, double Score)> matches = _graph
-            .SearchNodes(userMessage, Math.Max(1, settings.SeedCount))
+            .SearchNodes(userMessage, seedCount * 4 + 8)
             .Where(match => !IsTaskLog(match.Node))
+            .Take(seedCount)
             .ToList();
 
         if (matches.Count == 0)
@@ -379,11 +386,23 @@ public sealed class SynapticMemoryEngine : IMemoryAccess
         MemoryNode? node = _graph.FindByTitle(title);
         if (node is null)
         {
-            return new MemoryForgetResult
-            {
-                Succeeded = false,
-                Message = $"I could not find an exact memory named '{title}'. Open Memory to inspect its name first."
-            };
+            // A miss is not a dead end. Hand back the titles that actually resemble
+            // the request so the next attempt can name one exactly — the "open Memory
+            // and inspect its name" wording became a permission-stall she could not
+            // resolve from inside the turn.
+            IReadOnlyList<string> candidates = _graph
+                .SearchNodes(title, 6)
+                .Select(hit => hit.Node.Title)
+                .Where(existing => !string.Equals(existing, title, StringComparison.OrdinalIgnoreCase))
+                .Take(5)
+                .ToList();
+
+            string message = candidates.Count > 0
+                ? $"I could not find an exact memory named '{title}'. The closest existing memories: " +
+                  $"{string.Join("; ", candidates)}. Name one of those exactly to forget it, or say if none of them are it."
+                : $"I could not find an exact memory named '{title}', and nothing in memory resembles it.";
+
+            return new MemoryForgetResult { Succeeded = false, Message = message, Candidates = candidates };
         }
 
         if (node.Pinned)
