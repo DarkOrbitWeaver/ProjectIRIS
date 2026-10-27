@@ -623,14 +623,15 @@ public sealed class SynapticMemoryEngine : IMemoryAccess
         _events.Publish(new MemoryRecallEvent(turnId, memories, intuitionText));
     }
 
-    /// <summary>Converts a node to the small shape the interface needs.</summary>
+    /// <summary>Converts a node to the small shape the interface and recall both need.</summary>
     public static RecalledMemory ToRecalled(MemoryNode node) => new()
     {
         NodeId = node.Id,
         Title = node.Title,
         Layer = (int)node.Layer,
         Strength = node.Strength,
-        Provenance = node.Provenance
+        Provenance = node.Provenance,
+        Content = node.Content
     };
 
     private static string Trim(string text, int maximumLength) =>

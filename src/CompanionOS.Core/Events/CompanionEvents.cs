@@ -105,6 +105,13 @@ public sealed class RecalledMemory
     public bool IsDirectMatch { get; init; }
     public string RelatedMemoryTitle { get; init; } = string.Empty;
     public string Relationship { get; init; } = string.Empty;
+
+    /// <summary>
+    /// The fact itself. The chip only ever needed the title, but recall_memory used to
+    /// answer from this type too, which capped her knowledge base at node names
+    /// (2026-10-27 audit). Now the content rides along.
+    /// </summary>
+    public string Content { get; init; } = string.Empty;
 }
 
 /// <summary>Raised whenever she starts or stops talking.</summary>
