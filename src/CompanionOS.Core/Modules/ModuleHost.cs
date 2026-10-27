@@ -1,5 +1,6 @@
 ﻿using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text;
 using CompanionOS.Core.Configuration;
 using CompanionOS.Core.Diagnostics;
 using CompanionOS.Core.Events;
@@ -11,22 +12,21 @@ namespace CompanionOS.Core.Modules;
 /// The body: it holds every installed hand, decides which hands a request needs, and
 /// makes sure nothing dangerous happens without permission.
 ///
-/// The important idea is dynamic routing. A small model given eighty tool definitions
-/// becomes slow and confused, so before each turn the router picks at most two
-/// modules whose description matches the user's sentence, plus the always-available
-/// core tools. That keeps the model looking at roughly eight tools no matter whether
-/// three modules or three hundred are installed.
+/// Routing philosophy (2026-10-27 audit): the ROUTER does not stand between the model
+/// and its hands. Every enabled tool is offered every turn, in deterministic order —
+/// a scored keyword/cosine pre-gate once hid open_application from "Uh open up
+/// calculator" and the model narrated instead of acting. She cannot call a tool she is
+/// never shown, so she is shown everything. The cap only guards a plugin explosion,
+/// and truncation is a logged receipt, never silent.
 /// </summary>
 public sealed class ModuleHost : IAsyncDisposable
 {
-    /// <summary>Hard cap on tools per turn. Small models do not do well above this.</summary>
     /// <summary>
-    /// Turn cap for the whole tool offer. Raised from 8: a chosen module now hands the
-    /// model its complete toolset — "play hollowlight" must put play_music on the table
-    /// even when the name is one the router has never seen. Two chosen modules plus the
-    /// core four rarely reach this cap; it exists to catch catastrophic accidental picks.
+    /// Turn cap for the whole tool offer. The built-in catalog is around 43 tools —
+    /// comfortably under this — so it binds only when third-party modules balloon the
+    /// body. It exists to catch catastrophic accidental picks, not everyday turns.
     /// </summary>
-    public const int MaximumToolsPerTurn = 24;
+    public const int MaximumToolsPerTurn = 64;
 
     private const string DisabledModulesFile = "modules.disabled.json";
     private const int ToolTimeoutSeconds = 45;
@@ -39,8 +39,9 @@ public sealed class ModuleHost : IAsyncDisposable
     private readonly ModuleUiService _moduleUi;
     private readonly object _registryLock = new();
     private readonly Dictionary<string, IAssistantModule> _modulesById = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>Insertion order of installed modules; keeps the tool offer deterministic.</summary>
+    private readonly List<IAssistantModule> _registrationOrder = new();
     private readonly Dictionary<string, IAssistantModule> _toolOwners = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, float[]> _moduleRoutingVectors = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _disabledModuleIds = new(StringComparer.OrdinalIgnoreCase);
 
     public ModuleHost(SettingsStore settings, EventBus events, SandboxGuard sandbox, IMemoryAccess memory)
@@ -91,7 +92,6 @@ public sealed class ModuleHost : IAsyncDisposable
     public async Task RegisterAsync(IAssistantModule module, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(module);
-        float[] routingVector = BuildModuleRoutingVector(module);
 
         lock (_registryLock)
         {
@@ -105,8 +105,12 @@ public sealed class ModuleHost : IAsyncDisposable
                     }
                 }
             }
+            else
+            {
+                // Replace keeps the original insertion slot; a fresh id takes the tail.
+                _registrationOrder.Add(module);
+            }
             _modulesById[module.Id] = module;
-            _moduleRoutingVectors[module.Id] = routingVector;
             foreach (ModuleTool tool in module.Tools)
             {
                 if (_toolOwners.ContainsKey(tool.Name))
@@ -142,7 +146,7 @@ public sealed class ModuleHost : IAsyncDisposable
             {
                 return;
             }
-            _moduleRoutingVectors.Remove(moduleId);
+            _registrationOrder.Remove(module);
 
             foreach (ModuleTool tool in module.Tools)
             {
@@ -209,178 +213,88 @@ public sealed class ModuleHost : IAsyncDisposable
     }
 
     /// <summary>
-    /// Chooses the tools for one turn. Returns an empty list when nothing fits, which
-    /// is normal: she can still answer from memory and conversation.
+    /// <summary>
+    /// Offers the hands for one turn. Every enabled tool is offered, every turn: the
+    /// router is a manifest, not a gate. Deterministic order (always-available bodies
+    /// first, then registration order) keeps the offer stable across repeats, which
+    /// makes her choices comparable from the receipts.
     /// </summary>
     public IReadOnlyList<ModuleTool> RouteTools(string userMessage, out IReadOnlyList<IAssistantModule> selectedModules)
     {
-        List<(IAssistantModule Module, float[] RoutingVector)> enabledModules;
+        _ = userMessage; // The router no longer judges the sentence; the model decides.
+
+        List<IAssistantModule> enabled;
         lock (_registryLock)
         {
-            enabledModules = _modulesById.Values
+            enabled = _registrationOrder
                 .Where(module => !_disabledModuleIds.Contains(module.Id))
-                .Select(module => (module, _moduleRoutingVectors.GetValueOrDefault(module.Id) ??
-                    BuildModuleRoutingVector(module)))
                 .ToList();
         }
 
-        float[] requestVector = TextVectorizer.Embed(userMessage);
+        // Always-available bodies go first so a truncation (third-party explosion)
+        // can never cut her permanent reflexes before an optional module's tools.
+        List<IAssistantModule> ordered = enabled
+            .OrderByDescending(module => module.AlwaysAvailable)
+            .ToList();
+
         List<ModuleTool> routedTools = new();
         HashSet<string> addedToolNames = new(StringComparer.OrdinalIgnoreCase);
-        List<IAssistantModule> chosenModules = new();
-
-        // 1. Core is always eligible, but not every core tool is attached to every turn.
-        // The old implementation exposed all eight core tools first, filling the entire
-        // eight-tool budget and silently starving Music and System Control forever.
-        // Select the most relevant core hands, then leave room for routed modules.
-        foreach ((IAssistantModule module, _) in enabledModules.Where(item => item.Module.AlwaysAvailable))
+        foreach (IAssistantModule module in ordered)
         {
-            chosenModules.Add(module);
-            foreach (ModuleTool tool in SelectCoreTools(module.Tools, userMessage, requestVector))
+            if (routedTools.Count >= MaximumToolsPerTurn)
             {
-                if (addedToolNames.Add(tool.Name))
+                IrisEvent.Log("Modules", "router.truncated", LogLevel.Warning,
+                    message: "The tool offer hit the per-turn cap; later modules are not on the table this turn. This is a body-size receipt, not a judgment.",
+                    data: new Dictionary<string, string?>
+                    {
+                        ["offered"] = routedTools.Count.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                        ["cap"] = MaximumToolsPerTurn.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                    });
+                break;
+            }
+
+            foreach (ModuleTool tool in module.Tools)
+            {
+                if (addedToolNames.Add(tool.Name) && routedTools.Count < MaximumToolsPerTurn)
                 {
                     routedTools.Add(tool);
                 }
             }
         }
 
-        // 2. Score the rest against the sentence and take the best two.
-        //    The score is cosine plus keyword evidence — the same two signals tool
-        //    selection uses below. Keywords have to count here too: "Uh open up
-        //    calculator" once left the launcher under the cosine floor because the
-        //    filler words washed out the embedding, so the model was never even shown
-        //    open_application and narrated instead of acting.
-        string[] words = userMessage.Split((char[]?)null,
-            StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        List<(IAssistantModule Module, double Score)> scored = new();
-
-        foreach ((IAssistantModule module, float[] capabilityVector) in enabledModules
-                     .Where(item => !item.Module.AlwaysAvailable))
-        {
-            double score = TextVectorizer.Cosine(requestVector, capabilityVector) +
-                           ModuleKeywordScore(module, words);
-            scored.Add((module, score));
-        }
-
-        List<IAssistantModule> routedModules = scored
-            .Where(pair => pair.Score >= 0.08)
-            .OrderByDescending(pair => pair.Score)
-            .Take(2)
-            .Select(pair => pair.Module)
-            .ToList();
-        chosenModules.AddRange(routedModules);
-
-        int remainingToolSlots = Math.Max(0, MaximumToolsPerTurn - routedTools.Count);
-        List<(ModuleTool Tool, double Score, int Index)> moduleTools = new();
-        int toolIndex = 0;
-        foreach (IAssistantModule module in routedModules)
-        {
-            foreach (ModuleTool tool in module.Tools)
-            {
-                int keywordHits = CountKeywordHits(tool, words);
-                double lexical = TextVectorizer.Cosine(requestVector,
-                    TextVectorizer.Embed(tool.Name + " " + tool.Description + " " +
-                                         string.Join(' ', tool.RoutingKeywords)));
-                moduleTools.Add((tool, keywordHits * 2.0 + lexical, toolIndex++));
-            }
-        }
-
-        foreach ((ModuleTool tool, double score, int index) in moduleTools
-                     .Select(item => (item.Tool, item.Score, item.Index,
-                         Hits: CountKeywordHits(item.Tool, words)))
-                     .OrderByDescending(item => item.Hits > 0)
-                     .ThenByDescending(item => item.Score)
-                     .ThenBy(item => item.Index)
-                     .Select(item => (item.Tool, item.Score, item.Index))
-                     .Take(remainingToolSlots))
-        {
-            if (addedToolNames.Add(tool.Name))
-            {
-                routedTools.Add(tool);
-            }
-        }
-
-        // 3. Never exceed the cap, and never drop a core tool in favour of a bonus one.
-        if (routedTools.Count > MaximumToolsPerTurn)
-        {
-            routedTools = routedTools.Take(MaximumToolsPerTurn).ToList();
-        }
-
-        selectedModules = chosenModules;
+        selectedModules = ordered;
         return routedTools;
     }
 
-    private static IReadOnlyList<ModuleTool> SelectCoreTools(
-        IReadOnlyList<ModuleTool> tools, string userMessage, float[] requestVector)
-    {
-        const int coreToolBudget = 4;
-        if (tools.Count <= coreToolBudget)
-        {
-            return tools;
-        }
-
-        string[] words = userMessage.Split((char[]?)null,
-            StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-
-        return tools
-            .Select((tool, index) =>
-            {
-                int keywordHits = CountKeywordHits(tool, words);
-                double lexical = TextVectorizer.Cosine(requestVector,
-                    TextVectorizer.Embed(tool.Name + " " + tool.Description + " " +
-                                         string.Join(' ', tool.RoutingKeywords)));
-                // Stable index tie-break keeps the tool list deterministic for equal scores.
-                return (Tool: tool, Score: keywordHits * 2.0 + lexical, Index: index, Hits: keywordHits);
-            })
-            // Any phrase that genuinely name-drops what a hand does outranks every
-            // zero-hit filler, whatever the embedding noise on odd words agrees.
-            .OrderByDescending(item => item.Hits > 0)
-            .ThenByDescending(item => item.Score)
-            .ThenBy(item => item.Index)
-            .Take(coreToolBudget)
-            .Select(item => item.Tool)
-            .ToList();
-    }
-
-    private static int CountKeywordHits(ModuleTool tool, string[] words) =>
-        tool.RoutingKeywords.Count(keyword =>
-            words.Any(word => word.Contains(keyword, StringComparison.OrdinalIgnoreCase) ||
-                              keyword.Contains(word, StringComparison.OrdinalIgnoreCase)));
-
     /// <summary>
-    /// Lexical evidence for which modules deserve hands this turn, on the same scale
-    /// tool scoring uses (each matched keyword phrase adds like a hit does there).
-    /// This is a tie-breaker inside the router's existing judgment — the model still
-    /// sees the full sentence and decides what, if anything, to do — not a hard gate.
-    /// Words under three letters are ignored: two-letter fragments ("uh", "up") sit
-    /// inside too many phrases to mean anything, which is exactly how the original
-    /// miss happened.
+    /// What she can actually do, one line per enabled module with its tool names. This
+    /// feeds the system prompt's capability block AND search_capabilities; a generic
+    /// sentence once stood here, which is how her ability-discovery tool went blind.
     /// </summary>
-    private static double ModuleKeywordScore(IAssistantModule module, string[] words)
+    public string DescribeCapabilities()
     {
-        string[] informative = words.Where(word => word.Length >= 3).ToArray();
-        if (informative.Length == 0)
+        List<IAssistantModule> modules;
+        lock (_registryLock)
         {
-            return 0;
+            modules = _registrationOrder
+                .Where(module => !_disabledModuleIds.Contains(module.Id))
+                .ToList();
         }
 
-        int hits = module.Tools.SelectMany(tool => tool.RoutingKeywords)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .Count(keyword => informative.Any(word =>
-                word.Contains(keyword, StringComparison.OrdinalIgnoreCase) ||
-                keyword.Contains(word, StringComparison.OrdinalIgnoreCase)));
-        return hits * 2.0;
-    }
+        if (modules.Count == 0)
+        {
+            return string.Empty;
+        }
 
+        StringBuilder builder = new();
+        foreach (IAssistantModule module in modules)
+        {
+            builder.Append(module.DisplayName);
+            builder.Append(": ");
+            builder.AppendLine(string.Join(", ", module.Tools.Select(tool => tool.Name)));
+        }
 
-    private static float[] BuildModuleRoutingVector(IAssistantModule module)
-    {
-        // Repeated boilerplate from a large tool catalog used to drown out its useful
-        // terms. Keep each capability word once, then cache the result on registration.
-        string uniqueCapabilities = string.Join(' ', TextVectorizer.Tokenize(module.CapabilityDescription)
-            .Distinct(StringComparer.Ordinal));
-        return TextVectorizer.Embed(module.DisplayName + " " + module.Purpose + " " + uniqueCapabilities);
+        return builder.ToString().TrimEnd();
     }
 
     /// <summary>Runs one tool call through the sandbox and reports what happened.</summary>
@@ -581,13 +495,13 @@ public sealed class ModuleHost : IAsyncDisposable
     }
 
     /// <summary>
-    /// Tool definitions are already supplied separately to the model for each request.
-    /// Avoid copying every installed module and every tool name into every system prompt.
+    /// When a module is replaced: the same id gets a fresh tools list; the old
+    /// capability text lives on only through the replacement registration.
+    /// Note: tool definitions themselves are supplied to the model every request in
+    /// RouteTools, so this prose stays a module-level map that search_capabilities
+    /// can grep — never a re-listing of every tool description.
     /// </summary>
-    public string DescribeCapabilities() =>
-        "Relevant tools are selected for each request. Use only tools supplied for this turn, " +
-        "and never claim a capability that is not available in its tool list. " +
-        "Act with tools instead of narrating plans, and report what actually happened.";
+    /// <summary>Rolls with the sandbox in front of every call.</summary>
 
     /// <summary>Panels contributed by modules, for the shell to host.</summary>
     public IReadOnlyList<ModuleSurface> GetSurfaces()

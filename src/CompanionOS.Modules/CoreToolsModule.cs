@@ -150,8 +150,22 @@ public sealed class CoreToolsModule : IAssistantModule
                     return ToolResult.Ok("Nothing in memory matches that yet.");
                 }
 
-                string text = string.Join("; ", memories.Select(memory => memory.Title));
-                return ToolResult.Ok($"Remembered: {text}.", displayText: text);
+                // Titles plus the fact itself. A fact lives in the content; the 2026-10-27
+                // audit caught the old title-only answer capping her entire knowledge
+                // base at node names.
+                string text = string.Join(";\n", memories.Select(memory =>
+                {
+                    string content = memory.Content.Trim();
+                    if (content.Length > 220)
+                    {
+                        content = content[..200] + "…";
+                    }
+
+                    return content.Length > 0 && content != memory.Title
+                        ? $"{memory.Title}: {content}"
+                        : memory.Title;
+                }));
+                return ToolResult.Ok(text, displayText: string.Join("; ", memories.Select(memory => memory.Title)));
             }
 
             case "forget_memory":

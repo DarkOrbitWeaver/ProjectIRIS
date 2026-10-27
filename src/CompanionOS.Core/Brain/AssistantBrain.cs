@@ -31,7 +31,13 @@ namespace CompanionOS.Core.Brain;
 /// </summary>
 public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDisposable
 {
-    private const int MaximumToolRounds = 4;
+    /// <summary>
+    /// Eight agentic rounds. Four once cut real chains (scan → filter → act → verify)
+    /// mid-work and fell back to a permission-asking canned line. Eight keeps the
+    /// common chains inside one turn; the loop still ends the moment she stops calling
+    /// tools, so chatty models pay no tax.
+    /// </summary>
+    private const int MaximumToolRounds = 8;
 
     private readonly SettingsStore _settings;
     private readonly EventBus _events;
@@ -491,6 +497,7 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
         string? lastToolFailureDetail = null;
         HashSet<string> uncertainTools = new(StringComparer.OrdinalIgnoreCase);
         bool honestyRetryUsed = false;
+        bool lengthContinued = false;
 
         for (int round = 0; round < MaximumToolRounds; round++)
         {
@@ -500,7 +507,7 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
             StringBuilder speechBuffer = new();
             bool maySpeakWhileGenerating = origin.Equals("voice", StringComparison.OrdinalIgnoreCase) &&
                                            routedTools.Count == 0 && _settings.Current.Voice.SpeakReplies &&
-                                           !honestyRetryUsed;
+                                           !honestyRetryUsed && !lengthContinued;
             bool streamedAnySpeech = false;
             Task speechTail = Task.CompletedTask;
             ModelTurn turn = await _modelClient.StreamChatAsync(
@@ -543,6 +550,31 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
             if (turn.ToolCalls.Count == 0)
             {
                 answerText = turn.Text.Length > 0 ? turn.Text : roundText.ToString().Trim();
+
+                // The length limit is a physical wall, not a decision. When the server
+                // says the answer was cut, she is handed her own cut text and told to
+                // continue from exactly where it stopped — the ModelClient used to
+                // swallow mid-tool-call truncations entirely, which read downstream as
+                // "she chose not to act".
+                bool truncation = string.Equals(turn.FinishReason, "length", StringComparison.OrdinalIgnoreCase) ||
+                                  string.Equals(turn.FinishReason, "max_tokens", StringComparison.OrdinalIgnoreCase);
+                if (truncation && !lengthContinued)
+                {
+                    lengthContinued = true;
+                    IrisEvent.Log("Brain", "turn.length_continue", LogLevel.Info,
+                        message: "The length limit cut this answer; she is told to continue from where it stopped.",
+                        data: new Dictionary<string, string?>
+                        {
+                            ["chars_before_cut"] = answerText.Length.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                        });
+                    messages.Add(ChatMessage.Assistant(turn.Text));
+                    messages.Add(ChatMessage.System(
+                        "Your previous reply was cut off by the length limit before it finished. Continue from exactly " +
+                        "where it stopped. Do not repeat anything already written. When the work and the answer are " +
+                        "complete, stop."));
+                    answerSpokenDuringGeneration = false;
+                    continue;
+                }
 
                 // The gate is receipts, not words. Regex never judges her sentences again:
                 // every pattern built on her output eventually punished truth ("the video
@@ -623,18 +655,26 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
 
                 if (!ToolArgumentsParser.TryParse(call.ArgumentsJson, out JsonElement arguments))
                 {
+                    // The schema is the corrective evidence a small model needs: without
+                    // the keys, it used to re-emit the same broken arguments and burn
+                    // another round on a canned "I should ask for the missing details".
+                    ModuleTool? routedDefinition = routedTools.FirstOrDefault(candidate =>
+                        candidate.Name.Equals(call.Name, StringComparison.OrdinalIgnoreCase));
+                    string argumentHelp = routedDefinition is null
+                        ? string.Empty
+                        : " " + DescribeRequiredArguments(routedDefinition);
                     ToolResult invalidArguments = ToolResult.Fail(
-                        "I did not run that action because its arguments were invalid. I should ask for the missing details and try again.");
+                        $"Invalid arguments for {call.Name}.{argumentHelp} Re-call the action with exactly those keys.");
                     _journal.RecordToolResult(turnId, operationId, JournalToolStatus.Failed);
                     messages.Add(ChatMessage.ToolResult(call.Id, call.Name, invalidArguments.ModelText));
                     toolLedger.Add($"{label}: not run (invalid arguments)");
                     continue;
                 }
 
-                if (uncertainTools.Contains(call.Name))
+                if (uncertainTools.Contains($"{call.Name}|{call.ArgumentsJson ?? string.Empty}", StringComparer.OrdinalIgnoreCase))
                 {
                     ToolResult notRepeated = ToolResult.Fail(
-                        $"I did not repeat {label}: the earlier attempt may already have completed. Check the current state first.");
+                        $"I did not repeat {label}: an identical attempt is still unconfirmed. Check the current state first.");
                     _journal.RecordToolResult(turnId, operationId, JournalToolStatus.Failed);
                     messages.Add(ChatMessage.ToolResult(call.Id, call.Name, notRepeated.ModelText));
                     toolLedger.Add($"{label}: not repeated");
@@ -663,7 +703,7 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
 
                 if (result.IsOutcomeUncertain)
                 {
-                    uncertainTools.Add(call.Name);
+                    uncertainTools.Add($"{call.Name}|{call.ArgumentsJson ?? string.Empty}");
                 }
 
                 anyToolSucceeded |= result.Succeeded;
@@ -702,7 +742,7 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
         {
             answerText = (finalAnswer.ToString().Trim() + "\n\n" +
                           $"I stopped after {toolLedger.Count} step(s) without finishing: {string.Join("; ", toolLedger)}. " +
-                          "Tell me if you want me to continue.").Trim();
+                          "The receipts are on record for next time.").Trim();
         }
         else if (string.IsNullOrWhiteSpace(answerText) && toolLedger.Count > 0)
         {

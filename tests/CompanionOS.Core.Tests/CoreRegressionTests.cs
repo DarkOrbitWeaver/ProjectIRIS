@@ -1234,8 +1234,12 @@ public sealed class CoreRegressionTests
     }
 
     [Fact]
-    public async Task ModuleRouterFindsRelevantToolsBeyondTheFirstEightDeclarations()
+    public async Task TheRouterOffersTheWholeManifestSoSheDecides()
     {
+        // 2026-10-27 audit: the scored pre-gate once hid open_application from "Uh open
+        // up calculator". Her hands are no longer decided by keyword lottery — every
+        // declared tool is on the table every turn, and the capability text she is
+        // shown actually names her abilities, so search_capabilities can answer.
         EventBus events = new();
         string temp = Path.Combine(Path.GetTempPath(), $"iris-router-{Guid.NewGuid():N}");
         Directory.CreateDirectory(temp);
@@ -1259,20 +1263,53 @@ public sealed class CoreRegressionTests
                 "Send a Telegram message to Alex", out IReadOnlyList<IAssistantModule> selected);
 
             Assert.Contains(module, selected);
+            // The whole declared toolset is offered — the requested hand, the fillers,
+            // all of it. What she calls is her judgment, not the router's.
+            Assert.Equal(tools.Count, routed.Count);
             Assert.Contains(routed, tool => tool.Name == "send_telegram_message");
-            // The chosen module hands the model its complete toolset (cap raised from
-            // 8 so requests naming unknown things still surface the right hand), so the
-            // zero-hit calendar fillers ride along — but only behind the signal. The
-            // requested hand must lead the offer, never trail it by lottery.
-            List<ModuleTool> offered = routed.ToList();
-            Assert.True(
-                offered.FindIndex(tool => tool.Name == "send_telegram_message")
-                < offered.FindIndex(tool => tool.Name == "calendar_0"),
-                "The requested tool must outrank the zero-hit filler declared before it.");
+            Assert.Contains("send_telegram_message", host.DescribeCapabilities());
+            Assert.Contains("Telegram", host.DescribeCapabilities());
+            // The manifest text exists to be grep-able by search_capabilities: tool
+            // names, module names, no prose-only filler.
+            Assert.Contains("calendar_0", host.DescribeCapabilities());
+        }
+        finally
+        {
+            Directory.Delete(temp, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task RouterTruncationIsLoggedReceiptNotSilenceAndCoreBodiesLead()
+    {
+        // The cap only guards a plugin explosion, and when it binds the receipt must
+        // say so — never silently chewing a hand away. Also: always-available bodies
+        // are ordered first so capacity cuts can never orphan her reflexes.
+        EventBus events = new();
+        string temp = Path.Combine(Path.GetTempPath(), $"iris-router-cap-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(temp);
+        SandboxGuard sandbox = new(events,
+            new FileAuditTrail(Path.Combine(temp, "audit.jsonl")),
+            new PermissionGrantStore(Path.Combine(temp, "permissions.json")));
+        await using ModuleHost host = new(new SettingsStore(), events, sandbox, memory: null!);
+        List<ModuleTool> oversized = Enumerable.Range(0, 50)
+            .Select(index => new ModuleTool($"toy_{index}", $"Toy {index}.", ToolTier.Reflex, "{}", "toy"))
+            .ToList();
+        TestAssistantModule optional = new("toys", "Toys", "Toys and gadgets.", oversized);
+        TestAssistantModule core = new("core", "Core Senses",
+            "Memory, eyes, sleep and self-awareness — always available.",
+            [new ModuleTool("remember", "Store a durable fact.", ToolTier.Reflex, "{}", "remember")],
+            alwaysAvailable: true);
+
+        try
+        {
+            await host.RegisterAsync(optional);
+            await host.RegisterAsync(core);
+
+            IReadOnlyList<ModuleTool> routed = host.RouteTools("toy", out _);
+
             Assert.True(routed.Count <= ModuleHost.MaximumToolsPerTurn);
-            Assert.DoesNotContain("calendar_0", host.DescribeCapabilities());
-            // Terse on purpose, but room for the act-don't-narrate guidance sentence.
-            Assert.True(host.DescribeCapabilities().Length < 260);
+            Assert.Contains("remember", routed.Select(tool => tool.Name));
         }
         finally
         {
@@ -2477,13 +2514,14 @@ public sealed class CoreRegressionTests
     }
 
     private sealed class TestAssistantModule(string id, string name, string purpose,
-        IReadOnlyList<ModuleTool> tools) : IAssistantModule
+        IReadOnlyList<ModuleTool> tools, bool alwaysAvailable = false) : IAssistantModule
     {
         public string Id => id;
         public string DisplayName => name;
         public string Purpose => purpose;
         public string CapabilityDescription => string.Join(' ', tools.Select(tool => tool.Description));
         public IReadOnlyList<ModuleTool> Tools => tools;
+        public bool AlwaysAvailable => alwaysAvailable;
         public Task InitializeAsync(ModuleContext context, CancellationToken cancellationToken) => Task.CompletedTask;
         public Task<ToolResult> ExecuteAsync(ToolInvocation invocation, CancellationToken cancellationToken) =>
             Task.FromResult(ToolResult.Ok("test"));

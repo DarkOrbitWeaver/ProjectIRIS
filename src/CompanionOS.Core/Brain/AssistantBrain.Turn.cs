@@ -276,10 +276,20 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
     private void RememberExchange(string userText, string answerText, IReadOnlyList<string> toolLedger,
         bool toolsSucceeded)
     {
+        string durableAnswer = answerText;
+        if (toolLedger.Count > 0)
+        {
+            // Tool receipts ride inside the assistant message: the next turn still
+            // knows what ran, what failed, and under which real names. Evidence that
+            // used to die with the loop (why the same bad-playlist refusal repeated
+            // turn after turn) now keeps working across the whole session window.
+            durableAnswer = $"{answerText} [receipts: {string.Join("; ", toolLedger.Take(6))}]";
+        }
+
         lock (_historyLock)
         {
             _history.Add(ChatMessage.User(userText));
-            _history.Add(ChatMessage.Assistant(answerText));
+            _history.Add(ChatMessage.Assistant(durableAnswer));
 
             int maximumMessages = Math.Max(4, _settings.Current.Memory.ConversationWindowMessages);
             while (_history.Count > maximumMessages)
@@ -325,6 +335,54 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
     {
         int statusCut = entry.LastIndexOf(':');
         return (statusCut >= 0 ? entry[..statusCut] : entry).Trim();
+    }
+
+    /// <summary>
+    /// The corrective evidence for bad tool arguments: which keys are required, which
+    /// are accepted. A 4B model re-emits the same broken JSON without this; with it,
+    /// the next attempt usually lands.
+    /// </summary>
+    private static string DescribeRequiredArguments(ModuleTool tool)
+    {
+        try
+        {
+            using JsonDocument schema = JsonDocument.Parse(tool.ParametersJson);
+            JsonElement root = schema.RootElement;
+
+            List<string> required = [];
+            if (root.TryGetProperty("required", out JsonElement requiredElement) &&
+                requiredElement.ValueKind == JsonValueKind.Array)
+            {
+                foreach (JsonElement item in requiredElement.EnumerateArray())
+                {
+                    if (item.ValueKind == JsonValueKind.String)
+                    {
+                        required.Add(item.GetString() ?? string.Empty);
+                    }
+                }
+            }
+
+            List<string> accepted = [];
+            if (root.TryGetProperty("properties", out JsonElement properties) &&
+                properties.ValueKind == JsonValueKind.Object)
+            {
+                foreach (JsonProperty property in properties.EnumerateObject())
+                {
+                    accepted.Add(property.Name);
+                }
+            }
+
+            string text = required.Count > 0
+                ? $"it needs {string.Join(", ", required)}"
+                : "it takes no required keys";
+            return accepted.Count > 0
+                ? $"({text}; accepted keys: {string.Join(", ", accepted)})."
+                : $"({text}).";
+        }
+        catch (JsonException)
+        {
+            return string.Empty;
+        }
     }
 
     /// <summary>

@@ -67,7 +67,14 @@ public sealed class BrainProfile
     public int Threads { get; set; } = 6;
     public double Temperature { get; set; } = 0.7;
     public double TopP { get; set; } = 0.9;
-    public int MaxResponseTokens { get; set; } = 1024;
+
+    /// <summary>
+    /// 2048 default (was 1024): an agentic turn reasons, calls tools and reports in one
+    /// emission, and a 900-1024 ceiling cut exactly the chains that made her feel lazy.
+    /// The brain also continues from a "length" cut, so an old settings file can no
+    /// longer lose work — it just pays more rounds.
+    /// </summary>
+    public int MaxResponseTokens { get; set; } = 2048;
 
     /// <summary>Free-form extra command line switches, e.g. "--flash-attn on".
     /// image-min-tokens comes from llama.cpp itself: Qwen-VL needs at least 1024 image
@@ -120,7 +127,7 @@ public sealed class BrainSettings
             ProjectorFile = string.Empty,
             ContextTokens = 12288,
             Temperature = 0.9,
-            MaxResponseTokens = 1200
+            MaxResponseTokens = 2048
         },
         new BrainProfile
         {
@@ -131,7 +138,7 @@ public sealed class BrainSettings
             ProjectorFile = string.Empty,
             ContextTokens = 8192,
             Temperature = 0.6,
-            MaxResponseTokens = 900
+            MaxResponseTokens = 1600
         },
         new BrainProfile
         {
