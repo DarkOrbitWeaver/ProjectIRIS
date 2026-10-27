@@ -76,11 +76,11 @@ public sealed class LlamaServerHost : IAsyncDisposable
 
         // Ownership sweep: a force-killed earlier session (a crash, or the owner closing
         // the app mid-turn) leaves its llama-server running with the whole model awake
-        // in RAM and VRAM. Iris knows no process by its handle, but the machine she
-        // runs on has exactly one brain — hers — and every leftover not started by
-        // this session is a resource thief and is culled right before the fresh spawn
-        // below.
-        DemolishUnownedServers();
+        // in RAM and VRAM. Iris culls ONLY the stragglers that run her own runtime exe
+        // or the configured brain executable — the machine may legitimately host
+        // llama-server processes that are not hers, and she has no right to them
+        // (2026-10-27 audit).
+        DemolishUnownedServers(settings.Brain.ServerExecutablePath);
 
         string executablePath = ResolveExecutablePath(profile, settings.Brain.ServerExecutablePath);
         if (!File.Exists(executablePath))
@@ -222,16 +222,26 @@ public sealed class LlamaServerHost : IAsyncDisposable
     }
 
     /// <summary>
-    /// Kills every llama-server.exe this session does not own, so the fresh worker
-    /// below starts without competing for VRAM and RAM. Only runs for managed brain
-    /// profiles — an external endpoint is somebody else's to keep or kill.
+    /// Kills the llama-server processes SHE would run — those whose executable lies in
+    /// her runtimes folder or matches the configured brain executable — so the fresh
+    /// worker below starts without competing for VRAM and RAM. Any other llama-server
+    /// on the machine (the owner's own experiments, another tool's server) is somebody
+    /// else's to keep or kill, and is left strictly alone (2026-10-27 audit).
     /// </summary>
-    private static void DemolishUnownedServers()
+    private static void DemolishUnownedServers(string configuredExecutablePath)
     {
         foreach (Process straggler in Process.GetProcessesByName("llama-server"))
         {
             try
             {
+                if (!WasStartedForIris(straggler, configuredExecutablePath))
+                {
+                    CompanionLog.Trace("Runtime",
+                        $"Leaving llama-server (pid {straggler.Id}) alone: not started from her " +
+                        "runtimes folder or the configured brain executable.");
+                    continue;
+                }
+
                 CompanionLog.Info("Runtime",
                     $"Removing a leftover llama-server (pid {straggler.Id}) from an earlier session.");
                 straggler.Kill(entireProcessTree: true);
@@ -245,6 +255,55 @@ public sealed class LlamaServerHost : IAsyncDisposable
             {
                 straggler.Dispose();
             }
+        }
+    }
+
+    /// <summary>True when the process runs an executable that is hers: inside her
+    /// runtimes tree, or the exact file the brain settings point at. A llama-server
+    /// the OS denies reading is never assumed to be hers.</summary>
+    private static bool WasStartedForIris(Process straggler, string configuredExecutablePath)
+    {
+        try
+        {
+            string? imagePath = straggler.MainModule?.FileName;
+            if (string.IsNullOrWhiteSpace(imagePath))
+            {
+                CompanionLog.Trace("Runtime",
+                    $"Could not read the image path of llama-server (pid {straggler.Id}); leaving it alone.");
+                return false;
+            }
+
+            string runtimesRoot = Path.GetFullPath(CompanionPaths.RuntimesDirectory);
+            if (imagePath.StartsWith(runtimesRoot, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            if (!string.IsNullOrWhiteSpace(configuredExecutablePath) &&
+                File.Exists(configuredExecutablePath))
+            {
+                string configuredFullPath = Path.GetFullPath(configuredExecutablePath);
+                if (string.Equals(imagePath, configuredFullPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+
+                // The configured value may point at the leaf llama-server.exe while the
+                // process image equals that file, or vice versa; a directory prefix match
+                // covers both without pretending random llama-servers are hers.
+                string? configuredDirectory = Path.GetDirectoryName(configuredFullPath);
+                return !string.IsNullOrEmpty(configuredDirectory) &&
+                       imagePath.StartsWith(configuredDirectory, StringComparison.OrdinalIgnoreCase);
+            }
+
+            return false;
+        }
+        catch (Exception exception)
+        {
+            // Unreadable or protected: NOT hers, therefore not killable by inference.
+            CompanionLog.Trace("Runtime",
+                $"Could not identify llama-server (pid {straggler.Id}): {exception.Message}");
+            return false;
         }
     }
 

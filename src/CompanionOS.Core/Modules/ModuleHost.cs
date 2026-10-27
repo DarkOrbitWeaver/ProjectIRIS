@@ -123,17 +123,56 @@ public sealed class ModuleHost : IAsyncDisposable
             }
         }
 
+        bool initialized;
         try
         {
             await module.InitializeAsync(BuildContext(module), cancellationToken).ConfigureAwait(false);
+            initialized = true;
         }
         catch (Exception exception)
         {
-            CompanionLog.Error("Modules", $"Module '{module.Id}' failed to initialise.", exception);
+            // A failed module must not stay routable: its tools were already mapped onto it
+            // above, so the first call would hand the model an uninitialized module and the
+            // answer would be "Object reference not set..." — evidence the model cannot use
+            // (2026-10-27 audit). Retire the registration and say so instead of publishing
+            // a disagreement between the registry and reality.
+            CompanionLog.Error("Modules", $"Module '{module.Id}' failed to initialise; its tools are retired.", exception);
+            initialized = false;
+            RetireModuleFromRegistry(module.Id);
+            _events.Publish(new ModuleRegistryChangedEvent { ModuleId = module.Id, Change = "failed" });
+            _events.PublishNotice(
+                $"The {module.Id} module failed to start and is out of service: {exception.Message}.",
+                NoticeSeverity.Warning);
         }
 
-        _events.Publish(new ModuleRegistryChangedEvent { ModuleId = module.Id, Change = "installed" });
+        if (initialized)
+        {
+            _events.Publish(new ModuleRegistryChangedEvent { ModuleId = module.Id, Change = "installed" });
+        }
+
         RegistryChanged?.Invoke();
+    }
+
+    /// <summary>Detaches one module and its tools from the registry under the lock.</summary>
+    private void RetireModuleFromRegistry(string moduleId)
+    {
+        lock (_registryLock)
+        {
+            if (!_modulesById.Remove(moduleId, out IAssistantModule? module))
+            {
+                return;
+            }
+
+            _registrationOrder.Remove(module);
+
+            foreach (ModuleTool tool in module.Tools)
+            {
+                if (_toolOwners.TryGetValue(tool.Name, out IAssistantModule? owner) && owner.Id == moduleId)
+                {
+                    _toolOwners.Remove(tool.Name);
+                }
+            }
+        }
     }
 
     /// <summary>Removes a module and everything it contributed.</summary>
@@ -146,6 +185,7 @@ public sealed class ModuleHost : IAsyncDisposable
             {
                 return;
             }
+
             _registrationOrder.Remove(module);
 
             foreach (ModuleTool tool in module.Tools)

@@ -34,9 +34,14 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
         // "make up", which woke her cortex on ordinary chatter. "wake" already covers
         // "wake up", and a bare "up" is not a wake request — her own rest answer tells
         // the user to say "wake up".
+        //
+        // "think" must START the request. As a standalone command ("think", "think
+        // about the build options") it is the explicit wake order; inside chatter
+        // ("I think that song is nice") it used to load 7-8 GB of VRAM just so the
+        // brain could refuse to be involved (2026-10-27 audit).
         bool asksToWake = ContainsWholeWord(userText, "wake") ||
                           ContainsWholeWord(userText, "awake") ||
-                          ContainsWholeWord(userText, "think");
+                          StartsWithWord(userText, "think");
 
         if (_pendingGameRequest is not null &&
             DateTimeOffset.Now - _pendingGameRequest.RequestedAt < TimeSpan.FromMinutes(5))
@@ -101,6 +106,23 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
         return false;
     }
 
+    /// <summary>
+    /// True when <paramref name="word"/> is the request's first word, so "I think ..."
+    /// chatter can never wake the cortex while "think about the build options" does.
+    /// Letters at the end disqualify the hit, which keeps "thinking…" as chatter.
+    /// </summary>
+    private static bool StartsWithWord(string text, string word)
+    {
+        string trimmed = text.TrimStart();
+        if (!trimmed.StartsWith(word, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        int end = word.Length;
+        return end == trimmed.Length || !char.IsLetterOrDigit(trimmed[end]);
+    }
+
     /// <summary>Loads the cortex if needed, and reports honestly when it cannot.</summary>
     private async Task<bool> EnsureCortexReadyAsync(CancellationToken cancellationToken)
     {
@@ -131,9 +153,21 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
             }
 
             // The child is alive but the weights are still loading — the exact window
-            // that 503'd the owner's first typed message. Wait bounded, then answer
-            // honestly; never stream into a half-loaded brain.
-            DateTime deadline = DateTime.UtcNow.AddSeconds(15);
+            // that 503'd the owner's first typed message after a deep sleep. Wait as
+            // long as an explicit cold start would wait (the same StartupTimeoutSeconds
+            // knob, floor 15 s — some models simply load slowly from disk) and keep the
+            // interface informed. The hard-coded 15 s used to bounce the request into
+            // "not loaded — check the brain settings", which blamed healthy settings
+            // for a slow NVMe (2026-10-27 audit).
+            int waitSeconds = Math.Max(_settings.Current.Brain.StartupTimeoutSeconds, 15);
+            _events.Publish(new ModelStatusEvent
+            {
+                Status = ModelStatus.Loading,
+                ProfileName = profile.DisplayName,
+                Detail = $"Weights are still loading; waiting up to {waitSeconds} s."
+            });
+
+            DateTime deadline = DateTime.UtcNow.AddSeconds(waitSeconds);
             while (!_serverHost.IsReady && DateTime.UtcNow < deadline &&
                    !cancellationToken.IsCancellationRequested)
             {
@@ -429,7 +463,10 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
             string why = string.IsNullOrWhiteSpace(failureDetail)
                 ? string.Empty
                 : $" {failureDetail.TrimEnd('.').TrimEnd(',')}";
-            return $"That did not go through.{why} Want me to try another way?";
+            // The OS-owned truth states the block and her next move; it does not beg
+            // for permission to act ("Want me to try another way?" read as a stall in
+            // a system contract that says she acts and reports, 2026-10-27 audit).
+            return $"That did not go through.{why} I will take another route next.";
         }
 
         // One sentence, one segment: the 104-character version of this line was 5.8
@@ -437,13 +474,41 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
         return "Nothing got done that turn — say the word and I will go for it.";
     }
 
-    /// <summary>Keeps the first sentence of a refusal — the honest "why", not a wall.</summary>
+    /// <summary>
+    /// Keeps the first sentence of a refusal — the honest "why", not a wall.
+    /// The cut skips periods that live INSIDE a token — "youtu.be/", "setup.exe",
+    /// "12.5" — so the receipt never tears an address into a stump (2026-10-27 audit).
+    /// </summary>
     private static string FirstSentenceOf(string text)
     {
         string trimmed = (text ?? string.Empty).Trim();
-        int cut = trimmed.IndexOf('.');
+        int cut = FindSentenceEnd(trimmed);
         string sentence = cut >= 0 ? trimmed[..(cut + 1)] : trimmed;
         return sentence.Length <= 140 ? sentence : sentence[..140].TrimEnd() + "…";
+    }
+
+    private static int FindSentenceEnd(string text)
+    {
+        for (int i = 0; i < text.Length; i++)
+        {
+            if (text[i] != '.')
+            {
+                continue;
+            }
+
+            // A letter/digit straight after the dot means the dot is glued to the
+            // next word ("youtu.be"), so it is not a sentence boundary.
+            if (i + 1 < text.Length &&
+                !char.IsWhiteSpace(text[i + 1]) &&
+                text[i + 1] != '\'' && text[i + 1] != '"')
+            {
+                continue;
+            }
+
+            return i;
+        }
+
+        return -1;
     }
 
     private static Dictionary<string, string?> ReceiptData(IReadOnlyList<string> toolLedger) => new()

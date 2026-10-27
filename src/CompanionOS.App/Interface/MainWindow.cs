@@ -55,6 +55,19 @@ public sealed partial class MainWindow : Window
     private Border _titleOrb = null!;
     private Border _railOrb = null!;
     private Color _titleOrbColor = Palette.StateIdle;
+
+    // The label set below repaints at 12.5 Hz while she is awake; without a damper the
+    // strip rebuilt identical strings and brushes every tick for nothing
+    // (2026-10-27 audit). These hold what is currently ON SCREEN; a value only
+    // reaches its label when it genuinely moved.
+    private string _renderedStateText = string.Empty;
+    private Color? _renderedStateColor;
+    private string _renderedModelLine = string.Empty;
+    private string _renderedVram = string.Empty;
+    private string _renderedContext = string.Empty;
+    private string _renderedRam = string.Empty;
+    private string _renderedMicText = string.Empty;
+    private bool? _renderedMicOpen;
     private readonly TextBlock _stateLabel = new()
     {
         FontSize = Palette.FontCaption,

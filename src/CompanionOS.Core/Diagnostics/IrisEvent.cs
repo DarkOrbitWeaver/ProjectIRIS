@@ -27,6 +27,8 @@ public static class IrisEvent
     /// <summary>Raised for every event, so the diagnostics panel can live-tail it.</summary>
     public static event Action<EventRecord>? EventLogged;
 
+    private static string _writerDirectory = string.Empty;
+
     /// <summary>Points the diary at a folder. Call once from <see cref="CompanionLog.Configure"/>.</summary>
     public static void Configure(string directory)
     {
@@ -34,7 +36,17 @@ public static class IrisEvent
         {
             lock (WriteGate)
             {
-                _writer = new RollingJsonLinesWriter(directory, "iris", MaxFileBytes);
+                // Idempotent for the writer's home folder: re-pointing at what is
+                // already the active diary must not spawn a second instance, each of
+                // which would re-run the archive sweep. A genuinely NEW folder swaps
+                // the writer; the old one holds no open handles (it opens per append),
+                // so the swap leaks nothing (2026-10-27 audit).
+                string fullPath = Path.GetFullPath(directory);
+                if (!string.Equals(_writerDirectory, fullPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    _writer = new RollingJsonLinesWriter(directory, "iris", MaxFileBytes);
+                    _writerDirectory = fullPath;
+                }
             }
         }
         catch (Exception failure)

@@ -45,7 +45,7 @@ Everything below is an instance of one of those three.
 - [x] **SettingsStore.cs:56-74 — one malformed property (single typo'd enum) wipes the whole settings file to defaults.** Backup read also; then quarantine + `new CompanionSettings()`. User's profiles/hotkeys/endpoints destroyed by one bad line.
 - [x] **CoreToolsModule.cs:197-213 — `set_operating_mode` maps unknown input → Awake and unconditionally clears manual gaming.** Garbage/other modes wake her and drop the game hand-off as a side effect.
 - [x] **MusicPlayerModule.cs:1385-1389 — a corrupt file mid-playlist silently ends the whole queue.** No skip, no notice, no model feedback — silence is her only symptom.
-- [ ] **ModuleHost.cs:96-132 — a module whose `InitializeAsync` failed stays installed, enabled, and routable.** First call = "Object reference not set…" to the model.
+- [x] **ModuleHost.cs:96-132 — a module whose `InitializeAsync` failed stays installed, enabled, and routable.** First call = "Object reference not set…" to the model.
 
 ## P1 — HIGH (bad handling worth fixing in the same passes)
 
@@ -55,15 +55,15 @@ Everything below is an instance of one of those three.
 - [x] **MusicPlayerModule.cs:1077-1085/976-980 — corrupt playlist JSON swallowed as empty list, re-reported as "no playable tracks left on disk"** (points the investigation at disk, not data); `SavePlaylist` has no atomic write.
 - [x] **MusicPlayerModule.cs:135/735-737 — "play anything" while paused replays the current track** while its description promises a library pick — the vague-ask path lies.
 - [x] **MusicPlayerModule.cs:1120-1126 — track matching scores file names only.** Artists in folder names/tag data unfindable; "play Iron Maiden" fails unless the filename says so. (Her-IQ-evidence philosophy: match should return *candidates* for her to reason over, not fail empty.)
-- [ ] **AssistantBrain.cs:634-641 — `uncertainTools` blocks retries by tool NAME for the whole turn** even for a legitimately different target.
-- [ ] **AssistantBrain.Turn.cs:37-39 — bare word "think" wakes the cortex from sleep.** "I think that song is nice" loads 7-8B VRAM on chatter.
-- [ ] **LlamaServerHost.cs:229-249 — startup kills every `llama-server.exe` on the machine by name.** Collateral damage on a dev machine running other local servers.
-- [ ] **AssistantBrain.cs:133-143 + LlamaServerHost — cold wake waits max 15s for weights; slow load → canned "not loaded" bounce.** First request after a deep sleep can fail outright.
+- [x] **AssistantBrain.cs:634-641 — `uncertainTools` blocks retries by tool NAME for the whole turn** even for a legitimately different target.
+- [x] **AssistantBrain.Turn.cs:37-39 — bare word "think" wakes the cortex from sleep.** "I think that song is nice" loads 7-8B VRAM on chatter.
+- [x] **LlamaServerHost.cs:229-249 — startup kills every `llama-server.exe` on the machine by name.** Collateral damage on a dev machine running other local servers.
+- [x] **AssistantBrain.cs:133-143 + LlamaServerHost — cold wake waits max 15s for weights; slow load → canned "not loaded" bounce.** First request after a deep sleep can fail outright.
 - [x] **SettingsStore.cs:156-169 — voice "normalization" overwrites the user's saved voice list and resets `ChosenByUser=false`** (one Kosoro id in list → whole list replaced + picker nags again).
 - [x] **SettingsStore.cs:78-79 — settings.json rewritten on EVERY boot; user comments silently stripped.**
 - [x] **MainWindow.Layout.cs:174-187 + App.axaml.cs:31 — closing the window with CloseToOverlay=false leaves an invisible fully-running process** (no tray, no overlay, VRAM occupied, "quit" believed).
 - [x] **MemoryGraph.Queries.cs:36-58 — daily decay does a full fsync per node in a loop on the boot path, no transaction.** Tens of thousands of nodes = boot stall blocking every memory write.
-- [ ] **ShellModel.Events.cs:292-294 + ShellModel.cs:36 — recall chips assigned without change notification → silently never render** when the recall event lands after AssistantStarted.
+- [x] **ShellModel.Events.cs:292-294 + ShellModel.cs:36 — recall chips assigned without change notification → silently never render** when the recall event lands after AssistantStarted.
 - [x] **CompanionSettings.cs:15 — `SchemaVersion` is dead;** migrations key on magic strings, unknown-vintage files get heuristics.
 - [ ] **PluginHost.cs:976-997 — one global MCP semaphore serializes every MCP call AND the process handshake.** One slow server stalls all other plugins' calls.
 - [ ] **ModuleHost.cs:96-132 / RemoveWorkspacePath — `ResolveWorkspacePath` (SandboxGuard.cs:216-234) has zero callers; Scoped tier path-confinement is unenforced.**
@@ -82,8 +82,8 @@ Everything below is an instance of one of those three.
 - [x] CompanionLog.cs:137-143 — empty catches: once the log file fails (disk full/locked), logging dies silently forever; no once-flag, no notice.
 - [x] CompanionLog.cs:48 + CompanionRuntime.cs:110-116 — `LogLevel` "debug" maps to Info (no case); null LogLevel string NREs app at startup; log-level change does nothing until restart (no SettingsChangedEvent listener).
 - [x] TurnJournal.cs:269 — `.old` journal archives accumulate forever (rotation writes, nothing deletes).
-- [ ] Audit JSONL (SandboxGuard.cs:288-305) — unbounded forever-append.
-- [ ] MemoryGraph.Queries.cs:480-484 — corrupt timestamps parse as "right now" (inflates IsRecent, erases corruption evidence).
+- [x] Audit JSONL (SandboxGuard.cs:288-305) — unbounded forever-append.
+- [x] MemoryGraph.Queries.cs:480-484 — corrupt timestamps parse as "right now" (inflates IsRecent, erases corruption evidence).
 - [ ] MemoryGraph.cs:145-149 — daily backup copies main+WAL without a checkpoint (torn backup after power cut, silently trusted).
 - [x] SettingsStore — `SchemaVersion` bump path + migrations unversioned (see P1).
 - [ ] ShellModel.cs:410-419 — `IsTurnInProgress = false` mutated on worker thread (ConfigureAwait resumed thread), racing UI-thread writes.
@@ -92,15 +92,15 @@ Everything below is an instance of one of those three.
 - [x] MainWindow.Layout.cs:239-254 — `QuitAsync` has no failure guard (unlike SleepAsync): teardown exception = app never quits, `_isShuttingDown` already true.
 - [x] CompanionReadiness.cs:66-69 — bare `catch { return false; }` on music-folder probe (bad env var == "folder deleted").
 - [x] AutoStart.cs — both registry ops bare `catch { return false; }`, silent.
-- [ ] IrisEvent.cs:31-44 — `Configure` swaps writer without disposing old (single-call today; landmine).
+- [x] IrisEvent.cs:31-44 — `Configure` swaps writer without disposing old (single-call today; landmine).
 - [ ] Shared settings mutation: modules/`OnSituationUpdated` mutate `_settings.Current` and save from arbitrary threads (SettingsStore has no lock).
-- [ ] ModuleUi.cs:157-232 — task-card `_title`/`_detail` mutated cross-thread without sync (comment claims "Thread-safe.").
+- [x] ModuleUi.cs:157-232 — task-card `_title`/`_detail` mutated cross-thread without sync (comment claims "Thread-safe.").
 - [ ] BackgroundTaskManager.cs:265-286 — "give up after 5s" path leaks CTSs + `_slots`; tasks outlive shutdown.
 - [ ] ModuleHost.cs:616-630 — module disposal nonexistent (`IAssistantModule`/`Dispose` never awaited; SemaphoreSlim/CTS leak at shutdown only).
-- [ ] BuildReceiptAnswer fallback (AssistantBrain.Turn.cs:374) ends "Want me to try another way?" — a permission-ask in the OS-owned truth (inconsistent with act-first contract).
-- [ ] FirstSentenceOf (AssistantBrain.Turn.cs:387) cuts at first '.' anywhere — tears URLs/abbrevs ("youtu.be…").
-- [ ] MainWindow.Layout.cs:47-57 — `SyncFromModel` rebuilds labels + brush 12.5×/sec even when nothing changed.
-- [ ] SystemWatch.cs:379 — "ts" without timezone/offset, mixed with offset-stamped IrisEvent lines in the same logs dir.
+- [x] BuildReceiptAnswer fallback (AssistantBrain.Turn.cs:374) ends "Want me to try another way?" — a permission-ask in the OS-owned truth (inconsistent with act-first contract).
+- [x] FirstSentenceOf (AssistantBrain.Turn.cs:387) cuts at first '.' anywhere — tears URLs/abbrevs ("youtu.be…").
+- [x] MainWindow.Layout.cs:47-57 — `SyncFromModel` rebuilds labels + brush 12.5×/sec even when nothing changed.
+- [x] SystemWatch.cs:379 — "ts" without timezone/offset, mixed with offset-stamped IrisEvent lines in the same logs dir.
 
 ## P3 — LOW (note & sweep when in the file, never block release)
 
@@ -131,6 +131,7 @@ Everything below is an instance of one of those three.
 - 2026-10-27 (judgment ruling on appendix C line 135): the boss-approved 140-character spoken economy STAYS — it is a TTS-latency decision, and speech remains priced to be heard. The SpeechBudgetCharacters=240 setting was REMOVED rather than honored: the planner clamped every budget to 140 anyway, so the setting only ever lied about allowing more. The constant is now SpeechPlanner.SpeechEconomyCharacters. The silent dropping of list-shaped detail answers was NOT extended — pacing guidance, not a permission to monologue, remains the trade the boss chose.
 - 2026-10-27 (fix round, deliberately NOT fixed): ParakeetRecognizer decode lock (C-140 — native ABI restructure), MicrophoneCapture 90 ms ring (C-148 — capture-thread redesign), stage-specific failure receipts for the catch-all segment catch (C-144 — needs teardown of one error path into per-stage notices), plus the listed C-MEDIUMs. Each is larger than the risk window between commits; they stay explicitly open rather than half-fixed.
 - 2026-10-27 (fix round, cont. Batch 6 — infrastructure/integration): settings durability (malformed enum now degrades ONE property instead of destroying the whole file; boot save only fires when canonical content actually changed so user comments and formatting survive; voice legacy migration moved behind `CurrentSchemaVersion = 2` and stamps the file, so normalization stopped re-deciding the user's voice list every boot); CompanionLog got a once-flagged failure notice for an unwritable log file plus a null-safe `ParseLevelWord` (maps "debug" too), and CompanionRuntime keeps the log floor LIVE via a SettingsChangedEvent subscription (disposed on teardown); TurnJournal prunes keeps-2 archive rotation; the readiness/auto-start bare catches now log why they refused; CloseToOverlay=false now actually QUITS from the window close (and quit is exception-guarded so `desktop.Shutdown()` always runs); find_files honours the caller's cancellation token between directory entries; timer minutes parse twice-safe (invariant with both ',' and '.'), and the timer's spoken completion is observed and logged; MusicRailPanel.Rebind now rebinds to the model it was handed (subscribe follows attachment instead of the constructor-arg lottery). Deliberately NOT touched this batch: ModuleHost timeout/seq details (already correct — the real find_files gap was the missing token), the audit JSONL append design, BackgroundTaskManager bounds, shared-settings mutation locking (needs a full pass), and the P1 leftovers (uncertainTools naming, bare-wake "think", llama-server.exe kill-by-name, cold-wake 15s ceiling, failed-init modules remaining routable, MCP global semaphore). Tests green 125/125; the App project compiles clean against the reworked panels.
+- 2026-10-27 (fix round, cont. Batch 7 — brain/host/paint): a module whose InitializeAsync fails is now RETIRED from the registry (tools unmapped, "failed" event, notice) instead of staying routable to NRE at the model; verified the uncertainTools dedupe already keys on tool name + arguments (the name-only reshape the do-not-touch note wanted was already in place — P1-58 was stale); bare "think" only wakes the cortex when it STARTS the request ("think / think about X"), so "I think that song is nice" no longer loads 7-8 GB of VRAM on chatter; LlamaServerHost kills only llama-servers running HER runtime exe or the configured brain executable — other llama-servers on the machine are not hers and are left alone; the mid-load wait uses the same StartupTimeoutSeconds knob as a cold start (floor 15 s) with Loading status events, and the out-of-breath answer distinguishes "still loading — ask again in a moment" from "not loaded — check settings" (the old canned text blamed healthy settings for a slow disk); recall chips now render when the evidence lands after AssistantStarted (ChatEntry.RecalledMemories raises change, ChatView rebuilds the chip panel from the event); the audit trail rotates at 8 MB keeping two archives instead of appending forever; corrupt memory timestamps parse as ANCIENT with a logged warning instead of laundering garbage into "touched right now"; IrisEvent.Configure is idempotent for its home folder; the status strip repaints only values that moved at its 12.5 Hz tick; ModuleUi task cards mutate state under one lock with coherent snapshot publishes (the "Thread-safe." comment was aspirational); BuildReceiptAnswer now states the block and her next move instead of asking permission; FirstSentenceOf no longer tears "youtu.be" style URLs at the token dot; SystemWatch timestamps carry their UTC offset like the IrisEvent diary beside them. Still OPEN (recorded honestly): the MCP global semaphore (68), ModuleHost cap/cleanup (38/79/99), Scoped path confinement unenforced (69), memory-graph races + backup checkpointing (70-73, 87), shared settings mutation locking (96), BackgroundTaskManager CTS hygiene (98, protected family), SystemWatch toast (90), SyncFromModel beyond labels (102 partially: labels damped), remaining P2/P3s and the C-appendix leftovers. Tests green 125/125; App compiles clean.
 
 ## Appendix C — Sweep C findings (voice + perception senses)
 

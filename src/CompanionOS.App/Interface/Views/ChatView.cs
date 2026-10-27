@@ -736,44 +736,27 @@ public sealed class ChatView : UserControl
             Palette.TextPrimaryBrush);
         text.LineHeight = 22;
         bubbleContent.Children.Add(text);
-        entry.PropertyChanged += (_, _) => Dispatcher.UIThread.Post(() =>
+
+        // The recall evidence can arrive while the entry is already streaming, so the
+        // chips rebuild from the property change instead of being read once at row
+        // construction - when the event landed after AssistantStarted they never
+        // rendered at all (2026-10-27 audit).
+        WrapPanel?[] chips = [null];
+        entry.PropertyChanged += (_, eventArgs) => Dispatcher.UIThread.Post(() =>
         {
             text.Text = entry.IsStreaming ? entry.Text + " ▍" : entry.Text;
             if (!entry.IsStreaming && string.IsNullOrEmpty(entry.Text))
             {
                 text.Text = "…";
             }
+
+            if (eventArgs.PropertyName is nameof(ChatEntry.RecalledMemories) or null)
+            {
+                RebuildRecallChips(chips, entry, bubbleContent);
+            }
         });
 
-        if (entry.RecalledMemories.Count > 0 && _model.Runtime.Settings.Current.Interface.ShowRecallChips)
-        {
-            WrapPanel chips = new() { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 0) };
-            foreach (RecalledMemory memory in entry.RecalledMemories.Take(4))
-            {
-                Button chip = new()
-                {
-                    Background = new SolidColorBrush(Palette.Iris, 0.14),
-                    CornerRadius = new CornerRadius(Palette.RadiusPill),
-                    BorderThickness = new Thickness(0),
-                    Padding = new Thickness(10, 3),
-                    Margin = new Thickness(0, 0, 6, 0),
-                    Cursor = new Cursor(StandardCursorType.Hand),
-                    Focusable = true,
-                    Content = new TextBlock
-                    {
-                        Text = memory.Title,
-                        FontSize = Palette.FontCaption,
-                        FontWeight = FontWeight.Medium,
-                        Foreground = Palette.AccentSoftBrush
-                    }
-                };
-                ToolTip.SetTip(chip, DescribeRecall(memory));
-                chip.Click += (_, _) => _model.OpenMemoryNode(memory.NodeId);
-                chips.Children.Add(chip);
-            }
-
-            bubbleContent.Children.Add(chips);
-        }
+        RebuildRecallChips(chips, entry, bubbleContent);
 
         Border bubble = new()
         {
@@ -789,6 +772,54 @@ public sealed class ChatView : UserControl
 
         stack.Children.Add(bubble);
         return stack;
+    }
+
+    /// <summary>
+    /// Rebuilds the recall-chip panel for one her-row. The panel is owned by the row
+    /// through <paramref name="chips"/> so a late recall replaces the empty one instead
+    /// of stacking duplicates.
+    /// </summary>
+    private void RebuildRecallChips(WrapPanel?[] chips, ChatEntry entry, StackPanel bubbleContent)
+    {
+        if (chips[0] is WrapPanel staleChips)
+        {
+            bubbleContent.Children.Remove(staleChips);
+            chips[0] = null;
+        }
+
+        if (entry.RecalledMemories.Count == 0 ||
+            !_model.Runtime.Settings.Current.Interface.ShowRecallChips)
+        {
+            return;
+        }
+
+        WrapPanel panel = new() { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 0) };
+        foreach (RecalledMemory memory in entry.RecalledMemories.Take(4))
+        {
+            Button chip = new()
+            {
+                Background = new SolidColorBrush(Palette.Iris, 0.14),
+                CornerRadius = new CornerRadius(Palette.RadiusPill),
+                BorderThickness = new Thickness(0),
+                Padding = new Thickness(10, 3),
+                Margin = new Thickness(0, 0, 6, 0),
+                Cursor = new Cursor(StandardCursorType.Hand),
+                Focusable = true,
+                Content = new TextBlock
+                {
+                    Text = memory.Title,
+                    FontSize = Palette.FontCaption,
+                    FontWeight = FontWeight.Medium,
+                    Foreground = Palette.AccentSoftBrush
+                }
+            };
+            ToolTip.SetTip(chip, DescribeRecall(memory));
+            chip.Click += (_, _) => _model.OpenMemoryNode(memory.NodeId);
+            panel.Children.Add(chip);
+        }
+
+        bubbleContent.Children.Add(panel);
+        chips[0] = panel;
     }
 
     private static string DescribeRecall(RecalledMemory memory)

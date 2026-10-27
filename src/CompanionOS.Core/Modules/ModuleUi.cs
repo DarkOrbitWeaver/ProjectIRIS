@@ -156,6 +156,7 @@ public sealed class ModuleUiService
         /// never rewritten — a finished task stays as it finished.</summary>
         private volatile bool _terminal;
 
+        private readonly object _fieldLock = new();
         private string _title;
         private string _detail;
         private double? _progress;
@@ -204,23 +205,41 @@ public sealed class ModuleUiService
 
         public void Retitle(string title)
         {
-            if (_terminal || string.IsNullOrWhiteSpace(title))
+            if (string.IsNullOrWhiteSpace(title))
             {
                 return;
             }
 
-            _title = title;
+            lock (_fieldLock)
+            {
+                if (_terminal)
+                {
+                    return;
+                }
+
+                _title = title;
+            }
+
             Publish(ModuleFeedbackKind.TaskRunning, summary: null);
         }
 
         public void Step(string detail)
         {
-            if (_terminal || detail is null)
+            if (detail is null)
             {
                 return;
             }
 
-            _detail = detail;
+            lock (_fieldLock)
+            {
+                if (_terminal)
+                {
+                    return;
+                }
+
+                _detail = detail;
+            }
+
             Publish(ModuleFeedbackKind.TaskRunning, summary: null);
             IrisEvent.Log("Modules", "ui.task.step", LogLevel.Info,
                 data: new Dictionary<string, string?>
@@ -233,24 +252,37 @@ public sealed class ModuleUiService
 
         public void Progress(double current, double? total = null)
         {
-            if (_terminal || current < 0 || (total is { } known && known <= 0))
+            if (current < 0 || (total is { } known && known <= 0))
             {
                 return;
             }
 
-            _progress = current;
-            _total = total ?? _total;
+            lock (_fieldLock)
+            {
+                if (_terminal)
+                {
+                    return;
+                }
+
+                _progress = current;
+                _total = total ?? _total;
+            }
+
             Publish(ModuleFeedbackKind.TaskRunning, summary: null);
         }
 
         public void Complete(string summary)
         {
-            if (_terminal)
+            lock (_fieldLock)
             {
-                return;
+                if (_terminal)
+                {
+                    return;
+                }
+
+                _terminal = true;
             }
 
-            _terminal = true;
             Publish(ModuleFeedbackKind.TaskCompleted, summary);
             IrisEvent.Log("Modules", "ui.task.done", LogLevel.Info,
                 durationMs: System.Diagnostics.Stopwatch.GetElapsedTime(_startedTimestamp).TotalMilliseconds,
@@ -264,12 +296,16 @@ public sealed class ModuleUiService
 
         public void Fail(string summary)
         {
-            if (_terminal)
+            lock (_fieldLock)
             {
-                return;
+                if (_terminal)
+                {
+                    return;
+                }
+
+                _terminal = true;
             }
 
-            _terminal = true;
             Publish(ModuleFeedbackKind.TaskFailed, summary);
             IrisEvent.Log("Modules", "ui.task.failed", LogLevel.Warning,
                 durationMs: System.Diagnostics.Stopwatch.GetElapsedTime(_startedTimestamp).TotalMilliseconds,
@@ -283,12 +319,16 @@ public sealed class ModuleUiService
 
         public void Cancel(string summary)
         {
-            if (_terminal)
+            lock (_fieldLock)
             {
-                return;
+                if (_terminal)
+                {
+                    return;
+                }
+
+                _terminal = true;
             }
 
-            _terminal = true;
             Publish(ModuleFeedbackKind.TaskCancelled, summary);
             IrisEvent.Log("Modules", "ui.task.cancelled", LogLevel.Info,
                 data: new Dictionary<string, string?>
@@ -299,8 +339,26 @@ public sealed class ModuleUiService
                 });
         }
 
+        /// <summary>
+        /// Publishes a coherent frame: title/detail/progress are snapshot under the same
+        /// lock the mutators take, so a Step racing a Complete can never ship half-hold
+        /// state across the event bus (2026-10-27 audit: the "Thread-safe." comment was
+        /// aspirational).
+        /// </summary>
         private void Publish(ModuleFeedbackKind kind, string? summary)
         {
+            string title;
+            string detail;
+            double? progress;
+            double? total;
+            lock (_fieldLock)
+            {
+                title = _title;
+                detail = _detail;
+                progress = _progress;
+                total = _total;
+            }
+
             _events.Publish(new ModuleTaskFeedbackEvent
             {
                 TaskId = Id,
@@ -308,10 +366,10 @@ public sealed class ModuleUiService
                 ModuleName = _moduleName,
                 IconKey = _iconKey,
                 Kind = kind,
-                Title = _title,
-                Detail = _detail,
-                Progress = _progress,
-                Total = _total,
+                Title = title,
+                Detail = detail,
+                Progress = progress,
+                Total = total,
                 Summary = summary,
                 HoldMilliseconds = _hold
             });

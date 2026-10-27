@@ -376,7 +376,11 @@ public static class SystemWatch
     private static string Encode(string area, string message, string? data)
     {
         StringBuilder builder = new(96);
-        builder.Append(CultureInfo.InvariantCulture, $"{{\"ts\":\"{DateTime.Now:yyyy'-'MM'-'dd'T'HH':'mm':'ss'.'fff}\",\"pid\":{Environment.ProcessId}");
+        // The timestamp carries its UTC offset. IrisEvent lines in the same folder are
+        // offset-stamped; a bare local time here made the two diaries disagree about
+        // WHEN things happened whenever the clocks of two machines were compared
+        // across a DST change (2026-10-27 audit).
+        builder.Append(CultureInfo.InvariantCulture, $"{{\"ts\":\"{DateTimeOffset.Now:yyyy'-'MM'-'dd'T'HH':'mm':'ss'.'fffzzz}\",\"pid\":{Environment.ProcessId}");
         builder.Append(CultureInfo.InvariantCulture, $",\"area\":\"{Escape(area)}\"");
         builder.Append(CultureInfo.InvariantCulture, $",\"msg\":\"{Escape(message)}\"");
         if (!string.IsNullOrEmpty(data))

@@ -527,8 +527,20 @@ public sealed partial class MemoryGraph : IAsyncDisposable
     private static string ToText(DateTimeOffset value) =>
         value.ToString("O", CultureInfo.InvariantCulture);
 
-    private static DateTimeOffset ParseTime(string? text) =>
-        DateTimeOffset.TryParse(text, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out DateTimeOffset parsed)
-            ? parsed
-            : DateTimeOffset.Now;
+    private static DateTimeOffset ParseTime(string? text)
+    {
+        if (DateTimeOffset.TryParse(text, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind,
+                out DateTimeOffset parsed))
+        {
+            return parsed;
+        }
+
+        // A corrupt timestamp is not evidence that the memory was touched today.
+        // Round-tripping garbage as "right now" marked every bad row infinitely
+        // recent, so decay and consolidation treated corruption as life (2026-10-27
+        // audit). It now reads as ancient — honestly stale — with the damage on
+        // record instead of laundered.
+        CompanionLog.Warning("Memory", $"Unreadable timestamp stored in the graph: '{text}'.");
+        return DateTimeOffset.MinValue;
+    }
 }

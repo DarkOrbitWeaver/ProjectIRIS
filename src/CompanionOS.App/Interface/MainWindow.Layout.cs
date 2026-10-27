@@ -43,18 +43,39 @@ public sealed partial class MainWindow : Window
 
         bool modeIsAwake = _model.Mode == OperatingMode.Awake;
 
-        _stateLabel.Text = StatusOrb.WordForState(_model.State, modeIsAwake).ToUpperInvariant();
-        _stateLabel.Foreground = new SolidColorBrush(StatusOrb.ColorForState(_model.State));
         // The strip speaks in the board's captions: uppercase on letterspacing 0.88.
-        _modelLabel.Text = _model.ModelLine.ToUpperInvariant();
-        _vramLabel.Text = _model.VramText.ToUpperInvariant();
-        _contextLabel.Text = _model.ContextText.ToUpperInvariant();
-        _ramLabel.Text = _model.RamText.ToUpperInvariant();
+        string stateText = StatusOrb.WordForState(_model.State, modeIsAwake).ToUpperInvariant();
+        Color stateLabelColor = StatusOrb.ColorForState(_model.State);
+        if (!string.Equals(_renderedStateText, stateText, StringComparison.Ordinal) ||
+            _renderedStateColor != stateLabelColor)
+        {
+            _renderedStateText = stateText;
+            _renderedStateColor = stateLabelColor;
+            _stateLabel.Text = stateText;
+            _stateLabel.Foreground = new SolidColorBrush(stateLabelColor);
+        }
+
+        CopyWhenChanged(_model.ModelLine.ToUpperInvariant(), _renderedModelLine,
+            rendered => _renderedModelLine = rendered, _modelLabel);
+        CopyWhenChanged(_model.VramText.ToUpperInvariant(), _renderedVram,
+            rendered => _renderedVram = rendered, _vramLabel);
+        CopyWhenChanged(_model.ContextText.ToUpperInvariant(), _renderedContext,
+            rendered => _renderedContext = rendered, _contextLabel);
+        CopyWhenChanged(_model.RamText.ToUpperInvariant(), _renderedRam,
+            rendered => _renderedRam = rendered, _ramLabel);
+
         bool microphoneOpen = _runtime.Voice.IsListening;
-        _microphoneLabel.Text = microphoneOpen ? "MIC OPEN" : "MIC CLOSED";
+        string microphoneText = microphoneOpen ? "MIC OPEN" : "MIC CLOSED";
         // The board puts MIC OPEN in success green; cyan is her listening orb and
         // composer ring, not the status word.
-        _microphoneLabel.Foreground = microphoneOpen ? Palette.SuccessBrush : Palette.TextSecondaryBrush;
+        if (!string.Equals(_renderedMicText, microphoneText, StringComparison.Ordinal) ||
+            _renderedMicOpen != microphoneOpen)
+        {
+            _renderedMicText = microphoneText;
+            _renderedMicOpen = microphoneOpen;
+            _microphoneLabel.Text = microphoneText;
+            _microphoneLabel.Foreground = microphoneOpen ? Palette.SuccessBrush : Palette.TextSecondaryBrush;
+        }
 
         PermissionRequest? pendingPermission = _model.PendingPermission;
         if (pendingPermission is not null && pendingPermission != _shownPermission)
@@ -88,6 +109,19 @@ public sealed partial class MainWindow : Window
         }
         UpdateUiSyncCadence();
         SystemWatch.RecordSync((Stopwatch.GetTimestamp() - syncStarted) * 1_000.0 / Stopwatch.Frequency);
+    }
+
+    /// <summary>Writes one status-strip value onto its label only when it moved. The
+    /// comparison keeps the 80 ms sync tick from rebuilding identical text.</summary>
+    private void CopyWhenChanged(string next, string rendered, Action<string> setRendered, TextBlock label)
+    {
+        if (string.Equals(rendered, next, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        setRendered(next);
+        label.Text = next;
     }
 
     private void UpdateUiSyncCadence()

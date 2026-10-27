@@ -25,6 +25,7 @@ public sealed class ChatEntry : ObservableObject
     private string _text = string.Empty;
     private bool _isStreaming;
     private bool _isToolRunning;
+    private IReadOnlyList<RecalledMemory> _recalledMemories = Array.Empty<RecalledMemory>();
 
     public ChatRole Role { get; init; }
     public DateTimeOffset Time { get; init; } = DateTimeOffset.Now;
@@ -32,8 +33,16 @@ public sealed class ChatEntry : ObservableObject
     /// <summary>Turn that produced this line, for linking conversation and activity state.</summary>
     public string TurnId { get; init; } = string.Empty;
 
-    /// <summary>Memory evidence that contributed to this turn, shown as inspectable chips.</summary>
-    public IReadOnlyList<RecalledMemory> RecalledMemories { get; set; } = Array.Empty<RecalledMemory>();
+    /// <summary>
+    /// Memory evidence that contributed to this turn, shown as inspectable chips.
+    /// Assignments raise a change: the recall event used to land AFTER the streaming
+    /// entry existed and nothing ever re-rendered the row, silently (2026-10-27 audit).
+    /// </summary>
+    public IReadOnlyList<RecalledMemory> RecalledMemories
+    {
+        get => _recalledMemories;
+        set => SetProperty(ref _recalledMemories, value);
+    }
 
     public string Text
     {

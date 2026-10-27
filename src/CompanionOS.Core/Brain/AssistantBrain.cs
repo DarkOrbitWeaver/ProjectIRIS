@@ -407,8 +407,15 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
 
         if (!await EnsureCortexReadyAsync(cancellationToken).ConfigureAwait(false))
         {
-            const string noBrain = "My thinking model is not loaded, so I cannot reason about that yet. " +
-                                   "Check the brain settings and I will try again.";
+            // Two different truths need two different words: a brain still loading is
+            // "give me a moment", a missing model is a settings problem. Blaming the
+            // settings for a slow load sent the owner into a perfectly healthy
+            // configuration (2026-10-27 audit).
+            bool stillLoading = _serverHost.IsRunning;
+            string noBrain = stillLoading
+                ? "My brain is still loading its weights. Give me a moment, then ask again."
+                : "My thinking model is not loaded, so I cannot reason about that yet. " +
+                  "Check the brain settings and I will try again.";
             _events.Publish(new ConversationEvent
             {
                 Phase = ConversationPhase.AssistantCompleted,

@@ -313,6 +313,7 @@ public sealed class FileAuditTrail : IAuditTrail
 {
     private readonly SemaphoreSlim _writeGate = new(1, 1);
     private readonly string _filePath;
+    private const long MaximumAuditBytes = 8L * 1024 * 1024;
     private static readonly JsonSerializerOptions SerializerOptions = new() { WriteIndented = false };
 
     public FileAuditTrail(string filePath)
@@ -342,6 +343,7 @@ public sealed class FileAuditTrail : IAuditTrail
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(_filePath)!);
+            RotateIfFull();
             await File.AppendAllTextAsync(_filePath, line + Environment.NewLine, cancellationToken)
                 .ConfigureAwait(false);
         }
@@ -352,6 +354,46 @@ public sealed class FileAuditTrail : IAuditTrail
         finally
         {
             _writeGate.Release();
+        }
+    }
+
+    /// <summary>
+    /// Rotates the audit file into an archive when it grows past the bound, keeping the
+    /// two newest archives. The trail used to be a forever-append: months of activity
+    /// left one jsonl file that every ReadRecent walked from the start, growing without
+    /// bound (2026-10-27 audit).
+    /// </summary>
+    private void RotateIfFull()
+    {
+        FileInfo file = new(_filePath);
+        if (!file.Exists || file.Length < MaximumAuditBytes)
+        {
+            return;
+        }
+
+        string archive = _filePath + $".{DateTimeOffset.Now:yyyyMMdd-HHmmss}.old";
+        File.Move(_filePath, archive, overwrite: true);
+
+        string pattern = Path.GetFileName(_filePath) + ".*.old";
+        string? directory = Path.GetDirectoryName(_filePath);
+        if (directory is null)
+        {
+            return;
+        }
+
+        List<string> archives = Directory.EnumerateFiles(directory, pattern)
+            .OrderByDescending(File.GetLastWriteTime)
+            .ToList();
+        foreach (string stale in archives.Skip(2))
+        {
+            try
+            {
+                File.Delete(stale);
+            }
+            catch (Exception exception)
+            {
+                CompanionLog.Trace("Audit", $"Could not delete a stale audit archive: {exception.Message}");
+            }
         }
     }
 
