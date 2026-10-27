@@ -139,6 +139,18 @@ public sealed class ModuleHost : IAsyncDisposable
             CompanionLog.Error("Modules", $"Module '{module.Id}' failed to initialise; its tools are retired.", exception);
             initialized = false;
             RetireModuleFromRegistry(module.Id);
+
+            // A retired module that already grabbed IDisposable state in its constructor
+            // (a CTS, timers) loses it here: a failed start must not leave that behind.
+            try
+            {
+                (module as IDisposable)?.Dispose();
+            }
+            catch (Exception disposeFailure)
+            {
+                CompanionLog.Trace("Modules",
+                    $"Module '{module.Id}' did not dispose after a failed start: {disposeFailure.Message}");
+            }
             _events.Publish(new ModuleRegistryChangedEvent { ModuleId = module.Id, Change = "failed" });
             _events.PublishNotice(
                 $"The {module.Id} module failed to start and is out of service: {exception.Message}.",
@@ -204,6 +216,20 @@ public sealed class ModuleHost : IAsyncDisposable
         catch (Exception exception)
         {
             CompanionLog.Warning("Modules", $"Module '{moduleId}' did not shut down cleanly: {exception.Message}");
+        }
+        finally
+        {
+            // Same last sweep as DisposeAsync: ShutdownAsync covers the interface's
+            // idea of clean; modules carrying extra IDisposable state get it released
+            // here, guarded so a dirty Dispose cannot escalate into a registry break.
+            try
+            {
+                (module as IDisposable)?.Dispose();
+            }
+            catch (Exception exception)
+            {
+                CompanionLog.Warning("Modules", $"Module '{moduleId}' did not dispose cleanly: {exception.Message}");
+            }
         }
 
         _events.Publish(new ModuleRegistryChangedEvent { ModuleId = moduleId, Change = "removed" });
@@ -585,9 +611,28 @@ public sealed class ModuleHost : IAsyncDisposable
             {
                 await module.ShutdownAsync().ConfigureAwait(false);
             }
-            catch
+            catch (Exception exception)
             {
-                // Shutting down anyway.
+                // Shutting down anyway — but honestly: the fault is on record, the same
+                // way UnregisterAsync reports a dirty release.
+                CompanionLog.Warning("Modules",
+                    $"Module '{module.Id}' did not shut down cleanly: {exception.Message}");
+            }
+            finally
+            {
+                // ShutdownAsync covers the interface's idea of clean, but some modules
+                // carry extra state behind IDisposable (a timer, a player session).
+                // Disposing it here is the last sweep, guarded so one misbehaving module
+                // cannot stall her exit.
+                try
+                {
+                    (module as IDisposable)?.Dispose();
+                }
+                catch (Exception exception)
+                {
+                    CompanionLog.Warning("Modules",
+                        $"Module '{module.Id}' did not dispose cleanly: {exception.Message}");
+                }
             }
         }
     }

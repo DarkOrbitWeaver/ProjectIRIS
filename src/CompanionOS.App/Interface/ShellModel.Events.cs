@@ -24,7 +24,9 @@ public sealed partial class ShellModel : ObservableObject
         var frame = await _runtime.Perception.LookAsync(true).ConfigureAwait(false);
         if (frame is null)
         {
-            AddSystemMessage("I could not see the screen just now.");
+            // LookAsync's ConfigureAwait(false) put this continuation on a pool thread;
+            // the collection change is still raised on the UI thread.
+            OnUiThread(() => AddSystemMessage("I could not see the screen just now."));
             return;
         }
 

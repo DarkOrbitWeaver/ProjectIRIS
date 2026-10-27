@@ -417,14 +417,20 @@ public sealed partial class ShellModel : ObservableObject
         _pendingUserDetail = attachedImageDataUri is not null ? "Looked at your screen" : string.Empty;
 
         _runtime.Voice.StopSpeaking();
-        IsTurnInProgress = true;
+
+        // One marshal for BOTH edges of the flag. The composer path arrives on the UI
+        // thread, but AskAboutScreenAsync arrives AFTER LookAsync's ConfigureAwait(false)
+        // on a pool thread — and IsTurnInProgress drives the send button and the activity
+        // rail through PropertyChanged. Raising that off the UI thread is exactly the
+        // binding corruption the shell pretends not to have (2026-10-27 audit).
+        OnUiThread(() => IsTurnInProgress = true);
         try
         {
             await _runtime.Brain.SendMessageAsync(text, "text", attachedImageDataUri).ConfigureAwait(false);
         }
         finally
         {
-            IsTurnInProgress = false;
+            OnUiThread(() => IsTurnInProgress = false);
         }
     }
 
