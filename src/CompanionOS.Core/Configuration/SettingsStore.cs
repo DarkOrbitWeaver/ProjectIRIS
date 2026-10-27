@@ -21,7 +21,7 @@ public sealed class SettingsStore
         PropertyNameCaseInsensitive = true,
         ReadCommentHandling = JsonCommentHandling.Skip,
         AllowTrailingCommas = true,
-        Converters = { new JsonStringEnumConverter() }
+        Converters = { new TolerantEnumConverterFactory() }
     };
 
     private readonly object _saveLock = new();
@@ -48,6 +48,7 @@ public sealed class SettingsStore
         if (!File.Exists(path))
         {
             Current = new CompanionSettings();
+            Normalize();
             Save();
             CompanionLog.Info("Settings", "Created a fresh settings file with defaults.");
             return Current;
@@ -56,27 +57,46 @@ public sealed class SettingsStore
         CompanionSettings? loaded = TryRead(path);
         if (loaded is null)
         {
-            string backupPath = path + ".bak";
-            loaded = TryRead(backupPath);
+            loaded = TryRead(path + ".bak");
             if (loaded is not null)
             {
                 LoadWarning = "Your settings file was damaged, so Iris restored the last good backup.";
                 CompanionLog.Warning("Settings", "Primary settings file unreadable; backup restored.");
+
+                // The on-disk file still holds the damaged text, so rewriting IS the
+                // repair here; the comment-preserving rule below does not apply.
+                Current = loaded;
+                Normalize();
+                Save();
+                return Current;
             }
-            else
-            {
-                string quarantine = path + $".damaged-{DateTime.Now:yyyyMMdd-HHmmss}";
-                TryMove(path, quarantine);
-                loaded = new CompanionSettings();
-                LoadWarning = "Your settings file could not be read, so Iris started from defaults. " +
-                              $"The old file was kept as {Path.GetFileName(quarantine)}.";
-                CompanionLog.Error("Settings", "No readable settings or backup; defaults applied.");
-            }
+
+            string quarantine = path + $".damaged-{DateTime.Now:yyyyMMdd-HHmmss}";
+            TryMove(path, quarantine);
+            Current = new CompanionSettings();
+            Normalize();
+            LoadWarning = "Your settings file could not be read, so Iris started from defaults. " +
+                          $"The old file was kept as {Path.GetFileName(quarantine)}.";
+            CompanionLog.Error("Settings", "No readable settings or backup; defaults applied.");
+            Save();
+            return Current;
         }
 
         Current = loaded;
+
+        // Canonical snapshot of what the file MEANT, taken before coercion. The boot
+        // save is skipped unless normalization actually changed a value, decided on
+        // canonical serializations so user comments and formatting never count as a
+        // change — the old unconditional boot-save destroyed every comment a user had
+        // typed, though the reader deliberately tolerates them (2026-10-27 audit).
+        string loadedJson = JsonSerializer.Serialize(Current, _serializerOptions);
         Normalize();
-        Save();
+        string normalizedJson = JsonSerializer.Serialize(Current, _serializerOptions);
+        if (!string.Equals(loadedJson, normalizedJson, StringComparison.Ordinal))
+        {
+            Save();
+        }
+
         return Current;
     }
 
@@ -93,6 +113,47 @@ public sealed class SettingsStore
         voice.HttpEndpoint ??= "http://127.0.0.1:8880/v1";
         voice.PocketEndpoint ??= "http://127.0.0.1:18765";
         voice.KokoroEndpoint ??= "http://127.0.0.1:18766";
+
+        if (Current.SchemaVersion < CompanionSettings.CurrentSchemaVersion)
+        {
+            MigrateLegacyVoiceSettings(voice);
+            int previousVersion = Current.SchemaVersion;
+            Current.SchemaVersion = CompanionSettings.CurrentSchemaVersion;
+            CompanionLog.Info("Settings",
+                $"Settings migrated from schema version {previousVersion} to {CompanionSettings.CurrentSchemaVersion}.");
+        }
+
+        voice.PocketMaxThreads = Math.Clamp(voice.PocketMaxThreads, 1, 2);
+        if (Current.Ears.MaxRecognitionThreads <= 0)
+        {
+            Current.Ears.MaxRecognitionThreads = 2;
+        }
+        else
+        {
+            Current.Ears.MaxRecognitionThreads = Math.Clamp(Current.Ears.MaxRecognitionThreads, 1, 4);
+        }
+
+        // The old default missed quiet speech on many headset mics. Preserve custom
+        // thresholds, but migrate that exact historical default to a more forgiving one.
+        if (Math.Abs(Current.Ears.VoiceThreshold - 0.055) < 0.000001)
+        {
+            Current.Ears.VoiceThreshold = 0.025;
+        }
+
+        if (string.IsNullOrWhiteSpace(voice.PocketLanguage))
+        {
+            voice.PocketLanguage = "english_18m_2026-10";
+        }
+    }
+
+    /// <summary>
+    /// The schema-1-to-2 migration, keyed on <see cref="CompanionSettings.CurrentSchemaVersion"/>
+    /// rather than re-derived from magic strings at every boot. A user's saved voice
+    /// list and ChosenByUser flag must not be re-decided on each start whenever a
+    /// legacy id happens to be in the list (2026-10-27 audit).
+    /// </summary>
+    private void MigrateLegacyVoiceSettings(VoiceSettings voice)
+    {
         if (voice.Engine.Equals("http", StringComparison.OrdinalIgnoreCase) &&
             voice.HttpEndpoint.TrimEnd('/').Equals("http://127.0.0.1:8880/v1", StringComparison.OrdinalIgnoreCase))
         {
@@ -107,14 +168,9 @@ public sealed class SettingsStore
                 ["bf_emma"] = "mary",
                 ["bf_isabella"] = "vera"
             };
-            if (oldVoiceMap.TryGetValue(voice.VoiceId, out string? mappedVoice))
-            {
-                voice.VoiceId = mappedVoice;
-            }
-            else
-            {
-                voice.VoiceId = "vera";
-            }
+            voice.VoiceId = oldVoiceMap.TryGetValue(voice.VoiceId, out string? mappedVoice)
+                ? mappedVoice
+                : "vera";
 
             voice.Engine = "pocket";
             voice.CandidateVoices = new() { "anna", "mary", "vera" };
@@ -123,20 +179,8 @@ public sealed class SettingsStore
             IrisEvent.Log("Settings", "settings.migrated", LogLevel.Info,
                 message: "Default speech engine migrated to Pocket TTS; voice confirmation is required.");
         }
-        else if (voice.Engine.Equals("kokoro", StringComparison.OrdinalIgnoreCase))
-        {
-            // A recognized engine: her own names are hers. Only fill values the user
-            // never expressed, never rewrite what they chose.
-            if (string.IsNullOrWhiteSpace(voice.VoiceId) || voice.VoiceId.Equals("vera", StringComparison.OrdinalIgnoreCase))
-            {
-                voice.VoiceId = voice.KokoroDefaultVoice;
-            }
-            if (voice.CandidateVoices.Count == 0)
-            {
-                voice.CandidateVoices = new() { "af_heart", "af_bella" };
-            }
-        }
         else if (!voice.Engine.Equals("http", StringComparison.OrdinalIgnoreCase) &&
+                 !voice.Engine.Equals("kokoro", StringComparison.OrdinalIgnoreCase) &&
                  !voice.Engine.Equals("pocket", StringComparison.OrdinalIgnoreCase))
         {
             // An unrecognized engine string: previously this reset silently, which made
@@ -151,6 +195,19 @@ public sealed class SettingsStore
             voice.VoiceId = "vera";
             voice.CandidateVoices = new() { "anna", "mary", "vera" };
             voice.ChosenByUser = false;
+        }
+        else if (voice.Engine.Equals("kokoro", StringComparison.OrdinalIgnoreCase))
+        {
+            // A recognized engine: her own names are hers. Only fill values the user
+            // never expressed, never rewrite what they chose.
+            if (string.IsNullOrWhiteSpace(voice.VoiceId) || voice.VoiceId.Equals("vera", StringComparison.OrdinalIgnoreCase))
+            {
+                voice.VoiceId = voice.KokoroDefaultVoice;
+            }
+            if (voice.CandidateVoices.Count == 0)
+            {
+                voice.CandidateVoices = new() { "af_heart", "af_bella" };
+            }
         }
 
         if (voice.Engine.Equals("pocket", StringComparison.OrdinalIgnoreCase) &&
@@ -192,28 +249,6 @@ public sealed class SettingsStore
                 voice.VoiceId = "vera";
                 voice.ChosenByUser = false;
             }
-        }
-
-        voice.PocketMaxThreads = Math.Clamp(voice.PocketMaxThreads, 1, 2);
-        if (Current.Ears.MaxRecognitionThreads <= 0)
-        {
-            Current.Ears.MaxRecognitionThreads = 2;
-        }
-        else
-        {
-            Current.Ears.MaxRecognitionThreads = Math.Clamp(Current.Ears.MaxRecognitionThreads, 1, 4);
-        }
-
-        // The old default missed quiet speech on many headset mics. Preserve custom
-        // thresholds, but migrate that exact historical default to a more forgiving one.
-        if (Math.Abs(Current.Ears.VoiceThreshold - 0.055) < 0.000001)
-        {
-            Current.Ears.VoiceThreshold = 0.025;
-        }
-
-        if (string.IsNullOrWhiteSpace(voice.PocketLanguage))
-        {
-            voice.PocketLanguage = "english_18m_2026-10";
         }
     }
 
@@ -314,4 +349,53 @@ public sealed class SettingsStore
             CompanionLog.Warning("Settings", $"Could not quarantine damaged file: {exception.Message}");
         }
     }
+}
+
+/// <summary>
+/// Reads enum settings forgivingly. The old strict reader threw a single malformed
+/// enum word out of the whole deserialization — picky "gamingg" typo meant both the
+/// primary file and its backup failed, Iris quarantined everything and restarted
+/// from defaults, destroying profiles, hotkeys and endpoints (2026-10-27 audit).
+/// Unknown words now reset just that one property to its enum default and the rest
+/// of the file keeps every bit of its meaning.
+/// </summary>
+internal sealed class TolerantEnumConverterFactory : JsonConverterFactory
+{
+    public override bool CanConvert(Type typeToConvert) => typeToConvert.IsEnum;
+
+    public override JsonConverter CreateConverter(Type typeToConvert, JsonSerializerOptions options) =>
+        (JsonConverter)Activator.CreateInstance(
+            typeof(TolerantEnumConverter<>).MakeGenericType(typeToConvert))!;
+}
+
+internal sealed class TolerantEnumConverter<TEnum> : JsonConverter<TEnum>
+    where TEnum : struct, Enum
+{
+    public override TEnum Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    {
+        // Numbers pass through unchanged: staying byte- and number-compatible with
+        // the standard enum writer matters more than strictness.
+        if (reader.TokenType == JsonTokenType.Number)
+        {
+            return (TEnum)Enum.ToObject(typeof(TEnum), reader.GetInt64());
+        }
+
+        if (reader.TokenType != JsonTokenType.String)
+        {
+            return default;
+        }
+
+        string word = reader.GetString() ?? string.Empty;
+        if (Enum.TryParse(word, ignoreCase: true, out TEnum parsed) && Enum.IsDefined(parsed))
+        {
+            return parsed;
+        }
+
+        // The enum's zero value is the neutral fallback; normalization keeps filling
+        // any fields a defaulted value leaves empty. No other property is touched.
+        return default;
+    }
+
+    public override void Write(Utf8JsonWriter writer, TEnum value, JsonSerializerOptions options) =>
+        writer.WriteStringValue(value.ToString());
 }

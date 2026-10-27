@@ -26,6 +26,7 @@ public sealed class CompanionRuntime : IAsyncDisposable
     private readonly GpuMemoryProbe _gpuProbe = new();
     private readonly IDisposable _stateSubscription;
     private readonly IDisposable _modeSubscription;
+    private readonly IDisposable _settingsSubscription;
     private readonly SemaphoreSlim _externalModuleRefreshGate = new(1, 1);
     private Timer? _telemetryTimer;
     private WakeHotKey? _wakeHotKey;
@@ -52,6 +53,13 @@ public sealed class CompanionRuntime : IAsyncDisposable
         Journal = journal;
         Brain = brain;
         Plugins = plugins;
+
+        // The log floor is LIVE: changing the level in settings applies to the very
+        // next line. The old parse ran once at boot, so the setting only did anything
+        // after a restart — and its missing "debug" case silently mapped it to Info
+        // (2026-10-27 audit).
+        _settingsSubscription = events.Subscribe<SettingsChangedEvent>(_ =>
+            CompanionLog.SetMinimumLevel(CompanionLog.ParseLevelWord(settings.Current.System.LogLevel)));
 
         // Mirror the mind machine onto the event bus so every screen can simply subscribe.
         _stateSubscription = SubscribeToMindState();
@@ -107,13 +115,7 @@ public sealed class CompanionRuntime : IAsyncDisposable
             CompanionLog.Warning("Settings", settings.LoadWarning);
         }
 
-        CompanionLog.SetMinimumLevel(settings.Current.System.LogLevel.ToLowerInvariant() switch
-        {
-            "trace" => LogLevel.Trace,
-            "warning" => LogLevel.Warning,
-            "error" => LogLevel.Error,
-            _ => LogLevel.Info
-        });
+        CompanionLog.SetMinimumLevel(CompanionLog.ParseLevelWord(settings.Current.System.LogLevel));
 
         EventBus events = new();
         MindStateMachine mind = new();
@@ -371,6 +373,7 @@ public sealed class CompanionRuntime : IAsyncDisposable
         _wakeHotKey?.Dispose();
         _stateSubscription.Dispose();
         _modeSubscription.Dispose();
+        _settingsSubscription.Dispose();
 
         await Voice.DisposeAsync().ConfigureAwait(false);
         Perception.Dispose();

@@ -11,8 +11,24 @@ namespace CompanionOS.Core.Configuration;
 /// </summary>
 public sealed class CompanionSettings
 {
-    /// <summary>Bumped when a setting is renamed, so old files can be migrated.</summary>
-    public int SchemaVersion { get; set; } = 1;
+    /// <summary>
+    /// The schema generation this build writes. Files stored below it are migrated
+    /// exactly once by the settings loader (see SettingsStore.Normalize) and then skip
+    /// the legacy heuristics forever — instead of every boot re-deciding what a user's
+    /// saved voices meant (audit: this property existed but nothing ever consumed it).
+    /// </summary>
+    public const int CurrentSchemaVersion = 2;
+
+    /// <summary>
+    /// The schema generation of files that predate version stamping. A file whose
+    /// SchemaVersion is missing deserializes to this value, which is exactly what
+    /// makes the legacy migration run once on an old file — defaulting to the CURRENT
+    /// generation instead would silently skip migration for every pre-existing file.
+    /// </summary>
+    public const int LegacySchemaVersion = 1;
+
+    /// <summary>The file's schema generation; bumped when a setting is renamed.</summary>
+    public int SchemaVersion { get; set; } = LegacySchemaVersion;
 
     public BrainSettings Brain { get; set; } = new();
     public VoiceSettings Voice { get; set; } = new();

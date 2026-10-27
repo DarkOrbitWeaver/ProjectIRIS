@@ -1,3 +1,4 @@
+using CompanionOS.Core.Diagnostics;
 using Microsoft.Win32;
 
 namespace CompanionOS.App;
@@ -22,8 +23,11 @@ public static class AutoStart
             using RegistryKey? key = Registry.CurrentUser.OpenSubKey(RunKeyPath);
             return key?.GetValue(ValueName) is string path && !string.IsNullOrWhiteSpace(path);
         }
-        catch
+        catch (Exception exception)
         {
+            // A denied registry read used to look identical to "not installed" - the
+            // screen showed off and the user trusted it (2026-10-27 audit).
+            CompanionLog.Warning("App", $"Could not read the startup registry: {exception.Message}");
             return false;
         }
     }
@@ -55,8 +59,11 @@ public static class AutoStart
 
             return IsEnabled() == enable;
         }
-        catch
+        catch (Exception exception)
         {
+            // Claiming nothing while leaving a reason on record: "auto start failed"
+            // with no cause was undiscoverable (2026-10-27 audit).
+            CompanionLog.Warning("App", $"Could not change the startup entry: {exception.Message}");
             return false;
         }
     }

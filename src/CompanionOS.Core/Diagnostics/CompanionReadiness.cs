@@ -63,8 +63,13 @@ public static class CompanionReadinessProbe
             {
                 return Directory.Exists(Environment.ExpandEnvironmentVariables(folder));
             }
-            catch
+            catch (Exception exception)
             {
+                // A malformed path or an unexpanded variable used to read exactly like
+                // "the folder is gone" - an unexplained, silent red light on the
+                // readiness screen (2026-10-27 audit). Now the probe states its reason.
+                CompanionLog.Trace("Readiness",
+                    $"Music folder '{folder}' could not be probed: {exception.Message}");
                 return false;
             }
         });

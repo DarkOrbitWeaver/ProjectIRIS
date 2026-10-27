@@ -268,5 +268,38 @@ public sealed class TurnJournal
 
         string archivePath = _filePath + $".{DateTime.Now.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture)}.old";
         File.Move(_filePath, archivePath, overwrite: true);
+        DeleteSurplusArchives();
+    }
+
+    /// <summary>
+    /// Keeps at most two archived journals. Rotation minted a fresh timestamped .old
+    /// file for every oversized journal and nothing ever deleted them - a few busy
+    /// weeks left an archive family nobody could explain (2026-10-27 audit).
+    /// </summary>
+    private void DeleteSurplusArchives()
+    {
+        try
+        {
+            string? directory = Path.GetDirectoryName(_filePath);
+            if (directory is null)
+            {
+                return;
+            }
+
+            string pattern = Path.GetFileName(_filePath) + ".*.old";
+            List<string> archives = Directory
+                .EnumerateFiles(directory, pattern)
+                .OrderByDescending(File.GetLastWriteTime)
+                .ToList();
+
+            foreach (string stale in archives.Skip(2))
+            {
+                File.Delete(stale);
+            }
+        }
+        catch (Exception exception)
+        {
+            CompanionLog.Trace("Journal", $"Could not prune journal archives: {exception.Message}");
+        }
     }
 }

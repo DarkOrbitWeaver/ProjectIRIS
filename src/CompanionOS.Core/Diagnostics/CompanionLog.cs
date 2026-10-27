@@ -48,6 +48,7 @@ public static class CompanionLog
     private static LogLevel _minimumLevel = LogLevel.Info;
     private static string _logFilePath = string.Empty;
     private static string _logDirectory = string.Empty;
+    private static bool _fileAppendFailureAnnounced;
 
     /// <summary>Raised for every line that passes the level filter. UI subscribes to this.</summary>
     public static event Action<LogEntry>? EntryWritten;
@@ -61,6 +62,23 @@ public static class CompanionLog
     {
         lock (WriteGate) { _minimumLevel = level; }
     }
+
+    /// <summary>
+    /// Parses the settings' log-level word. Anything unrecognised — including an
+    /// EMPTY or null value — falls back to Info instead of taking the boot path
+    /// down (2026-10-27 audit: a null word was an immediate NRE at startup, and the
+    /// literal "debug" never mapped to anything until restart).
+    /// </summary>
+    public static LogLevel ParseLevelWord(string? word) =>
+        word?.Trim().ToLowerInvariant() switch
+        {
+            "trace" => LogLevel.Trace,
+            "debug" => LogLevel.Debug,
+            "info" => LogLevel.Info,
+            "warning" => LogLevel.Warning,
+            "error" => LogLevel.Error,
+            _ => LogLevel.Info
+        };
 
     /// <summary>Points the log at a folder. The active file is bounded while the app is running.</summary>
     public static void Configure(string directory)
@@ -133,13 +151,24 @@ public static class CompanionLog
                 try
                 {
                     AppendBounded(entry.Format());
+                    _fileAppendFailureAnnounced = false;
                 }
-                catch (IOException)
+                catch (Exception fileFailure) when (fileFailure is IOException or UnauthorizedAccessException)
                 {
-                    // Disk busy or full: in-memory history is still valid, so carry on.
-                }
-                catch (UnauthorizedAccessException)
-                {
+                    // Disk busy/full or the file locked (a stray second instance). The
+                    // in-memory history stays truthful and the failure is ANNOUNCED
+                    // once per failure period: the old empty catches meant a log file
+                    // that stopped taking writes stayed silent forever, and there was
+                    // no way to notice the missing diagnostic trail (2026-10-27 audit).
+                    if (!_fileAppendFailureAnnounced)
+                    {
+                        _fileAppendFailureAnnounced = true;
+                        string notice =
+                            "The log file is unwritable; entries continue in memory only " +
+                            $"({fileFailure.Message}).";
+                        System.Diagnostics.Debug.WriteLine($"CompanionLog: {notice}");
+                        IrisEvent.Log("Log", "log.file_unwritable", LogLevel.Warning, message: notice);
+                    }
                 }
             }
         }

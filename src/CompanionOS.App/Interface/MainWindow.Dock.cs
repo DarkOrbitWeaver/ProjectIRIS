@@ -35,14 +35,20 @@ public sealed class MusicRailPanel : Border
     private readonly Border _fill;
     private readonly TextBlock _title;
     private readonly TextBlock _secondary;
+    private NowPlayingModel? _nowPlaying;
     private Button _play = null!;
-    private readonly System.ComponentModel.PropertyChangedEventHandler? _onModelChanged;
+    private readonly System.ComponentModel.PropertyChangedEventHandler _onModelChanged;
     private bool _isSubscribed;
+    private bool _isAttached;
 
     public MusicRailPanel(NowPlayingModel? nowPlaying, Action<string> invokeTool)
     {
         _invokeTool = invokeTool;
-        NowPlaying = nowPlaying;
+        _nowPlaying = nowPlaying;
+        // Her player runs on its own thread; every model change lands on the UI
+        // thread before a control is touched. The handler exists unconditionally so
+        // a later Rebind to a model can subscribe without ever having had one.
+        _onModelChanged = (_, _) => Dispatcher.UIThread.Post(ReadingFromModel);
 
         Background = Palette.SurfaceBrush;
         CornerRadius = new CornerRadius(Palette.RadiusCard);
@@ -99,34 +105,20 @@ public sealed class MusicRailPanel : Border
         stack.Children.Add(TransportRow());
         Child = stack;
 
-        if (nowPlaying is not null)
-        {
-            // Her player runs on its own thread; every model change lands on the UI
-            // thread before a control is touched.
-            _onModelChanged = (_, _) => Dispatcher.UIThread.Post(ReadingFromModel);
-        }
-
         // The panel lives as long as the chat screen and is detached whenever the user
         // visits Memory or Body. Subscribing in the constructor and unsubscribing on
         // detach therefore killed the music card permanently after one screen switch;
-        // the subscription now follows the panel's attachment instead.
+        // the subscription follows the panel's attachment instead.
         AttachedToVisualTree += (_, _) =>
         {
-            if (nowPlaying is not null && _onModelChanged is not null && !_isSubscribed)
-            {
-                nowPlaying.PropertyChanged += _onModelChanged;
-                _isSubscribed = true;
-            }
-
+            _isAttached = true;
+            SubscribeToModel();
             ReadingFromModel();
         };
         DetachedFromVisualTree += (_, _) =>
         {
-            if (nowPlaying is not null && _onModelChanged is not null && _isSubscribed)
-            {
-                nowPlaying.PropertyChanged -= _onModelChanged;
-                _isSubscribed = false;
-            }
+            _isAttached = false;
+            UnsubscribeFromModel();
         };
 
         ReadingFromModel();
@@ -134,12 +126,49 @@ public sealed class MusicRailPanel : Border
     }
 
     /// <summary>The live model this panel is bound to, or null while she is unbound.</summary>
-    public NowPlayingModel? NowPlaying { get; }
+    public NowPlayingModel? NowPlaying => _nowPlaying;
 
-    /// <summary>Re-asserts the visuals from the bound model, if any now exists.</summary>
+    /// <summary>
+    /// Rebinds the panel to a new player model and re-asserts the visuals from it.
+    ///
+    /// The previous signature threw its argument away and only refreshed from the
+    /// model held since construction - so a caller handing in the FIRST discovered
+    /// model after a null start was pinned to "Loading player..." forever, with the
+    /// subscription silently pointed at nothing (2026-10-27 audit).
+    /// </summary>
     public void Rebind(NowPlayingModel? nowPlaying)
     {
+        if (ReferenceEquals(_nowPlaying, nowPlaying))
+        {
+            ReadingFromModel();
+            return;
+        }
+
+        UnsubscribeFromModel();
+        _nowPlaying = nowPlaying;
+        SubscribeToModel();
         ReadingFromModel();
+    }
+
+    private void SubscribeToModel()
+    {
+        if (_isAttached && !_isSubscribed && _nowPlaying is not null)
+        {
+            _nowPlaying.PropertyChanged += _onModelChanged;
+            _isSubscribed = true;
+        }
+    }
+
+    private void UnsubscribeFromModel()
+    {
+        // Invariant: _isSubscribed implies _nowPlaying is the model holding the
+        // subscription - Rebind unsubscribes BEFORE swapping the field in.
+        if (_isSubscribed && _nowPlaying is not null)
+        {
+            _nowPlaying.PropertyChanged -= _onModelChanged;
+        }
+
+        _isSubscribed = false;
     }
 
     private Control TransportRow()

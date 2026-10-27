@@ -153,7 +153,7 @@ public sealed class SystemControlModule : IAssistantModule, IModuleSurfaceProvid
                     _context?.Host.DescribeSituation() ?? "No sensor data available."));
 
             case "find_files":
-                return Task.FromResult(FindFiles(invocation));
+                return Task.FromResult(FindFiles(invocation, cancellationToken));
 
             default:
                 return Task.FromResult(ToolResult.Fail($"Unknown system tool '{invocation.Tool.Name}'."));
@@ -182,7 +182,7 @@ public sealed class SystemControlModule : IAssistantModule, IModuleSurfaceProvid
     /// a wildcard walk that stops at 15 hits, so it stays instant on ordinary folders
     /// and honest about what it did not find.
     /// </summary>
-    private ToolResult FindFiles(ToolInvocation invocation)
+    private ToolResult FindFiles(ToolInvocation invocation, CancellationToken cancellationToken)
     {
         string query = invocation.GetString("query").Trim();
         if (query.Length == 0)
@@ -215,12 +215,23 @@ public sealed class SystemControlModule : IAssistantModule, IModuleSurfaceProvid
                 foreach (string file in Directory
                              .EnumerateFiles(root, $"*{query}*", SearchOption.AllDirectories))
                 {
+                    // The caller's token is honoured between entries: when the 45-second
+                    // tool ceiling or a cancelled turn stops the wait, this sweep stops
+                    // walking the disk too, instead of carrying on with nobody
+                    // listening (2026-10-27 audit).
+                    cancellationToken.ThrowIfCancellationRequested();
                     hits.Add(file);
                     if (hits.Count >= 15)
                     {
                         break;
                     }
                 }
+            }
+            catch (OperationCanceledException)
+            {
+                // Deliberate stop - rethrow so the module host records the cancellation
+                // as exactly that, not as a failed search.
+                throw;
             }
             catch (Exception exception)
             {
@@ -329,7 +340,31 @@ public sealed class SystemControlModule : IAssistantModule, IModuleSurfaceProvid
         }
 
         _context.Events.PublishNotice($"{timer.Label} finished.", NoticeSeverity.Success);
-        _ = _context.Host.SpeakAsync($"{timer.Label} is done, Boss.", CancellationToken.None);
+        _ = SpeakTimerCompletionAsync(timer);
+    }
+
+    /// <summary>
+    /// The timer's spoken announcement is observed: the notice already went out, so a
+    /// failed SPEECH is a cosmetic loss - but it is logged, not vanished silently into
+    /// a discarded task (2026-10-27 audit).
+    /// </summary>
+    private async Task SpeakTimerCompletionAsync(CompanionTimer timer)
+    {
+        ModuleContext? context = _context;
+        if (context is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await context.Host.SpeakAsync($"{timer.Label} is done, Boss.", CancellationToken.None)
+                .ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            CompanionLog.Warning("System", $"Could not speak the timer completion: {exception.Message}");
+        }
     }
 
     private void CancelAllTimers()
@@ -553,8 +588,17 @@ public sealed class SystemControlModule : IAssistantModule, IModuleSurfaceProvid
         }
     }
 
-    private static double ParseDouble(string text, double fallback) =>
-        double.TryParse(text, out double parsed) ? parsed : fallback;
+    private static double ParseDouble(string text, double fallback)
+    {
+        // Culture is not an opinion here: on a comma-decimal OS locale the old
+        // culture-sensitive parse read "5.5" as 55 - a five-and-a-half-minute timer
+        // confidently announced as an hour (2026-10-27 audit). Parse invariant, but
+        // accept BOTH decimal marks, because spoken text and typed text both arrive.
+        return double.TryParse(text.Replace(',', '.'), System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture, out double parsed)
+            ? parsed
+            : fallback;
+    }
 
     /// <summary>One running timer.</summary>
     private sealed class CompanionTimer

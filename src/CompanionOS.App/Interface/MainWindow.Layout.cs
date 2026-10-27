@@ -174,8 +174,22 @@ public sealed partial class MainWindow : Window
     private void OnClosing(object? sender, WindowClosingEventArgs eventArgs)
     {
         SystemWatch.Trace("life", "window close requested");
-        if (_isShuttingDown || _isAsleep || !_runtime.Settings.Current.Interface.CloseToOverlay)
+        if (_isShuttingDown || _isAsleep)
         {
+            return;
+        }
+
+        if (!_runtime.Settings.Current.Interface.CloseToOverlay)
+        {
+            // CloseToOverlay=false means a plain close QUITs. The old return-path left
+            // the process running with nothing on screen, no tray icon and no overlay:
+            // a fully-alive invisible process occupying VRAM while the user believes
+            // she quit (2026-10-27 audit).
+            // The close is cancelled either way; quitting runs through QuitAsync, which
+            // closes the window itself after the runtime has shut down.
+            eventArgs.Cancel = true;
+            SystemWatch.Trace("life", "window close requested - CloseToOverlay is off, quitting");
+            QuitFromClose();
             return;
         }
 
@@ -184,6 +198,20 @@ public sealed partial class MainWindow : Window
         eventArgs.Cancel = true;
         Hide();
         ShowOverlay();
+    }
+
+    /// <summary>Runs the quit from the close event on the UI thread, without unwinding
+    /// the window-close pipeline itself.</summary>
+    private async void QuitFromClose()
+    {
+        try
+        {
+            await QuitAsync();
+        }
+        catch (Exception exception)
+        {
+            SystemWatch.Trace("life", $"quit from close faulted: {exception.Message}");
+        }
     }
 
     /// <summary>
@@ -242,9 +270,22 @@ public sealed partial class MainWindow : Window
         _uiSyncTimer.Stop();
         _attentionSubscription.Dispose();
         _model.Detach();
-        await _runtime.DisposeAsync();
-        _overlay?.Close();
-        Close();
+
+        // No teardown exception may strand the process. SleepAsync has the same guard;
+        // the Quit path used to miss it — one throw from DisposeAsync meant the window
+        // never closed, the runtime never shut down and _isShuttingDown was already
+        // true, so retrying quit did nothing at all (2026-10-27 audit).
+        try
+        {
+            await _runtime.DisposeAsync();
+            _overlay?.Close();
+            Close();
+        }
+        catch (Exception exception)
+        {
+            CompanionOS.Core.Diagnostics.CompanionLog.Error(
+                "App", "Cleanup while quitting did not finish; forcing the shutdown.", exception);
+        }
 
         if (Application.Current?.ApplicationLifetime is
             Avalonia.Controls.ApplicationLifetimes.IClassicDesktopStyleApplicationLifetime desktop)
