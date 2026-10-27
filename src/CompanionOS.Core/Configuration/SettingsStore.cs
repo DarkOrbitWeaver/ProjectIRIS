@@ -26,6 +26,30 @@ public sealed class SettingsStore
 
     private readonly object _saveLock = new();
 
+    /// <summary>
+    /// The one window for deliberate settings writes from NON-UI threads: modules and
+    /// housekeeping timers. Reads and mutates under one lock, then rewrites the file
+    /// only when the delegate says the content truly changed. The interface treads on
+    /// the UI thread and serializes on its own pump; a module thread never races a
+    /// serialization of the same list it is editing (2026-10-27 audit finding 96).
+    /// </summary>
+    public bool Mutate(Func<CompanionSettings, bool> mutate)
+    {
+        bool changed;
+        lock (_saveLock)
+        {
+            changed = mutate(Current);
+        }
+
+        if (!changed)
+        {
+            return false;
+        }
+
+        Save();
+        return true;
+    }
+
     /// <summary>The settings currently in force. Never null after construction.</summary>
     public CompanionSettings Current { get; private set; } = new();
 

@@ -448,8 +448,16 @@ public sealed class SystemControlModule : IAssistantModule, IModuleSurfaceProvid
             return ToolResult.Fail("Timer controls are not ready yet.");
         }
 
-        _context.Settings.Interface.ShowTimerOverlay = visible;
-        _context.PersistSettings();
+        _context.MutateSettings(settings =>
+        {
+            if (settings.Interface.ShowTimerOverlay == visible)
+            {
+                return false;
+            }
+
+            settings.Interface.ShowTimerOverlay = visible;
+            return true;
+        });
         return ToolResult.Ok(visible ? "Timer overlay shown." : "Timer overlay hidden; the timer keeps running.",
             visible ? "Timer controls are back." : "Timer controls hidden. The timer keeps running.");
     }

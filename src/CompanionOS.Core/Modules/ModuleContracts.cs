@@ -84,8 +84,20 @@ public sealed class ModuleContext
     public required CompanionSettings Settings { get; init; }
 
     /// <summary>Persists a deliberate settings change made by a trusted module and
-    /// publishes the matching live-refresh event.</summary>
+    /// publishes the matching live-refresh event — deprecated in favour of
+    /// <see cref="MutateSettings"/>, which closes the read-mutate-persist window.
+    /// Remains for modules that write WITHOUT reading the current value first.</summary>
     public required Action PersistSettings { get; init; }
+
+    /// <summary>
+    /// The ONE door for settings writes from module code: read, mutate and persist
+    /// happen under the settings store's single gate, so a module thread can never
+    /// edit a list the interface is serializing from another thread (2026-10-27
+    /// audit finding 96). Given the module's mutation, it returns whether anything
+    /// changed (and the file was rewritten); return false from the mutation for a
+    /// no-op visit.
+    /// </summary>
+    public required Func<Func<CompanionSettings, bool>, bool> MutateSettings { get; init; }
     public required EventBus Events { get; init; }
     public required IMemoryAccess Memory { get; init; }
     public required SandboxGuard Sandbox { get; init; }

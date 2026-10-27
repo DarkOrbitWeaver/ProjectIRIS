@@ -543,12 +543,31 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
             return ToolResult.Fail($"I can't find '{path}'. Check that the drive is connected, then give me the folder path again.");
         }
 
-        List<string> directories = _context?.Settings.Music.SearchDirectories ?? new List<string>();
-        if (!directories.Any(existing => string.Equals(ExpandDirectory(existing), path,
-                StringComparison.OrdinalIgnoreCase)))
+        // The read-mutate-persist used to ride directly on the shared settings: a module
+        // thread added to the live list the interface can serialize down the line
+        // (2026-10-27 audit finding 96). The gate closes the window; a duplicate folder
+        // is a no-op visit.
+        bool alreadyListed = false;
+        if (_context is not null)
         {
-            directories.Add(path);
-            _context?.PersistSettings();
+            bool changed = _context.MutateSettings(settings =>
+            {
+                List<string> directories = settings.Music.SearchDirectories;
+                if (directories.Any(existing => string.Equals(ExpandDirectory(existing), path,
+                        StringComparison.OrdinalIgnoreCase)))
+                {
+                    alreadyListed = true;
+                    return false;
+                }
+
+                directories.Add(path);
+                return true;
+            });
+
+            if (!changed && !alreadyListed)
+            {
+                return ToolResult.Fail("The music folder could not be recorded. Nothing was changed.");
+            }
         }
 
         MusicLibraryScanResult scan = await RefreshLibraryAsync(force: true, cancellationToken,
@@ -675,9 +694,19 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
     private async Task<ToolResult> RemoveMusicFolderAsync(string requestedPath, CancellationToken cancellationToken)
     {
         string path = ExpandDirectory(requestedPath);
-        List<string> directories = _context?.Settings.Music.SearchDirectories ?? new List<string>();
-        int removed = directories.RemoveAll(existing => string.Equals(ExpandDirectory(existing), path,
-            StringComparison.OrdinalIgnoreCase));
+        int removed = 0;
+        if (_context is not null)
+        {
+            // Same gate as the add: RemoveAll on the live shared list now happens inside
+            // the store's window, not from a module thread (2026-10-27 audit finding 96).
+            _context.MutateSettings(settings =>
+            {
+                removed = settings.Music.SearchDirectories.RemoveAll(existing =>
+                    string.Equals(ExpandDirectory(existing), path, StringComparison.OrdinalIgnoreCase));
+                return removed > 0;
+            });
+        }
+
         if (removed == 0)
         {
             return ToolResult.Fail("That folder is not in the music library. No files were changed.");
@@ -696,8 +725,16 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
             return ToolResult.Fail("The music controls are not ready yet.");
         }
 
-        _context.Settings.Interface.ShowMusicOverlay = visible;
-        _context.PersistSettings();
+        _context.MutateSettings(settings =>
+        {
+            if (settings.Interface.ShowMusicOverlay == visible)
+            {
+                return false;
+            }
+
+            settings.Interface.ShowMusicOverlay = visible;
+            return true;
+        });
         return ToolResult.Ok(visible ? "Music overlay shown." : "Music overlay hidden; playback continues.",
             spokenText: visible ? "Music controls are back." : "Music controls hidden. The music keeps playing.");
     }

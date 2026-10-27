@@ -646,6 +646,7 @@ public sealed class ModuleHost : IAsyncDisposable
             _settings.Save();
             _events.Publish(new SettingsChangedEvent());
         },
+        MutateSettings = MutateSettingsAndAnnounce,
         Events = _events,
         Memory = _memory,
         Sandbox = _sandbox,
@@ -655,6 +656,22 @@ public sealed class ModuleHost : IAsyncDisposable
         ModelsDirectory = CompanionPaths.ModelsDirectory,
         CacheDirectory = CompanionPaths.CacheDirectory
     };
+
+    /// <summary>
+    /// The module-context door onto the settings gate: mutation happens inside the
+    /// store's lock, and a real change announces itself on the bus exactly the way the
+    /// old PersistSettings save did (2026-10-27 audit finding 96).
+    /// </summary>
+    private bool MutateSettingsAndAnnounce(Func<CompanionSettings, bool> mutate)
+    {
+        bool changed = _settings.Mutate(mutate);
+        if (changed)
+        {
+            _events.Publish(new SettingsChangedEvent());
+        }
+
+        return changed;
+    }
 
     /// <summary>
     /// The verb phrase a module's own narrator builds for a call — "play 'hollowlight'" —

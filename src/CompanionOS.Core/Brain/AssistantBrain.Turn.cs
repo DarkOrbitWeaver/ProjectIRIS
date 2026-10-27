@@ -635,8 +635,20 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
                 return;
             }
 
-            _settings.Current.System.ManualGamingMode = false;
-            _settings.Save();
+            // The perception timer thread used to flip the flag and save straight onto
+            // the shared store. The flip is trivially safe on its own — the point is
+            // that EVERY deliberate non-UI write rides the same gate (2026-10-27 audit
+            // finding 96), so this one does too.
+            _settings.Mutate(settings =>
+            {
+                if (!settings.System.ManualGamingMode)
+                {
+                    return false;
+                }
+
+                settings.System.ManualGamingMode = false;
+                return true;
+            });
         }
 
         if (!_settings.Current.System.GamingModeEnabled || !_settings.Current.System.GamingAutoDetect)
