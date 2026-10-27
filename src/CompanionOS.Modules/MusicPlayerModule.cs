@@ -111,6 +111,15 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
     /// in flight on another thread.</summary>
     private int _playbackGeneration;
 
+    /// <summary>
+    /// The user's chosen volume, remembered across track changes and ducks. Each
+    /// track is a new <see cref="AudioFileReader"/> with its own 1.0 volume, so the
+    /// level used to die at every song boundary and the duck restore used to reset
+    /// to full blast — "quieter" lasted one song (2026-10-27 audit).
+    /// </summary>
+    private float _currentVolume = 1.0f;
+    private bool _isDucked;
+
     // The current place in the deliberately conversational folder browser. It is session-only:
     // remembering a user's last folder forever would be surprising, while retaining it for the
     // next "go into that one" is exactly how a human-guided browse should feel.
@@ -160,8 +169,10 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
             """{"type":"object","properties":{"level":{"type":"integer","description":"0 to 100"}},"required":["level"]}""",
             "volume", "louder", "quieter"),
 
-        new("list_music", "List the tracks available in her music library.", ToolTier.Reflex,
-            """{"type":"object","properties":{},"required":[]}""", "what music", "library", "playlist", "player"),
+        new("list_music", "List the tracks available in her music library. Pass limit for more than the default first 20.",
+            ToolTier.Reflex,
+            """{"type":"object","properties":{"limit":{"type":"integer","description":"How many titles to show, 1-200 (default 20)"}},"required":[]}""",
+            "what music", "library", "playlist", "player"),
 
         new(
             "add_music_folder",
@@ -283,7 +294,12 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
                 int level = Math.Clamp(invocation.GetInt32("level", 60), 0, 100);
                 lock (_playerLock)
                 {
-                    if (_audioReader is not null) _audioReader.Volume = level / 100f;
+                    // The chosen level is remembered, not just applied: the next track
+                    // spawns a fresh reader and previously spat it back to 100% while
+                    // still reporting success.
+                    _currentVolume = level / 100f;
+                    _isDucked = false;
+                    if (_audioReader is not null) _audioReader.Volume = _currentVolume;
                 }
                 return ToolResult.Ok($"Music volume set to {level} percent.");
             }
@@ -294,8 +310,14 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
                     return ToolResult.Ok(scan.WasLimited
                         ? $"The bounded scan has not found tracks yet; it reached the {scan.LimitReason}. Browse a smaller folder to continue."
                         : "No audio files yet. Name your music folders in settings, or drop files into the workspace Music folder.");
-                string listing = string.Join("; ", _library.Take(20).Select(Path.GetFileNameWithoutExtension));
-                return ToolResult.Ok($"{_library.Count} indexed track(s){(scan.WasLimited ? $" (partial: {scan.LimitReason})" : string.Empty)}: {listing}",
+                // A hard 20-title page on a many-thousand library was an evidence gap
+                // with no way deeper; limit (to 200) opens the window (2026-10-27 audit).
+                int limit = Math.Clamp(invocation.GetInt32("limit", 20), 1, 200);
+                string listing = string.Join("; ", _library.Take(limit).Select(Path.GetFileNameWithoutExtension));
+                return ToolResult.Ok(
+                    $"{_library.Count} indexed track(s)" +
+                    $"{(scan.WasLimited ? $" (partial: {scan.LimitReason})" : string.Empty)}; " +
+                    $"showing first {Math.Min(limit, _library.Count)}: {listing}",
                     displayText: listing);
             }
             case "add_music_folder":
@@ -353,9 +375,14 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
                 bool shouldDuck = invocation.GetBoolean("ducked", true);
                 lock (_playerLock)
                 {
+                    _isDucked = shouldDuck;
                     if (_audioReader is not null)
                     {
-                        double target = shouldDuck ? Math.Max(0.05, _context?.Settings.Voice.MusicDuckLevel ?? 0.25) : 1.0;
+                        // Restore remembers the user's level, not full blast: the old
+                        // hard 1.0 erased a chosen 40% after every spoken reply.
+                        double target = shouldDuck
+                            ? Math.Max(0.05, _context?.Settings.Voice.MusicDuckLevel ?? 0.25)
+                            : _currentVolume;
                         _audioReader.Volume = (float)target;
                     }
                 }
@@ -732,21 +759,43 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
                 "(MusicSearchDirectories), or drop files into my workspace Music folder.");
         }
 
+        // An empty query IS the "anything"/"something" ask: the tool description
+        // promises a library pick, and the old code replayed the current track —
+        // which felt like nothing happened at all. A random pick is the honest read.
         int chosenIndex = string.IsNullOrWhiteSpace(query)
-            ? (_currentIndex >= 0 ? _currentIndex : 0)
+            ? Random.Shared.Next(_library.Count)
             : FindBestMatch(query);
 
         if (chosenIndex < 0)
         {
+            // Evidence instead of a bare no: the closest real titles (file and folder
+            // names), so the mind can match dictation noise against reality itself.
+            IEnumerable<string> scored = ResolveQuery(query);
+            List<string> candidates = scored.Take(5).ToList();
+            if (candidates.Count == 0)
+            {
+                candidates = _library.OrderBy(candidate => Random.Shared.Next())
+                    .Take(5).Select(track => Path.GetFileNameWithoutExtension(track)!).ToList();
+                return ToolResult.Fail(
+                    $"I couldn't find a track matching '{query}' in {_library.Count} indexed tracks. " +
+                    (!string.IsNullOrWhiteSpace(query)
+                        ? "Here is some of what is here instead: " + string.Join("; ", candidates) + ". "
+                        : string.Empty) +
+                    (_lastScan?.WasLimited == true ? "The index is partial; browse a smaller folder to search more. " : string.Empty));
+            }
+
             return ToolResult.Fail(
-                $"I couldn't find a track matching '{query}'. " +
-                (_lastScan?.WasLimited == true ? "The index is partial; browse a smaller folder to search more. " : string.Empty) +
-                "I left the current playback unchanged.");
+                $"There is no exact '{query}' in my library, but these look closest: " +
+                $"{string.Join("; ", candidates)}. Name one to play it." +
+                (_lastScan?.WasLimited == true ? " (The index is partial; browse a smaller folder to search more.)" : string.Empty));
         }
 
         if (!StartTrack(chosenIndex))
         {
-            return ToolResult.Fail("I found that track, but Windows could not play it. Check the file and selected audio output.");
+            return ToolResult.Fail(
+                _audioReader is not null
+                    ? "I could not switch to that track; what was playing still is. Check the file."
+                    : "I found that track, but Windows could not play it. Check the file and selected audio output.");
         }
 
         string title = Path.GetFileNameWithoutExtension(_library[chosenIndex]);
@@ -833,8 +882,8 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
 
         string lines = string.Join("\n", names.Select(name =>
         {
-            List<string> tracks = LoadPlaylist(name);
-            return $"{name} — {tracks.Count} track(s)";
+            List<string>? tracks = LoadPlaylist(name);
+            return $"{name} — {(tracks is null ? "unreadable file" : $"{tracks.Count} track(s)")}";
         }));
 
         return ToolResult.Ok(lines, displayText: lines);
@@ -930,7 +979,16 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
             return ToolResult.Fail($"Nothing in the library matches '{query}'.");
         }
 
-        List<string> tracks = LoadPlaylist(safeName);
+        List<string>? storedTracks = LoadPlaylist(safeName);
+        if (storedTracks is null)
+        {
+            return ToolResult.Fail(
+                $"The playlist file for '{name}' exists but is unreadable, so I will not touch it: " +
+                "appending into a broken file would have erased what was already inside. " +
+                "Delete the playlist and create it again.");
+        }
+
+        List<string> tracks = storedTracks;
         int existing = tracks.Count;
         tracks.AddRange(added.Where(track => !tracks.Contains(track, StringComparer.OrdinalIgnoreCase)));
         SavePlaylist(safeName, tracks);
@@ -973,7 +1031,15 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
                 "Read the spellings yourself and play the closest real one; create the missing playlist only if nothing is close.");
         }
 
-        List<string> tracks = RecoverPlaylistTracks(LoadPlaylist(safeName));
+        List<string>? storedTracks = LoadPlaylist(safeName);
+        if (storedTracks is null)
+        {
+            return ToolResult.Fail(
+                $"The playlist file for '{name}' exists but its JSON is unreadable, so nothing was loaded. " +
+                "Delete that playlist and re-create it, or fix the file directly.");
+        }
+
+        List<string> tracks = RecoverPlaylistTracks(storedTracks);
         if (tracks.Count == 0)
         {
             return ToolResult.Fail($"'{name}' has no playable tracks left on disk.");
@@ -1069,7 +1135,12 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
     private bool PlaylistExists(string safeName) =>
         File.Exists(Path.Combine(PlaylistsDirectory, safeName + ".json"));
 
-    private List<string> LoadPlaylist(string safeName)
+    /// <summary>Reads a playlist. A missing file is an empty list (nothing saved
+    /// yet); a file that EXISTS but cannot be parsed returns NULL, so callers say
+    /// "the playlist data is broken" instead of blaming the disk — the old swallow
+    /// re-surfaced as "no playable tracks left on disk" for corrupt JSON
+    /// (2026-10-27 audit).</summary>
+    private List<string>? LoadPlaylist(string safeName)
     {
         string path = Path.Combine(PlaylistsDirectory, safeName + ".json");
         try
@@ -1081,7 +1152,7 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
         catch (Exception exception)
         {
             CompanionLog.Warning("Music", $"Playlist '{safeName}' could not be read: {exception.Message}");
-            return new List<string>();
+            return null;
         }
     }
 
@@ -1089,10 +1160,17 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
     {
         Directory.CreateDirectory(PlaylistsDirectory);
         string path = Path.Combine(PlaylistsDirectory, safeName + ".json");
-        File.WriteAllText(path, JsonSerializer.Serialize(tracks, new JsonSerializerOptions
+        string json = JsonSerializer.Serialize(tracks, new JsonSerializerOptions
         {
             WriteIndented = true
-        }));
+        });
+        // Write-then-move: a crash or power loss mid-write previously shredded the
+        // file in place, which is how playlists ended up as the corrupt JSON the
+        // loader had to defend against. The temp file only replaces the real one
+        // after it serializes and closes cleanly.
+        string temporary = path + ".tmp";
+        File.WriteAllText(temporary, json);
+        File.Move(temporary, path, overwrite: true);
     }
 
     private static string SafeName(string? name)
@@ -1117,12 +1195,27 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
             .Select(match => match.Path);
     }
 
+    /// <summary>Word evidence across file name AND folder names: "play Iron Maiden"
+    /// has to find tracks inside an 'Iron Maiden - Fear of the Dark' folder even when
+    /// no file name says so (2026-10-27 audit). Only the two deepest folders count —
+    /// distant grandparents (C:\, Users) would make everything match everyone.</summary>
     private static int MatchScore(string query, string filePath)
     {
         IReadOnlyList<string> queryWords = Tokenize(query);
+        if (queryWords.Count == 0)
+        {
+            return 0;
+        }
+
         IReadOnlyList<string> fileWords = Tokenize(Path.GetFileNameWithoutExtension(filePath));
+        IReadOnlyList<string> folderWords = Tokenize(Path.GetFileName(Path.GetDirectoryName(filePath)));
+        IReadOnlyList<string> parentFolderWords =
+            Tokenize(Path.GetFileName(Path.GetDirectoryName(Path.GetDirectoryName(filePath))));
+        IReadOnlyList<string> candidateWords =
+            fileWords.Concat(folderWords).Concat(parentFolderWords).ToList();
+
         return queryWords.Count(word =>
-            fileWords.Any(fileWord => fileWord.Contains(word, StringComparison.OrdinalIgnoreCase)));
+            candidateWords.Any(candidate => candidate.Contains(word, StringComparison.OrdinalIgnoreCase)));
     }
 
     private bool StartTrack(int index)
@@ -1144,11 +1237,48 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
     {
         lock (_playerLock)
         {
-            ReleasePlayer();
+            // Validate the new file BEFORE destroying the playing one. The old order
+            // tore the working player down first, so one bad file killed the song that
+            // was playing and left silence with no rollback (2026-10-27 audit).
+            AudioFileReader? newReader;
+            try
+            {
+                newReader = new AudioFileReader(filePath);
+            }
+            catch (Exception exception)
+            {
+                _context?.Events.PublishNotice(
+                    $"That track would not play: {exception.Message}. What was playing was left alone.",
+                    NoticeSeverity.Warning);
+                return false;
+            }
+
+            WaveOutEvent? previousDevice = _outputDevice;
+            AudioFileReader? previousReader = _audioReader;
+            if (previousDevice is not null)
+            {
+                // Detach first so the dying device's Stopped event cannot drive the
+                // queue instead of us; the handler also checks the sender, this just
+                // removes the race window.
+                try
+                {
+                    previousDevice.PlaybackStopped -= OnPlaybackStopped;
+                    previousDevice.Stop();
+                    previousDevice.Dispose();
+                }
+                catch
+                {
+                    // The old device was already dying; the new one still starts.
+                }
+            }
 
             try
             {
-                _audioReader = new AudioFileReader(filePath);
+                previousReader?.Dispose();
+                _audioReader = newReader;
+                newReader.Volume = _isDucked
+                    ? (float)Math.Max(0.05, _context?.Settings.Voice.MusicDuckLevel ?? 0.25)
+                    : _currentVolume;
                 _outputDevice = new WaveOutEvent
                 {
                     // Music honours the same output selector as Iris' speech. -1 is
@@ -1156,7 +1286,7 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
                     DeviceNumber = _context?.Settings.Voice.OutputDeviceNumber ?? -1
                 };
                 _outputDevice.PlaybackStopped += OnPlaybackStopped;
-                _outputDevice.Init(_audioReader);
+                _outputDevice.Init(newReader);
                 _outputDevice.Play();
 
                 _currentIndex = _library.FindIndex(candidate =>
@@ -1185,24 +1315,19 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
 
     private int FindBestMatch(string query)
     {
-        IReadOnlyList<string> queryWords = Tokenize(query);
-        int bestIndex = 0;
-        int bestScore = 0;
+        // One ranked search, reused from ResolveQuery: a zero-hit query must come back
+        // as -1 (a genuine miss, reported to the model with candidates), not as index
+        // zero — the old default played the first track while claiming a match.
+        string? best = _library
+            .Select(path => (Path: path, Score: MatchScore(query, path)))
+            .Where(match => match.Score > 0)
+            .OrderByDescending(match => match.Score)
+            .Select(match => match.Path)
+            .FirstOrDefault();
 
-        for (int index = 0; index < _library.Count; index++)
-        {
-            IReadOnlyList<string> fileWords = Tokenize(Path.GetFileNameWithoutExtension(_library[index]));
-            int score = queryWords.Count(word => fileWords.Any(fileWord =>
-                fileWord.Contains(word, StringComparison.OrdinalIgnoreCase)));
-
-            if (score > bestScore)
-            {
-                bestScore = score;
-                bestIndex = index;
-            }
-        }
-
-        return bestScore == 0 ? -1 : bestIndex;
+        return best is null
+            ? -1
+            : _library.FindIndex(candidate => candidate.Equals(best, StringComparison.OrdinalIgnoreCase));
     }
 
     private static IReadOnlyList<string> Tokenize(string? text) =>
@@ -1242,7 +1367,10 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
                 roots.Insert(0, preferredRoot);
             }
             MusicLibraryScanResult scan = await Task.Run(() => MusicLibraryScanner.Scan(
-                roots, cancellationToken, progress: reportProgress), cancellationToken).ConfigureAwait(false);
+                roots, cancellationToken,
+                timeBudget: TimeSpan.FromSeconds(Math.Clamp(
+                    _context?.Settings.Music.ScanTimeBudgetSeconds ?? 15, 1, 600)),
+                progress: reportProgress), cancellationToken).ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();
 
             // If the scan hit a bound, preserve the usable previous index and merge the
@@ -1384,13 +1512,21 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
 
         if (eventArgs.Exception is not null)
         {
-            _nowPlaying.Status = "Stopped";
-            return;
+            // A decode or driver fault is not the end of the queue. Skip forward and
+            // SAY what happened: the old handler froze silently mid-playlist and the
+            // silence looked exactly like her ignoring the request (2026-10-27 audit).
+            string fault = eventArgs.Exception.GetBaseException().Message;
+            CompanionLog.Warning("Music", $"Playback fault: {fault}; skipping forward.", eventArgs.Exception);
+            _nowPlaying.Status = "Skipped after a playback fault";
+            _context?.Events.PublishNotice(
+                $"That track failed to play ({fault}); skipping to the next one if there is one.",
+                NoticeSeverity.Warning);
         }
 
         // The device is being disposed while this event is still in flight, so the
         // queue advance happens on another thread and only if no stop was commanded
-        // in the meantime.
+        // in the meantime. (ContinueQueue re-checks everything under the player lock;
+        // a commanded stop still wins.)
         int generation = _playbackGeneration;
         _ = Task.Run(() =>
         {
@@ -1404,24 +1540,34 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
     /// <summary>Plays the next playlist entry when one ends naturally. When the queue
     /// is exhausted she stops and waits — a companion that keeps playing into an empty
     /// room is worse than one that knows a playlist finished.</summary>
+    /// <remarks>
+    /// The whole advance happens under the player lock (StartTrackPath re-enters it —
+    /// Monitor is re-entrant on the same thread). That closes the last stay of the
+    /// stop-vs-auto-next race: a commanded stop that lands mid-advance empties the
+    /// queue under the same lock, so "stop" can no longer lose to an advance that
+    /// had already passed its generation check (2026-10-27 audit).
+    /// </remarks>
     private void ContinueQueue()
     {
-        if (_queue.Count == 0 || _queueIndex < 0)
+        lock (_playerLock)
         {
-            return;
-        }
+            if (_queue.Count == 0 || _queueIndex < 0)
+            {
+                return;
+            }
 
-        _queueIndex++;
-        if (_queueIndex >= _queue.Count)
-        {
-            ClearQueue();
-            _nowPlaying.Status = "Stopped";
-            _nowPlaying.Progress = 0;
-            _nowPlaying.PositionText = "0:00";
-            return;
-        }
+            _queueIndex++;
+            if (_queueIndex >= _queue.Count)
+            {
+                ClearQueue();
+                _nowPlaying.Status = "Stopped";
+                _nowPlaying.Progress = 0;
+                _nowPlaying.PositionText = "0:00";
+                return;
+            }
 
-        StartTrackPath(_queue[_queueIndex]);
+            StartTrackPath(_queue[_queueIndex]);
+        }
     }
 
     private void StopPlayback()

@@ -392,6 +392,15 @@ public sealed class MusicSettings
     {
         Environment.GetFolderPath(Environment.SpecialFolder.MyMusic)
     };
+
+    /// <summary>
+    /// Time budget per library scan, in seconds. A hard-coded four seconds used to
+    /// cap EVERY play/list/shuffle scan, so a big collection was permanently
+    /// truncated and real tracks became invisible — "play X" failing while X existed
+    /// was the flagship symptom (2026-10-27 audit). The budget is still enforced
+    /// between filesystem entries and a scan that hits it reports its bound.
+    /// </summary>
+    public int ScanTimeBudgetSeconds { get; set; } = 15;
 }
 
 public sealed class InterfaceSettings

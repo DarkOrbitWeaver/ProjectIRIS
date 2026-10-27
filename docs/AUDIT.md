@@ -33,28 +33,28 @@ Everything below is an instance of one of those three.
 - [ ] **PluginHost.cs:471-475 + PluginModuleAdapter.cs:121-124 — plugin stdout dropped on failure** (model gets stderr only); failed 10s discovery leaves a plugin registered with **zero tools**, silent to user and model (PluginHost.cs:117-125).
 
 ### Axle 3: caps, silent deaths, corruption
-- [ ] **MusicLibraryScanner.cs:31 + MusicPlayerModule.cs:1244 — library scan has a 4-second budget.** Every play/list/shuffle call scans with it; big folder = permanently truncated index → "play X" fails when X exists. The flagship symptom.
+- [x] **MusicLibraryScanner.cs:31 + MusicPlayerModule.cs:1244 — library scan has a 4-second budget.** Every play/list/shuffle call scans with it; big folder = permanently truncated index → "play X" fails when X exists. The flagship symptom.
 - [x] **ModelClient.cs:277 + 183-239 — `max_tokens` 900-1200 always sent; `finish_reason` never checked.** Truncation mid-tool-call → fragmenting JSON silently vanishes (`Where(name not empty)`) → the turn reads as "she chose not to act". Direct cause of lazy-looking agents.
 - [ ] **ModuleHost.cs:32/522 — 45s foreground tool timeout.** Longer legit work becomes `Uncertain` while the job keeps running (uncancelled — see P1 find_files / MCP entries). Companion caps: 30s default MCP `tools/call`, 5min background (PluginHost.cs:1469-1495).
-- [ ] **MusicPlayerModule.cs:1145-1174 — track start destroys the playing player *before* validating the new file.** Bad file = current song dies, no rollback, model told playback "could not" — never that music stopped.
-- [ ] **MusicPlayerModule.cs:286/358-359 — volume is per-reader and lost every track change; duck-restore hard-sets 1.0.** "Quieter" lasts one song; user's chosen level erased, model reports success.
+- [x] **MusicPlayerModule.cs:1145-1174 — track start destroys the playing player *before* validating the new file.** Bad file = current song dies, no rollback, model told playback "could not" — never that music stopped.
+- [x] **MusicPlayerModule.cs:286/358-359 — volume is per-reader and lost every track change; duck-restore hard-sets 1.0.** "Quieter" lasts one song; user's chosen level erased, model reports success.
 - [x] **SandboxGuard.cs:72/163-167 + ModuleHost.cs:447-449 — 15s permission timeout auto-denies and is misreported as "The user did not allow that action."** Model can't distinguish no / AFK / missed prompt; audit trail records both as plain "denied".
 - [x] **MemoryGraph.cs:292-300 — node inserted into live cache BEFORE DB persist; no rollback on failure.** Phantom memory visible to recall/consolidation this session, vanished next boot.
 - [x] **MemoryGraph.cs:312-351 — `LinkAsync` check-then-insert race duplicates synapses;** the duplicate's later UPDATE matches 0 rows (fresh Guid never inserted) and affected-rows is never checked — bookkeeping writes lost silently.
 - [x] **MemoryGraph.Queries.cs:92-134 — consolidation iterates a stale snapshot;** a merged-away node can still be picked as `keep` later → `PersistNodeAsync` upsert **resurrects deleted rows with duplicated content**. Long-term memory corruption on exactly the runs consolidation exists for.
 - [ ] **SettingsStore.cs:56-74 — one malformed property (single typo'd enum) wipes the whole settings file to defaults.** Backup read also; then quarantine + `new CompanionSettings()`. User's profiles/hotkeys/endpoints destroyed by one bad line.
 - [x] **CoreToolsModule.cs:197-213 — `set_operating_mode` maps unknown input → Awake and unconditionally clears manual gaming.** Garbage/other modes wake her and drop the game hand-off as a side effect.
-- [ ] **MusicPlayerModule.cs:1385-1389 — a corrupt file mid-playlist silently ends the whole queue.** No skip, no notice, no model feedback — silence is her only symptom.
+- [x] **MusicPlayerModule.cs:1385-1389 — a corrupt file mid-playlist silently ends the whole queue.** No skip, no notice, no model feedback — silence is her only symptom.
 - [ ] **ModuleHost.cs:96-132 — a module whose `InitializeAsync` failed stays installed, enabled, and routable.** First call = "Object reference not set…" to the model.
 
 ## P1 — HIGH (bad handling worth fixing in the same passes)
 
-- [ ] **MusicPlayerModule.cs:1394-1401/1179 — Stop vs auto-next TOCTOU race.** Generation checked outside the player lock; commanded stop can still lose and music keeps playing.
+- [x] **MusicPlayerModule.cs:1394-1401/1179 — Stop vs auto-next TOCTOU race.** Generation checked outside the player lock; commanded stop can still lose and music keeps playing.
 - [ ] **SystemControlModule.cs:185-231 — `find_files` is a synchronous `SearchOption.AllDirectories` sweep with no CancellationToken**, run on the ModuleHost caller thread → 45s-cap + keeps walking after "stopped waiting"; per-root catch hides skipped half-trees.
 - [ ] **SystemControlModule.cs:265/394 — `double.TryParse` without InvariantCulture.** "5.5 minutes" → **55 minutes** on comma-decimal locales; unparsable → silently becomes a 5-minute timer, announced confidently.
-- [ ] **MusicPlayerModule.cs:1077-1085/976-980 — corrupt playlist JSON swallowed as empty list, re-reported as "no playable tracks left on disk"** (points the investigation at disk, not data); `SavePlaylist` has no atomic write.
-- [ ] **MusicPlayerModule.cs:135/735-737 — "play anything" while paused replays the current track** while its description promises a library pick — the vague-ask path lies.
-- [ ] **MusicPlayerModule.cs:1120-1126 — track matching scores file names only.** Artists in folder names/tag data unfindable; "play Iron Maiden" fails unless the filename says so. (Her-IQ-evidence philosophy: match should return *candidates* for her to reason over, not fail empty.)
+- [x] **MusicPlayerModule.cs:1077-1085/976-980 — corrupt playlist JSON swallowed as empty list, re-reported as "no playable tracks left on disk"** (points the investigation at disk, not data); `SavePlaylist` has no atomic write.
+- [x] **MusicPlayerModule.cs:135/735-737 — "play anything" while paused replays the current track** while its description promises a library pick — the vague-ask path lies.
+- [x] **MusicPlayerModule.cs:1120-1126 — track matching scores file names only.** Artists in folder names/tag data unfindable; "play Iron Maiden" fails unless the filename says so. (Her-IQ-evidence philosophy: match should return *candidates* for her to reason over, not fail empty.)
 - [ ] **AssistantBrain.cs:634-641 — `uncertainTools` blocks retries by tool NAME for the whole turn** even for a legitimately different target.
 - [ ] **AssistantBrain.Turn.cs:37-39 — bare word "think" wakes the cortex from sleep.** "I think that song is nice" loads 7-8B VRAM on chatter.
 - [ ] **LlamaServerHost.cs:229-249 — startup kills every `llama-server.exe` on the machine by name.** Collateral damage on a dev machine running other local servers.
@@ -74,7 +74,7 @@ Everything below is an instance of one of those three.
 
 ## P2 — MEDIUM (smells/debt, fix opportunistically)
 
-- [ ] MusicPlayerModule.cs:297-299 — `list_music` shows 20 of many thousands; no music-search tool exists (evidence gap).
+- [x] MusicPlayerModule.cs:297-299 — `list_music` shows 20 of many thousands; no music-search tool exists (evidence gap).
 - [ ] ModuleHost.cs:29 — `MaximumToolsPerTurn = 24` is generous but unused since core budget 4 + Take(2) modules bind first.
 - [ ] ModuleHost.cs:522/541 — timeout keeps work running uncancelled even for cancellable modules (not just late faults).
 - [x] CoreToolsModule.cs:62-65 — `forget_memory` description forces "ask user to open Memory" — in-tool permission-stall; should return candidates for her to decide (evidence pattern like MissingPlaylistResult).
