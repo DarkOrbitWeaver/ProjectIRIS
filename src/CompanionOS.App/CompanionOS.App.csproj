@@ -10,20 +10,18 @@
     <TrimMode>copyused</TrimMode>
   </PropertyGroup>
 
-  <!--
-    The tray icon lives here as a real .ico rather than something drawn at start-up.
-    It is the only image asset in the project: her face in the notification area, shown
-    when she is asleep and nothing else of her is running.
-  -->
+  <!-- The tray icon is a real .ico rather than something drawn at start-up. -->
   <ItemGroup>
     <AvaloniaResource Include="Assets/**" />
+    <None Include="../../iris-mascot.html" Link="iris-mascot.html" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Avalonia" Version="11.2.3" />
-    <PackageReference Include="Avalonia.Desktop" Version="11.2.3" />
-    <PackageReference Include="Avalonia.Themes.Fluent" Version="11.2.3" />
-    <PackageReference Include="Avalonia.Diagnostics" Version="11.2.3" Condition="'$(Configuration)' == 'Debug'" />
+    <PackageReference Include="Avalonia" Version="11.3.11" />
+    <PackageReference Include="Avalonia.Desktop" Version="11.3.11" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="11.3.11" />
+    <PackageReference Include="Avalonia.Diagnostics" Version="11.3.11" Condition="'$(Configuration)' == 'Debug'" />
+    <PackageReference Include="WebView2.Avalonia" Version="1.0.3240.44-preview.250526.1" />
   </ItemGroup>
 
   <ItemGroup>
@@ -35,5 +33,6 @@
   <ItemGroup>
     <None Include="../../README.md" Link="docs/README.md" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../../docs/BUILD-AND-RUN.md" Link="docs/BUILD-AND-RUN.md" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../examples/modules/telegram-personal/**" Link="modules/telegram-personal/%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

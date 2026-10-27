@@ -9,10 +9,13 @@ using Avalonia.Threading;
 using Avalonia.VisualTree;
 using CompanionOS.App.Interface.Controls;
 using CompanionOS.App.Interface.Theme;
+using CompanionOS.App.Services;
 using CompanionOS.Core.Events;
+using CompanionOS.Core.Configuration;
 using CompanionOS.Core.Mind;
 using CompanionOS.Core.Modules;
 using CompanionOS.Core.Modules.BuiltIn;
+using Microsoft.Web.WebView2.Core;
 
 namespace CompanionOS.App.Interface.Views;
 
@@ -28,17 +31,18 @@ namespace CompanionOS.App.Interface.Views;
 /// the main window, so orb state and levels are identical in both places.
 ///
 /// Hover is read from the whole window, not from the orb cell. A 5 px transparent inset
-/// leaves room for the called-state contour, and the window resizes around a fixed edge.
-/// That combination is what makes the reveal usable:
-/// expanding never slides the pill out from under the pointer, and leaving it collapses
-/// after a short grace period instead of flickering. The window is shown without
-/// activation so opening the overlay never steals focus from a game.
+/// leaves room for the called-state contour. When the portrait is present, the outer
+/// window stays at its expanded width so revealing controls cannot shift the avatar;
+/// without it, the window resizes away from its docked edge. Leaving collapses after a
+/// short grace period instead of flickering. The window is shown without activation so
+/// opening the overlay never steals focus from a game.
 /// </summary>
 public sealed class OverlayWindow : Window
 {
     // The board's pill arithmetic, in DIPs. The border remains 44 px tall; transparent
     // space around it gives the attention halo room without clipping the pill's contents.
     private const double PillHeight = 44;
+    private const double AvatarSize = 220;
     private const double OrbSize = 22;
     private const double DotSize = 6;
     private const double Gap = 10;
@@ -76,6 +80,9 @@ public sealed class OverlayWindow : Window
     private readonly StackPanel _buttonsHost;
     private readonly StackPanel _equalizerHost;
     private readonly Border _pill;
+    private readonly Grid _pillSurface;
+    private readonly Border _avatarFrame;
+    private readonly WebView2 _mascotView;
     private readonly AttentionContour _attentionContour = new() { IsHitTestVisible = false };
     private readonly DispatcherTimer _syncTimer;
     private readonly DispatcherTimer _collapseTimer;
@@ -87,6 +94,8 @@ public sealed class OverlayWindow : Window
     private readonly ModuleTaskFeedbackOverlayWindow _taskFeedbackOverlay;
     private readonly Dictionary<string, ModuleSurfaceOverlayWindow> _moduleSurfaceOverlays =
         new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<Window, long> _overlayShowOrder = new();
+    private long _overlaySequence;
     private readonly Dictionary<string, BackgroundTaskSnapshot> _backgroundTasks =
         new(StringComparer.OrdinalIgnoreCase);
     private NowPlayingModel? _nowPlaying;
@@ -105,6 +114,11 @@ public sealed class OverlayWindow : Window
     private bool _dragging;
     private bool _growsLeft;
     private bool _hasPosition;
+    private bool _mascotReady;
+    private string? _lastMascotState;
+    private string? _mascotEventState;
+    private DateTimeOffset _mascotEventStateUntil = DateTimeOffset.MinValue;
+    private int _lastMascotAmplitudeStep = -1;
     private DateTimeOffset _attentionUntil = DateTimeOffset.MinValue;
 
     /// <summary>The pill's four shapes; each one fixes the window's width.</summary>
@@ -216,11 +230,60 @@ public sealed class OverlayWindow : Window
             Child = row
         };
 
-        Grid overlaySurface = new() { ClipToBounds = false };
-        overlaySurface.Children.Add(_pill);
-        overlaySurface.Children.Add(_attentionContour);
-        Content = overlaySurface;
-        Width = WindowWidth(PillShape.Compact);
+        string mascotPagePath = System.IO.Path.Combine(AppContext.BaseDirectory, "iris-mascot.html");
+        if (!File.Exists(mascotPagePath))
+        {
+            throw new FileNotFoundException("The Iris mascot page was not copied to the application output directory.",
+                mascotPagePath);
+        }
+
+        UriBuilder mascotPage = new(new Uri(mascotPagePath))
+        {
+            Query = "overlay=1"
+        };
+        _mascotView = new WebView2
+        {
+            DefaultBackgroundColor = System.Drawing.Color.Transparent,
+            Focusable = false,
+            IsTabStop = false
+        };
+        _mascotView.CoreWebView2InitializationCompleted += OnMascotWebViewInitialized;
+        _mascotView.Source = mascotPage.Uri;
+
+        _avatarFrame = new Border
+        {
+            Width = AvatarSize,
+            Height = AvatarSize,
+            CornerRadius = new CornerRadius(12),
+            BorderThickness = new Thickness(1),
+            BorderBrush = Palette.StrokeBrush,
+            Background = new SolidColorBrush(Color.FromRgb(18, 20, 28)),
+            ClipToBounds = true,
+            Child = _mascotView
+        };
+
+        _pillSurface = new Grid
+        {
+            Width = WindowWidth(PillShape.Compact),
+            Height = PillHeight + (AttentionAuraInset * 2),
+            ClipToBounds = false
+        };
+        _pillSurface.Children.Add(_pill);
+        _pillSurface.Children.Add(_attentionContour);
+
+        StackPanel dockedGroup = new()
+        {
+            Orientation = Orientation.Vertical,
+            Spacing = Gap,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Top
+        };
+        dockedGroup.Children.Add(_avatarFrame);
+        dockedGroup.Children.Add(_pillSurface);
+
+        Content = dockedGroup;
+        Width = Math.Max(WindowWidth(PillShape.Buttons), AvatarSize);
+        Height = AvatarSize + Gap + PillHeight + (AttentionAuraInset * 2);
 
         // Apply the resting shape before the first paint. Previously the construction
         // width was the compact one while both button and equalizer hosts still had their
@@ -302,6 +365,9 @@ public sealed class OverlayWindow : Window
             _backgroundTaskSubscription?.Dispose();
             _moduleSurfaceStateSubscription?.Dispose();
             _taskFeedbackSubscription?.Dispose();
+            _mascotReady = false;
+            _mascotView.CoreWebView2InitializationCompleted -= OnMascotWebViewInitialized;
+            _mascotView.NavigationCompleted -= OnMascotNavigationCompleted;
             if (_nowPlaying is not null)
             {
                 _nowPlaying.PropertyChanged -= OnNowPlayingChanged;
@@ -337,7 +403,11 @@ public sealed class OverlayWindow : Window
         _moduleRegistrySubscription = _model.Runtime.Events.Subscribe<ModuleRegistryChangedEvent>(_ =>
             Dispatcher.UIThread.Post(RebindModuleSurfaces));
         _conversationSubscription = _model.Runtime.Events.Subscribe<ConversationEvent>(payload =>
-            Dispatcher.UIThread.Post(() => HandleModuleConversation(payload)));
+            Dispatcher.UIThread.Post(() =>
+            {
+                HandleMascotConversation(payload);
+                HandleModuleConversation(payload);
+            }));
         _moduleProgressSubscription = _model.Runtime.Events.Subscribe<ModuleProgressEvent>(payload =>
             Dispatcher.UIThread.Post(() => HandleModuleProgress(payload)));
         _backgroundTaskSubscription = _model.Runtime.Events.Subscribe<BackgroundTaskChangedEvent>(payload =>
@@ -523,7 +593,6 @@ public sealed class OverlayWindow : Window
     private void Sync()
     {
         MindState state = _model.State;
-
         _orb.State = state;
         _orb.MicrophoneLevel = _model.MicrophoneLevel;
         _orb.SpeechLevel = _model.SpeechLevel;
@@ -553,18 +622,226 @@ public sealed class OverlayWindow : Window
             _model.SpeechLevel,
             _model.Runtime.Settings.Current.Interface.ReduceMotion);
 
+        // Keep the live mascot visible, except when the user dims gaming.
+        double speechMotion = _model.IsSpeaking ? Math.Clamp(_model.SpeechLevel, 0, 1) : 0;
+        _avatarFrame.BorderBrush = new SolidColorBrush(StatusOrb.ColorForState(state));
+        _avatarFrame.Opacity = state == MindState.Gaming &&
+                               _model.Runtime.Settings.Current.Interface.DimWhileGaming
+            ? 0.4
+            : 0.92 + (speechMotion * 0.08);
+        SyncMascot(state);
+
         SyncMusicOverlay();
         SyncTimerOverlay();
         SyncPermissionOverlay();
         SyncModuleSurfaceOverlays();
         SyncActivityOverlay();
         SyncTaskFeedbackOverlay();
+        ArrangeVisibleOverlays();
         TimeSpan desired = state == MindState.Gaming
             ? TimeSpan.FromSeconds(1)
             : TimeSpan.FromMilliseconds(100);
         if (_syncTimer.Interval != desired)
         {
             _syncTimer.Interval = desired;
+        }
+    }
+
+    private void OnMascotWebViewInitialized(object? sender, CoreWebView2InitializationCompletedEventArgs args)
+    {
+        if (!args.IsSuccess)
+        {
+            SystemWatch.Fault("overlay-mascot",
+                args.InitializationException ?? new InvalidOperationException("The embedded browser failed to initialize."),
+                "The mascot WebView2 browser could not start.");
+            return;
+        }
+
+        _mascotView.NavigationCompleted += OnMascotNavigationCompleted;
+    }
+
+    private void HandleMascotConversation(ConversationEvent payload)
+    {
+        switch (payload.Phase)
+        {
+            case ConversationPhase.UserMessage:
+            case ConversationPhase.AssistantStarted:
+            case ConversationPhase.TurnCancelled:
+                _mascotEventState = null;
+                _mascotEventStateUntil = DateTimeOffset.MinValue;
+                break;
+
+            case ConversationPhase.ToolStarted:
+                _mascotEventState = MascotToolState(payload);
+                _mascotEventStateUntil = DateTimeOffset.MaxValue;
+                break;
+
+            case ConversationPhase.ToolFinished:
+                _mascotEventState = payload.Detail?.Contains("did not allow", StringComparison.OrdinalIgnoreCase) == true
+                    ? "confused"
+                    : "success";
+                _mascotEventStateUntil = DateTimeOffset.Now.AddSeconds(1.5);
+                break;
+
+            case ConversationPhase.AssistantCompleted:
+                _mascotEventState = "success";
+                _mascotEventStateUntil = DateTimeOffset.Now.AddSeconds(1.5);
+                break;
+
+            case ConversationPhase.TurnFailed:
+                _mascotEventState = "error";
+                _mascotEventStateUntil = DateTimeOffset.Now.AddSeconds(2.5);
+                break;
+        }
+
+        SyncMascot(_model.State);
+    }
+
+    private static string MascotToolState(ConversationEvent payload)
+    {
+        string activity = $"{payload.IconKey} {payload.ModuleId} {payload.Text} {payload.Detail}";
+        if (activity.Contains("search", StringComparison.OrdinalIgnoreCase) ||
+            activity.Contains("browse", StringComparison.OrdinalIgnoreCase) ||
+            activity.Contains("browser", StringComparison.OrdinalIgnoreCase) ||
+            activity.Contains("web", StringComparison.OrdinalIgnoreCase))
+        {
+            return "searching";
+        }
+
+        if (activity.Contains("read file", StringComparison.OrdinalIgnoreCase) ||
+            activity.Contains("open file", StringComparison.OrdinalIgnoreCase) ||
+            activity.Contains("document", StringComparison.OrdinalIgnoreCase))
+        {
+            return "reading";
+        }
+
+        return "coding";
+    }
+
+    private void OnMascotNavigationCompleted(object? sender, CoreWebView2NavigationCompletedEventArgs args)
+    {
+        if (!args.IsSuccess)
+        {
+            SystemWatch.Trace("overlay-mascot",
+                $"The mascot page failed to load in the embedded browser: {args.WebErrorStatus}.");
+            return;
+        }
+
+        _mascotReady = true;
+        _lastMascotState = null;
+        _lastMascotAmplitudeStep = -1;
+        SyncMascot(_model.State);
+    }
+
+    private void SyncMascot(MindState state)
+    {
+        if (!_mascotReady)
+        {
+            return;
+        }
+
+        string mascotState = _model.IsSpeaking ? "speaking" : state switch
+        {
+            MindState.Booting or MindState.Thinking => "thinking",
+            MindState.Idle or MindState.Gaming => "idle",
+            MindState.Listening => "listening",
+            MindState.Acting => "coding",
+            MindState.Speaking => "idle",
+            MindState.PermissionWait => "confused",
+            MindState.Sleeping => "sleeping",
+            MindState.Error => "error",
+            _ => "idle"
+        };
+        if (!_model.IsSpeaking && _mascotEventState is not null)
+        {
+            if (DateTimeOffset.Now < _mascotEventStateUntil)
+            {
+                mascotState = _mascotEventState;
+            }
+            else
+            {
+                _mascotEventState = null;
+                _mascotEventStateUntil = DateTimeOffset.MinValue;
+            }
+        }
+
+        bool stateChanged = !string.Equals(mascotState, _lastMascotState, StringComparison.Ordinal);
+        int amplitudeStep = (int)Math.Round(Math.Clamp(_model.SpeechLevel, 0, 1) * 20);
+        bool amplitudeChanged = _model.IsSpeaking && amplitudeStep != _lastMascotAmplitudeStep;
+        if (!stateChanged && !amplitudeChanged)
+        {
+            return;
+        }
+
+        _lastMascotState = mascotState;
+        _lastMascotAmplitudeStep = _model.IsSpeaking ? amplitudeStep : -1;
+        string stateCommand = stateChanged ? $"window.irisMascot.setState('{mascotState}');" : string.Empty;
+        string amplitudeCommand = amplitudeChanged
+            ? $"window.irisMascot.setAmplitude({amplitudeStep}/20);"
+            : string.Empty;
+        Task invocation = _mascotView.ExecuteScriptAsync(
+            $"if(window.irisMascot){{{stateCommand}{amplitudeCommand}}}");
+        _ = invocation.ContinueWith(
+            task =>
+            {
+                if (task.Exception is { } exception)
+                {
+                    SystemWatch.Fault("overlay-mascot", exception.GetBaseException(),
+                        "Updating the mascot animation.");
+                }
+            },
+            CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted,
+            TaskScheduler.Default);
+    }
+
+    /// <summary>Cards share a single top-right stack beneath the pill and portrait.
+    /// A newly shown card gets the newest sequence and takes the first slot, shifting
+    /// earlier cards down in their existing order.</summary>
+    private void ArrangeVisibleOverlays()
+    {
+        if (WorkArea() is not { } work)
+        {
+            return;
+        }
+
+        List<Window> cards =
+        [
+            _permissionOverlay,
+            _taskFeedbackOverlay,
+            _activityOverlay,
+            _timerOverlay,
+            _musicOverlay,
+            .. _moduleSurfaceOverlays.Values
+        ];
+        foreach (Window hidden in cards.Where(window => !window.IsVisible))
+        {
+            _overlayShowOrder.Remove(hidden);
+        }
+
+        foreach (Window visible in cards.Where(window => window.IsVisible))
+        {
+            if (!_overlayShowOrder.ContainsKey(visible))
+            {
+                _overlayShowOrder[visible] = ++_overlaySequence;
+            }
+        }
+
+        double scale = Scaling;
+        int margin = (int)Math.Ceiling(DockMargin * scale);
+        int xGap = (int)Math.Ceiling(8 * scale);
+        int y = work.Y + PixelHeight() + (int)Math.Ceiling(8 * scale);
+        foreach (Window card in cards.Where(window => window.IsVisible)
+                     .OrderByDescending(window => _overlayShowOrder[window]))
+        {
+            int width = Math.Max(1, (int)Math.Ceiling(card.Width * scale));
+            int height = Math.Max(1, (int)Math.Ceiling(card.Height * scale));
+            int x = work.Right - width - margin;
+            y = Math.Min(y, work.Bottom - height - margin);
+            card.Position = new PixelPoint(
+                Math.Clamp(x, work.X + margin, Math.Max(work.X + margin, work.Right - width - margin)),
+                Math.Clamp(y, work.Y + margin, Math.Max(work.Y + margin, work.Bottom - height - margin)));
+            y += height + xGap;
         }
     }
 
@@ -1043,8 +1320,8 @@ public sealed class OverlayWindow : Window
     }
 
     /// <summary>
-    /// Swaps the pill's contents for a new shape and resizes the window around the edge
-    /// the pill is anchored to, so the screen position of that edge never moves.
+    /// Swaps the pill's contents for a new shape. Without a portrait, resize the window
+    /// around its docked edge; with one, keep the outer width fixed so the avatar stays put.
     /// </summary>
     private void ApplyShape(PillShape shape, bool initial = false)
     {
@@ -1068,7 +1345,10 @@ public sealed class OverlayWindow : Window
             ? new Thickness(OrbitOnlyPadding, 0, OrbitOnlyPadding, 0)
             : new Thickness(PadLeft, 0, PadRight, 0);
 
-        Width = WindowWidth(shape);
+        Width = _avatarFrame.IsVisible
+            ? Math.Max(WindowWidth(PillShape.Buttons), AvatarSize)
+            : WindowWidth(shape);
+        _pillSurface.Width = WindowWidth(shape);
         _pill.Width = FixedWidth(shape);
 
         if (initial || !_hasPosition || !IsVisible || Math.Abs(oldWidth - Width) < 0.1)

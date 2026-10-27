@@ -199,6 +199,41 @@ public sealed partial class MainWindow : Window
         }
 
         OfferBrowserExtensionSetup();
+        OfferTelegramSetup();
+    }
+
+    private void OfferTelegramSetup()
+    {
+        bool telegramInstalled = _runtime.Plugins.Loaded.Any(plugin =>
+            plugin.Id.Equals("telegram-personal", StringComparison.OrdinalIgnoreCase));
+        if (!telegramInstalled)
+            return;
+
+        string sessionFile = IOPath.Combine(
+            CompanionOS.Core.Configuration.CompanionPaths.DataRoot, "telegram", "session.dpapi");
+        if (File.Exists(sessionFile))
+            return;
+
+        Dispatcher.UIThread.Post(() =>
+        {
+            TelegramSetupWindow setup = new(ShowBody, () =>
+            {
+                try
+                {
+                    Process.Start(new ProcessStartInfo("http://127.0.0.1:47832/")
+                    {
+                        UseShellExecute = true
+                    });
+                }
+                catch (Exception exception)
+                {
+                    _runtime.Events.PublishNotice(
+                        $"Telegram setup page is not available yet: {exception.Message}. Open Modules and set up Telegram first.",
+                        NoticeSeverity.Warning);
+                }
+            });
+            setup.Show(this);
+        });
     }
 
     private void OfferBrowserExtensionSetup()

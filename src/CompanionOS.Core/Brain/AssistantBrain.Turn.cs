@@ -513,10 +513,11 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
         ["receipts"] = string.Join(" | ", toolLedger)
     };
 
-    private IReadOnlyList<ChatMessage> TakeHistoryWindow()
+    private IReadOnlyList<ChatMessage> TakeHistoryWindow(out IReadOnlyList<int> spanLengths)
     {
         lock (_historyLock)
         {
+            spanLengths = _historyTurns.Select(span => span.Count).ToList();
             return _historyTurns.SelectMany(span => span).ToList();
         }
     }
@@ -766,9 +767,9 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
     }
 
     /// <summary>Rough context accounting for the status strip, deliberately cheap.</summary>
-    private void PublishContextTelemetry(IReadOnlyList<ChatMessage> messages)
+    private void PublishContextTelemetry(IReadOnlyList<ChatMessage> messages, IReadOnlyList<ModuleTool> tools)
     {
-        int estimatedTokens = messages.Sum(message => (message.Content.Length / 4) + 4);
+        int estimatedTokens = ModelClient.EstimatePromptTokens(messages, tools);
         int contextSize = Math.Max(2048, _settings.Current.ActiveBrainProfile.ContextTokens);
 
         _events.Publish(new TelemetryEvent

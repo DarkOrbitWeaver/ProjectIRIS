@@ -14,6 +14,7 @@
   "tools": [
     { "name": "browser_pair", "permission": "browser.act", "alwaysConfirm": true },
     { "name": "browser_status", "permission": "browser.read" },
+    { "name": "browser_search", "permission": "browser.read" },
     { "name": "browser_read_page", "permission": "browser.read" },
     { "name": "browser_focus", "permission": "browser.read" },
     { "name": "browser_attend", "permission": "browser.read" },

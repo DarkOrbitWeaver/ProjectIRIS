@@ -515,11 +515,12 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
             DateTime.Now.ToString("dddd HH:mm"));
 
         List<ChatMessage> messages = new() { ChatMessage.System(systemPrompt) };
-        messages.AddRange(TakeHistoryWindow());
+        IReadOnlyList<int> historySpanLengths;
+        messages.AddRange(TakeHistoryWindow(out historySpanLengths));
         int turnStartIndex = messages.Count;
         messages.Add(ChatMessage.User($"{turnContext}\n\n{userText}", attachedImage));
 
-        PublishContextTelemetry(messages);
+        PublishContextTelemetry(messages, routedTools);
 
         _journal.RecordAnswerStarted(turnId);
         _events.Publish(new ConversationEvent
@@ -612,7 +613,9 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
                     await Task.CompletedTask.ConfigureAwait(false);
                 },
                 cancellationToken,
-                onToolCallStarted: () => toolStartedThisRound = true).ConfigureAwait(false);
+                onToolCallStarted: () => toolStartedThisRound = true,
+                historySpanLengths: historySpanLengths,
+                currentTurnStartIndex: turnStartIndex).ConfigureAwait(false);
 
             // The round receipt: what the model actually did this round, from the stream
             // interface itself. "No hand moved" used to be one unexplainable silence; now

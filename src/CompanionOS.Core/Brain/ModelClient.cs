@@ -108,28 +108,46 @@ public sealed class ModelClient : IDisposable
         IReadOnlyList<ModuleTool> tools,
         Func<string, Task>? onTextDelta,
         CancellationToken cancellationToken,
-        Action? onToolCallStarted = null)
+        Action? onToolCallStarted = null,
+        IReadOnlyList<int>? historySpanLengths = null,
+        int currentTurnStartIndex = 1)
     {
-        JsonObject requestBody = BuildRequestBody(profile, messages, tools);
-
-        using HttpRequestMessage request = new(HttpMethod.Post, ComposeEndpoint(profile.Endpoint, "chat/completions"));
-        request.Content = new StringContent(requestBody.ToJsonString(), Encoding.UTF8, "application/json");
-        if (!string.IsNullOrWhiteSpace(profile.ApiKey))
-        {
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", profile.ApiKey);
-        }
-
-        using HttpResponseMessage response = await _httpClient
-            .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
-            .ConfigureAwait(false);
+        FittedPrompt fitted = FitPrompt(profile, messages, tools, historySpanLengths, currentTurnStartIndex);
+        HttpResponseMessage response = await SendRequestAsync(profile, fitted, cancellationToken).ConfigureAwait(false);
 
         if (!response.IsSuccessStatusCode)
         {
             string errorBody = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-            string trimmedError = errorBody.Length > 500 ? errorBody[..500] : errorBody;
-            throw new ModelClientException(
-                $"The model endpoint answered {(int)response.StatusCode}. {trimmedError}");
+            if (TryReadContextOverflow(errorBody, out int actualPromptTokens, out int actualContextTokens))
+            {
+                int context = actualContextTokens > 0 ? actualContextTokens : Math.Max(2_048, profile.ContextTokens);
+                double observedRatio = (double)actualPromptTokens / Math.Max(1, fitted.EstimatedTokens);
+                int retryBudget = Math.Max(512, (int)Math.Floor(fitted.InputBudget / Math.Max(1.0, observedRatio) * 0.9));
+                response.Dispose();
+                fitted = FitPrompt(profile, messages, tools, historySpanLengths, currentTurnStartIndex,
+                    Math.Min(retryBudget, context - Math.Clamp(profile.MaxResponseTokens, 256, Math.Max(256, context / 3))));
+                CompanionLog.Warning("Model",
+                    $"The endpoint tokenizer measured {actualPromptTokens:N0}/{context:N0} prompt tokens after local estimation; compacted and retried once with a {fitted.InputBudget:N0}-token input budget.");
+                response = await SendRequestAsync(profile, fitted, cancellationToken).ConfigureAwait(false);
+                if (!response.IsSuccessStatusCode)
+                {
+                    errorBody = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                    response.Dispose();
+                    string retryError = errorBody.Length > 500 ? errorBody[..500] : errorBody;
+                    throw new ModelClientException(
+                        $"The model endpoint still rejected the context-fitted retry ({(int)response.StatusCode}). {retryError}");
+                }
+            }
+            else
+            {
+                response.Dispose();
+                string trimmedError = errorBody.Length > 500 ? errorBody[..500] : errorBody;
+                throw new ModelClientException(
+                    $"The model endpoint answered {(int)response.StatusCode}. {trimmedError}");
+            }
         }
+
+        using HttpResponseMessage responseLifetime = response;
 
         await using Stream stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
         using StreamReader reader = new(stream, Encoding.UTF8);
@@ -351,6 +369,171 @@ public sealed class ModelClient : IDisposable
 
         return body;
     }
+
+    /// <summary>
+    /// Estimates the complete prompt, including native tool schemas and image cost.
+    /// The endpoint's tokenizer is authoritative, so the estimate deliberately errs
+    /// high and keeps space for the requested answer.
+    /// </summary>
+    public static int EstimatePromptTokens(IReadOnlyList<ChatMessage> messages,
+        IReadOnlyList<ModuleTool> tools)
+    {
+        long characters = 0;
+        int imageCount = 0;
+        foreach (ChatMessage message in messages)
+        {
+            characters += message.Content.Length;
+            if (!string.IsNullOrWhiteSpace(message.ImageDataUri)) imageCount++;
+            foreach (ToolCallRequest call in message.ToolCalls)
+                characters += call.Name.Length + call.ArgumentsJson.Length + 48;
+        }
+        foreach (ModuleTool tool in tools)
+            characters += tool.Name.Length + tool.Description.Length + tool.ParametersJson.Length + 96;
+
+        // JSON schemas and URLs tokenize less efficiently than prose. 2.8 characters
+        // per token is a conservative cross-model estimate; image patches are reserved
+        // separately because base64 length is not their model-token cost.
+        return checked((int)Math.Min(int.MaxValue,
+            Math.Ceiling(characters / 2.8) + (messages.Count * 8L) + (tools.Count * 16L) + (imageCount * 1_200L)));
+    }
+
+    private static FittedPrompt FitPrompt(BrainProfile profile, IReadOnlyList<ChatMessage> sourceMessages,
+        IReadOnlyList<ModuleTool> sourceTools, IReadOnlyList<int>? historySpanLengths,
+        int currentTurnStartIndex, int? inputBudgetLimit = null)
+    {
+        List<ChatMessage> messages = sourceMessages.ToList();
+        List<ModuleTool> tools = sourceTools.ToList();
+        List<int> spans = historySpanLengths?.ToList() ?? new List<int>();
+        int currentStart = Math.Clamp(currentTurnStartIndex, 1, messages.Count);
+        int removedTurns = 0;
+        int shortenedResults = 0;
+        int omittedImages = 0;
+
+        int context = Math.Max(2_048, profile.ContextTokens);
+        int responseReserve = Math.Clamp(profile.MaxResponseTokens, 256, Math.Max(256, context / 3));
+        int safetyMargin = Math.Max(512, context / 10);
+        int inputBudget = Math.Max(512, Math.Min(context - responseReserve - safetyMargin,
+            inputBudgetLimit ?? int.MaxValue));
+
+        while (EstimatePromptTokens(messages, tools) > inputBudget && spans.Count > 0)
+        {
+            int removeCount = Math.Clamp(spans[0], 0, Math.Max(0, currentStart - 1));
+            if (removeCount == 0) break;
+            messages.RemoveRange(1, removeCount);
+            spans.RemoveAt(0);
+            currentStart -= removeCount;
+            removedTurns++;
+        }
+
+        foreach (int maximumResultCharacters in new[] { 4_000, 2_000, 1_000, 500, 240 })
+        {
+            if (EstimatePromptTokens(messages, tools) <= inputBudget) break;
+            for (int index = currentStart; index < messages.Count; index++)
+            {
+                ChatMessage message = messages[index];
+                if (message.Role != "tool" || message.Content.Length <= maximumResultCharacters) continue;
+                messages[index] = CopyWithContent(message, ShortenToolResult(message.Content, maximumResultCharacters));
+                shortenedResults++;
+            }
+        }
+
+        // A vision result from an earlier step in this same turn is expendable once
+        // textual evidence is present. Keep an image attached to the user's current
+        // request intact.
+        if (EstimatePromptTokens(messages, tools) > inputBudget)
+        {
+            for (int index = currentStart + 1; index < messages.Count; index++)
+            {
+                ChatMessage message = messages[index];
+                if (string.IsNullOrWhiteSpace(message.ImageDataUri)) continue;
+                messages[index] = new ChatMessage
+                {
+                    Role = message.Role,
+                    Content = message.Content + " [Earlier image omitted to fit the model context.]",
+                    ToolCalls = message.ToolCalls,
+                    ToolCallId = message.ToolCallId,
+                    ToolName = message.ToolName
+                };
+                omittedImages++;
+                if (EstimatePromptTokens(messages, tools) <= inputBudget) break;
+            }
+        }
+
+        int estimated = EstimatePromptTokens(messages, tools);
+        if (removedTurns > 0 || shortenedResults > 0 || omittedImages > 0)
+        {
+            CompanionLog.Warning("Model",
+                $"Kept this request within its context budget: estimated {estimated:N0}/{inputBudget:N0} input tokens; " +
+                $"dropped {removedTurns} older turn(s), shortened {shortenedResults} tool result(s), omitted {omittedImages} earlier image(s).");
+        }
+
+        if (estimated > inputBudget)
+        {
+            throw new ModelClientException(
+                $"This request needs about {estimated:N0} input tokens, but the {context:N0}-token brain has {inputBudget:N0} available after answer space and safety margin. " +
+                "Iris kept the current request intact but could not fit its current tool catalog and results. Turn off unused modules or choose a brain with a larger context window.");
+        }
+
+        return new FittedPrompt(messages, tools, estimated, inputBudget);
+    }
+
+    private async Task<HttpResponseMessage> SendRequestAsync(BrainProfile profile, FittedPrompt fitted,
+        CancellationToken cancellationToken)
+    {
+        using HttpRequestMessage request = new(HttpMethod.Post, ComposeEndpoint(profile.Endpoint, "chat/completions"));
+        request.Content = new StringContent(
+            BuildRequestBody(profile, fitted.Messages, fitted.Tools).ToJsonString(), Encoding.UTF8, "application/json");
+        if (!string.IsNullOrWhiteSpace(profile.ApiKey))
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", profile.ApiKey);
+        return await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    private static bool TryReadContextOverflow(string errorBody, out int promptTokens, out int contextTokens)
+    {
+        promptTokens = 0;
+        contextTokens = 0;
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(errorBody);
+            JsonElement root = document.RootElement;
+            if (root.TryGetProperty("error", out JsonElement error) && error.ValueKind == JsonValueKind.Object)
+            {
+                promptTokens = error.TryGetProperty("n_prompt_tokens", out JsonElement prompt) && prompt.TryGetInt32(out int promptValue)
+                    ? promptValue : 0;
+                contextTokens = error.TryGetProperty("n_ctx", out JsonElement context) && context.TryGetInt32(out int contextValue)
+                    ? contextValue : 0;
+                string type = error.TryGetProperty("type", out JsonElement typeValue) ? typeValue.GetString() ?? string.Empty : string.Empty;
+                string message = error.TryGetProperty("message", out JsonElement messageValue) ? messageValue.GetString() ?? string.Empty : string.Empty;
+                return type.Contains("context", StringComparison.OrdinalIgnoreCase) ||
+                       message.Contains("exceeds the available context", StringComparison.OrdinalIgnoreCase);
+            }
+        }
+        catch (JsonException) { }
+        return false;
+    }
+
+    private static ChatMessage CopyWithContent(ChatMessage message, string content) => new()
+    {
+        Role = message.Role,
+        Content = content,
+        ImageDataUri = message.ImageDataUri,
+        ToolCalls = message.ToolCalls,
+        ToolCallId = message.ToolCallId,
+        ToolName = message.ToolName
+    };
+
+    private static string ShortenToolResult(string content, int maximumCharacters)
+    {
+        const string marker = "\n[Tool output shortened to fit the model context; ask for a narrower result if needed.]\n";
+        int keep = Math.Max(0, maximumCharacters - marker.Length);
+        int head = keep * 3 / 4;
+        int tail = keep - head;
+        return content[..head] + marker + (tail == 0 ? string.Empty : content[^tail..]);
+    }
+
+    private sealed record FittedPrompt(List<ChatMessage> Messages, List<ModuleTool> Tools,
+        int EstimatedTokens, int InputBudget);
 
     private static JsonObject ConvertMessage(ChatMessage message)
     {

@@ -73,8 +73,7 @@ public sealed class CoreToolsModule : IAssistantModule
 
         new(
             "look_at_screen",
-            "Take a screenshot and look at it with her vision model. Use it when the user refers to " +
-            "something visible, asks what is on screen, or when an error would be easier to read than described.",
+            "Capture the actual screen pixels and inspect the picture with her vision model, including app layout, images, colors, and Iris's red browser attention border. Use this for 'what is on my screen?', 'look at my screen', 'take a picture', or any visual question. This is a screenshot, not browser text extraction.",
             ToolTier.Reflex,
             """{"type":"object","properties":{"question":{"type":"string","description":"What to look for. Optional."}},"required":[]}""",
             "screen", "screenshot", "look", "see", "error", "window", "read this"),

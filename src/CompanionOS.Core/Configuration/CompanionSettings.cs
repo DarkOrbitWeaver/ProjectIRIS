@@ -16,11 +16,11 @@ public sealed class CompanionSettings
     /// exactly once by the settings loader (see SettingsStore.Normalize) and then skip
     /// the legacy heuristics forever — instead of every boot re-deciding what a user's
     /// saved voices meant (audit: this property existed but nothing ever consumed it).
-    /// Version 3 (2026-10-27): the auto-unload policy default moved from 20 idle
-    /// minutes to stay-warm; the migration moves only files still carrying that
-    /// historical default, never a deliberate custom timeout.
+    /// Version 4 (2026-10-27): the floating pill and overlay stack now start at the
+    /// top-right. Legacy saved drag coordinates are cleared once so the new layout
+    /// takes effect on upgrade.
     /// </summary>
-    public const int CurrentSchemaVersion = 3;
+    public const int CurrentSchemaVersion = 4;
 
     /// <summary>
     /// The schema generation of files that predate version stamping. A file whose
@@ -439,7 +439,7 @@ public sealed class InterfaceSettings
     /// Where her overlay pill sits: "bottom right", "top right", "bottom left" or
     /// "top left". The pill stays draggable; this is only where she starts.
     /// </summary>
-    public string OverlayPosition { get; set; } = "bottom right";
+    public string OverlayPosition { get; set; } = "top right";
 
     /// <summary>
     /// The pixel corner she was dragged to, remembered the way the board's caption says:

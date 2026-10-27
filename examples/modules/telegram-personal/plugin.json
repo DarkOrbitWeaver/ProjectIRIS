@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "id": "telegram-personal",
+  "name": "Telegram Personal",
+  "version": "0.1.0",
+  "description": "Connect your personal Telegram account, save contacts by nickname, and send reviewed text or media.",
+  "icon": "telegram",
+  "transport": "mcp",
+  "command": [".venv/Scripts/python.exe", "server.py"],
+  "workingDirectory": ".",
+  "disabled": false,
+  "discoverTools": true,
+  "asksPermission": ["account.read", "contacts.read", "contacts.write", "messages.send", "messages.cancel"],
+  "secrets": ["api_id", "api_hash"],
+  "tools": [
+    { "name": "telegram_status", "permission": "account.read" },
+    { "name": "telegram_list_contacts", "permission": "contacts.read" },
+    { "name": "telegram_add_contact", "permission": "contacts.write" },
+    { "name": "telegram_remove_contact", "permission": "contacts.write" },
+    { "name": "telegram_send_message", "permission": "messages.send", "alwaysConfirm": true },
+    { "name": "telegram_send_media", "permission": "messages.send", "alwaysConfirm": true },
+    { "name": "telegram_cancel_send", "permission": "messages.cancel" },
+    { "name": "telegram_skip_send", "permission": "messages.send" },
+    { "name": "telegram_pending_send", "permission": "messages.cancel" }
+  ]
+}

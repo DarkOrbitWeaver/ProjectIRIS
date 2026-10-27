@@ -149,6 +149,10 @@ public sealed class SettingsStore
             {
                 MigrateAutoSleepPolicy();
             }
+            if (previousVersion < 4)
+            {
+                MigrateOverlayPosition();
+            }
 
             Current.SchemaVersion = CompanionSettings.CurrentSchemaVersion;
             CompanionLog.Info("Settings",
@@ -194,6 +198,15 @@ public sealed class SettingsStore
             IrisEvent.Log("Settings", "settings.autosleep_migrated", LogLevel.Info,
                 message: "Auto-unload after idle moved to stay-warm; gaming mode still frees the GPU on demand.");
         }
+    }
+
+    /// <summary>Schema 3 to 4: move the floating companion and its overlay origin
+    /// to the top-right corner. Clear the old drag location once so it cannot keep
+    /// restoring the pill to the former bottom dock.</summary>
+    private void MigrateOverlayPosition()
+    {
+        Current.Interface.OverlayPosition = "top right";
+        Current.Interface.OverlayPositionPx = string.Empty;
     }
 
     /// <summary>

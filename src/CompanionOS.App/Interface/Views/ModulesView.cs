@@ -233,6 +233,42 @@ public sealed class ModulesView : UserControl
         bool anyChild = false;
         int pluginIndex = 0;
 
+        if (!_runtime.Plugins.Loaded.Any(plugin =>
+                plugin.Id.Equals("telegram-personal", StringComparison.OrdinalIgnoreCase)))
+        {
+            string bundledTelegram = Path.Combine(AppContext.BaseDirectory, "modules", "telegram-personal");
+            if (Directory.Exists(bundledTelegram))
+            {
+                anyChild = true;
+                Button installTelegram = null!;
+                installTelegram = Ui.GhostButton("Install Telegram module", async () =>
+                {
+                    installTelegram.IsEnabled = false;
+                    try
+                    {
+                        string target = Path.Combine(_runtime.Plugins.Root, "telegram-personal");
+                        if (Directory.Exists(target))
+                            throw new IOException($"Telegram module folder already exists at {target}. Refresh modules to load it.");
+                        CopyDirectory(bundledTelegram, target);
+                        await _runtime.RefreshExternalModulesAsync(CancellationToken.None);
+                        Refresh();
+                        _runtime.Events.PublishNotice(
+                            "Telegram module installed. Set up its runtime, then enter api_id and api_hash in its card.",
+                            NoticeSeverity.Success);
+                    }
+                    catch (Exception exception)
+                    {
+                        _runtime.Events.PublishNotice($"Could not install Telegram module: {exception.Message}",
+                            NoticeSeverity.Danger);
+                    }
+                    finally { installTelegram.IsEnabled = true; }
+                });
+                ToolTip.SetTip(installTelegram,
+                    "Copy the bundled Telegram MCP module into Iris's modules folder.");
+                section.Children.Add(installTelegram);
+            }
+        }
+
         foreach (PluginManifest plugin in _runtime.Plugins.Loaded)
         {
             anyChild = true;
@@ -328,6 +364,42 @@ public sealed class ModulesView : UserControl
                     actions.Children.Add(extensionSetup);
                 }
             }
+            else if (plugin.Id.Equals("telegram-personal", StringComparison.OrdinalIgnoreCase))
+            {
+                string setupScript = Path.Combine(plugin.Folder, "setup.ps1");
+                if (File.Exists(setupScript))
+                {
+                    Button telegramRuntime = new()
+                    {
+                        Content = Ui.Text("Set up Telegram", Palette.FontCaption, Palette.SuccessBrush,
+                            FontWeight.Medium, wrap: false),
+                        Background = Brushes.Transparent,
+                        BorderBrush = Palette.StrokeBrush,
+                        BorderThickness = new Thickness(1),
+                        CornerRadius = new CornerRadius(8),
+                        Padding = new Thickness(10, 5),
+                        HorizontalAlignment = HorizontalAlignment.Left
+                    };
+                    telegramRuntime.Click += async (_, _) => await SetupTelegramRuntimeAsync(telegramRuntime, setupScript);
+                    actions.Children.Add(telegramRuntime);
+
+                    Button connectTelegram = new()
+                    {
+                        Content = Ui.Text("Connect account", Palette.FontCaption, Palette.AccentSoftBrush,
+                            FontWeight.Medium, wrap: false),
+                        Background = Brushes.Transparent,
+                        BorderBrush = Palette.StrokeBrush,
+                        BorderThickness = new Thickness(1),
+                        CornerRadius = new CornerRadius(8),
+                        Padding = new Thickness(10, 5),
+                        HorizontalAlignment = HorizontalAlignment.Left
+                    };
+                    ToolTip.SetTip(connectTelegram,
+                        "Open the local Telegram QR setup page. First set up the runtime and API credentials.");
+                    connectTelegram.Click += async (_, _) => await OpenTelegramSetupPageAsync();
+                    actions.Children.Add(connectTelegram);
+                }
+            }
 
             StackPanel body = new() { Spacing = 6 };
             if (!string.IsNullOrWhiteSpace(plugin.Description))
@@ -397,6 +469,81 @@ public sealed class ModulesView : UserControl
         }
 
         return section;
+    }
+
+    private static void CopyDirectory(string source, string destination)
+    {
+        Directory.CreateDirectory(destination);
+        foreach (string file in Directory.EnumerateFiles(source))
+            File.Copy(file, Path.Combine(destination, Path.GetFileName(file)));
+        foreach (string directory in Directory.EnumerateDirectories(source))
+            CopyDirectory(directory, Path.Combine(destination, Path.GetFileName(directory)));
+    }
+
+    private async Task SetupTelegramRuntimeAsync(Button button, string script)
+    {
+        button.IsEnabled = false;
+        _runtime.Events.PublishNotice("Installing Telegram's Python runtime. This may take a few minutes.",
+            NoticeSeverity.Info);
+        try
+        {
+            ProcessStartInfo start = new("powershell.exe")
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                WorkingDirectory = Path.GetDirectoryName(script) ?? Environment.CurrentDirectory
+            };
+            start.ArgumentList.Add("-NoProfile");
+            start.ArgumentList.Add("-ExecutionPolicy");
+            start.ArgumentList.Add("Bypass");
+            start.ArgumentList.Add("-File");
+            start.ArgumentList.Add(script);
+            start.RedirectStandardOutput = true;
+            start.RedirectStandardError = true;
+            using Process process = Process.Start(start)
+                ?? throw new InvalidOperationException("Could not start the Telegram runtime setup script.");
+            Task<string> stdout = process.StandardOutput.ReadToEndAsync();
+            Task<string> stderr = process.StandardError.ReadToEndAsync();
+            await process.WaitForExitAsync();
+            await Task.WhenAll(stdout, stderr);
+            if (process.ExitCode != 0)
+            {
+                string detail = (await stderr) + Environment.NewLine + await stdout;
+                detail = detail.Trim();
+                if (detail.Length > 1400) detail = detail[^1400..];
+                throw new InvalidOperationException(
+                    $"Setup exited with code {process.ExitCode}. {detail} Check that Python 3.12 and network access are available.");
+            }
+            await _runtime.RefreshExternalModulesAsync(CancellationToken.None);
+            Refresh();
+            _runtime.Events.PublishNotice(
+                "Telegram runtime is ready. Add api_id and api_hash to connect your account.",
+                NoticeSeverity.Success);
+        }
+        catch (Exception exception)
+        {
+            _runtime.Events.PublishNotice($"Telegram setup failed: {exception.Message}", NoticeSeverity.Danger);
+        }
+        finally { button.IsEnabled = true; }
+    }
+
+    private async Task OpenTelegramSetupPageAsync()
+    {
+        try
+        {
+            await _runtime.RefreshExternalModulesAsync(CancellationToken.None);
+            Refresh();
+            PluginManifest? telegram = _runtime.Plugins.Loaded.FirstOrDefault(plugin =>
+                plugin.Id.Equals("telegram-personal", StringComparison.OrdinalIgnoreCase));
+            if (telegram is null || telegram.Tools.Count == 0)
+                throw new InvalidOperationException("Iris could not start the Telegram MCP server. Run Set up Telegram and refresh the module first.");
+            Process.Start(new ProcessStartInfo("http://127.0.0.1:47832/") { UseShellExecute = true });
+        }
+        catch (Exception exception)
+        {
+            _runtime.Events.PublishNotice($"Could not start Telegram setup: {exception.Message}. Set up the runtime and enter API credentials first.",
+                NoticeSeverity.Warning);
+        }
     }
 
     private Control BuildModuleSecretRow(PluginManifest plugin, string secretName)
