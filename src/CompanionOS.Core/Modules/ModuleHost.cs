@@ -363,6 +363,42 @@ public sealed class ModuleHost : IAsyncDisposable
         return builder.ToString().TrimEnd();
     }
 
+    /// <summary>
+    /// The prompt-side overview: one line per module saying what part of her body it is.
+    /// The native tools array that rides every turn already carries the full catalog with
+    /// schemas; printing every tool name a second time in prose duplicated the whole menu
+    /// in the system prompt, slowed prefill, and taught a small model that tool words
+    /// belong inside her sentences (2026-10-27: "[ list_music ]" surfaced in her chat as
+    /// a faked call). The complete name catalog stays on <see cref="DescribeCapabilities"/>
+    /// for the search_capabilities tool's own answers.
+    /// </summary>
+    public string DescribeCapabilitiesOverview()
+    {
+        List<IAssistantModule> modules;
+        lock (_registryLock)
+        {
+            modules = _registrationOrder
+                .Where(module => !_disabledModuleIds.Contains(module.Id))
+                .ToList();
+        }
+
+        if (modules.Count == 0)
+        {
+            return string.Empty;
+        }
+
+        StringBuilder builder = new();
+        foreach (IAssistantModule module in modules)
+        {
+            string purpose = string.IsNullOrWhiteSpace(module.Purpose)
+                ? "provides hands and senses for this body"
+                : module.Purpose.Trim();
+            builder.AppendLine($"{module.DisplayName}: {purpose}");
+        }
+
+        return builder.ToString().TrimEnd();
+    }
+
     /// <summary>Runs one tool call through the sandbox and reports what happened.</summary>
     public async Task<ToolResult> ExecuteAsync(string toolName, JsonElement arguments, string turnId,
         CancellationToken cancellationToken, string? requiredModuleId = null)

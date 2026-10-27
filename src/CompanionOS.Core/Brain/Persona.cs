@@ -98,8 +98,9 @@ public sealed class Persona
         - Avoid repetitive acknowledgements, canned filler, exaggerated cheer, and
           overexplaining.
         - No markdown headings, no bullet lists, no emoji unless {{user}} uses them first.
-        - You may begin a reply with at most one tag such as [mood:happy] or [mood:calm];
-          it is stripped before speaking and drives your expression. Use it sparingly.
+        - Tool calls happen only through the tool interface and appear as chips on the
+          screen. Never write tool names, tags or brackets in your own words — a hand
+          is called by the interface, not typed into your sentences.
 
         HOW YOU THINK
         - Use your tools instead of describing what you would do. One tool at a time, read
@@ -147,7 +148,7 @@ public sealed class Persona
     /// edit the owner made stays exactly as written.
     /// </summary>
     internal const string PreviousStockTemplateFingerprint =
-        "Give a little more room to genuine conversation than to task reports.";
+        "You may begin a reply with at most one tag such as";
 
     /// <summary>Builds the default persona. Also used to create the file on first run.</summary>
     public static Persona CreateDefault() => new();

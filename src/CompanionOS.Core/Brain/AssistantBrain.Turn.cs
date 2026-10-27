@@ -317,7 +317,10 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
             // knows what ran, what failed, and under which real names. Evidence that
             // used to die with the loop (why the same bad-playlist refusal repeated
             // turn after turn) now keeps working across the whole session window.
-            durableAnswer = $"{answerText} [receipts: {string.Join("; ", toolLedger.Take(6))}]";
+            // Parentheses, deliberately: square-bracket fragments taught a small
+            // model to imitate the shape — "[ list_music ]" once appeared in her chat
+            // as a faked call, so her context stops waving brackets at her.
+            durableAnswer = $"{answerText} (receipts: {string.Join("; ", toolLedger.Take(6))})";
         }
 
         lock (_historyLock)

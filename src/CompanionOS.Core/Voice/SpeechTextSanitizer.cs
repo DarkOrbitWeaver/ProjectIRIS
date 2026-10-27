@@ -44,8 +44,42 @@ public static partial class SpeechTextSanitizer
             return null;
         }
 
-        Match match = Regex.Match(text, $@"\[{Regex.Escape(tagName)}\s*:\s*([a-zA-Z\-]+)\]");
+        Match match = Regex.Match(text, $@"\[\s*{Regex.Escape(tagName)}\s*:\s*([a-zA-Z\-]+)\s*\]");
         return match.Success ? match.Groups[1].Value.ToLowerInvariant() : null;
+    }
+
+    /// <summary>
+    /// One strip, at the brain: control tags (<c>[mood:calm]</c>, spaced or not) and
+    /// bracketed KNOWN tool names are machine channels, not words. A small model
+    /// imitates bracket shapes it finds in its own context and prints them as prose
+    /// ("[ list_music ]"); no hand runs, the junk lands on every screen and the
+    /// receipt check then demands honest recovery in a second generation round.
+    /// Stripping the channels WE sanctioned at one site — before chat, history and
+    /// voice see the text — keeps every surface on the same clean words. This is
+    /// hygiene for our own protocols, never a judgment of what she said: only an
+    /// EXACT known tool name inside plain brackets is removed; any other bracket
+    /// content is left exactly as she wrote it.
+    /// </summary>
+    public static string StripProtocolNoise(string? text, IEnumerable<string> knownToolNames)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return string.Empty;
+        }
+
+        string cleaned = ControlTagPattern().Replace(text, string.Empty);
+
+        string[] known = knownToolNames as string[] ?? knownToolNames.ToArray();
+        if (known.Length > 0)
+        {
+            cleaned = BracketedToolNamePattern().Replace(cleaned, match =>
+                known.Any(name => name.Equals(match.Groups[1].Value, StringComparison.OrdinalIgnoreCase))
+                    ? string.Empty
+                    : match.Value);
+        }
+
+        cleaned = WhitespacePattern().Replace(cleaned, " ");
+        return cleaned.Trim();
     }
 
     /// <summary>
@@ -108,8 +142,11 @@ public static partial class SpeechTextSanitizer
         return sentences;
     }
 
-    [GeneratedRegex(@"\[[a-zA-Z_\-]+\s*:\s*[^\]]*\]")]
+    [GeneratedRegex(@"\[\s*[a-zA-Z_\-]+\s*:\s*[^\]]*\]")]
     private static partial Regex ControlTagPattern();
+
+    [GeneratedRegex(@"\[\s*([a-zA-Z0-9_\-]+)\s*\]")]
+    private static partial Regex BracketedToolNamePattern();
 
     [GeneratedRegex(@"\[([^\]]+)\]\([^\)]+\)")]
     private static partial Regex MarkdownLinkPattern();

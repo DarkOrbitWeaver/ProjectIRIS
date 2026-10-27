@@ -489,7 +489,7 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
         string systemPrompt = _personaStore.Current.BuildSystemPrompt(
             situation,
             intuition,
-            _modules.DescribeCapabilities(),
+            _modules.DescribeCapabilitiesOverview(),
             DescribeMode(),
             DateTime.Now.ToString("dddd HH:mm"));
 
@@ -628,9 +628,10 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
                     messages.Add(ChatMessage.Assistant(turn.Text));
                     messages.Add(ChatMessage.System(toolLedger.Count == 0
                         ? "RECEIPT CHECK: this request is an action, and no hand has run yet. Call the matching tool " +
-                          "now and act on its result — a clear order is an instruction, not a question; do not ask " +
-                          "permission. If no hand can truly do it, answer in one short sentence that it has not " +
-                          "happened, and offer the nearest working next step."
+                          "now through the tool interface and act on its result — a clear order is an instruction, " +
+                          "not a question; do not ask permission, and never type a tool name into your words. A " +
+                          "claim without a succeeded hand is not allowed: if no hand can truly do it, answer in one " +
+                          "short sentence that it has not happened, and offer the nearest working next step."
                         : "RECEIPT CHECK: the hands you moved did not complete: " + string.Join("; ", toolLedger) +
                           ". That is the record. Answer in ONE short sentence: what did not happen, and the nearest " +
                           "working step. Never describe a failed action as a success."));
@@ -788,6 +789,13 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
         {
             answerText = "I could not work that one out. Ask me again in a moment?";
         }
+
+        // One strip, once, at the source: tags and bracketed tool mentions are protocol
+        // we sanctioned, not words she chose. Chat, history and voice all take this text
+        // from here, so every surface keeps the same clean words and the junk that used
+        // to print ("[ mood:calm ]", "[ list_music ]") survives nowhere visible.
+        answerText = SpeechTextSanitizer.StripProtocolNoise(
+            answerText, routedTools.Select(tool => tool.Name));
 
         IrisEvent.Log("Brain", "turn.report", LogLevel.Info,
             data: new Dictionary<string, string?>
