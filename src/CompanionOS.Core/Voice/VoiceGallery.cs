@@ -174,7 +174,7 @@ public sealed class VoiceGallery : IDisposable
     {
         if (_settings.Voice.Engine.Equals("pocket", StringComparison.OrdinalIgnoreCase))
         {
-            return _httpSynthesizer ??= new PocketTtsSpeechSynthesizer(_settings.Voice);
+            return _httpSynthesizer ??= new PocketTtsSpeechSynthesizer(() => _settings.Voice);
         }
 
         if (_settings.Voice.Engine.Equals("kokoro", StringComparison.OrdinalIgnoreCase))

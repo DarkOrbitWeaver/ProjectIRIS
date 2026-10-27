@@ -13,17 +13,22 @@ namespace CompanionOS.Core.Voice;
 /// </summary>
 public sealed class PocketTtsServerHost : IAsyncDisposable
 {
-    private readonly VoiceSettings _settings;
+    /// <summary>Endpoints and thread budgets are read live (2026-10-27 audit):
+    /// SettingsStore.Update replaces Current wholesale, and the worker must follow
+    /// the new endpoint instead of pinning whatever existed at boot.</summary>
+    private readonly Func<VoiceSettings> _settings;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private Process? _process;
 
-    public PocketTtsServerHost(VoiceSettings settings) => _settings = settings;
+    public PocketTtsServerHost(Func<VoiceSettings> settings) => _settings = settings;
 
-    public string Endpoint => _settings.PocketEndpoint.TrimEnd('/');
+    private VoiceSettings Options => _settings();
+
+    public string Endpoint => Options.PocketEndpoint.TrimEnd('/');
 
     public async Task<bool> StartAsync(CancellationToken cancellationToken = default)
     {
-        if (!_settings.Engine.Equals("pocket", StringComparison.OrdinalIgnoreCase))
+        if (!Options.Engine.Equals("pocket", StringComparison.OrdinalIgnoreCase))
         {
             return false;
         }
@@ -52,14 +57,14 @@ public sealed class PocketTtsServerHost : IAsyncDisposable
             // so a healthy ping proves nothing about speech — replace the straggler
             // instead of negotiating with it. Skipped when the user points the endpoint
             // at an explicitly configured worker they manage themselves.
-            if (string.IsNullOrWhiteSpace(_settings.PocketExecutablePath))
+            if (string.IsNullOrWhiteSpace(Options.PocketExecutablePath))
             {
                 DemolishUnownedWorkers();
             }
 
-            string executable = string.IsNullOrWhiteSpace(_settings.PocketExecutablePath)
+            string executable = string.IsNullOrWhiteSpace(Options.PocketExecutablePath)
                 ? CompanionPaths.Runtime(Path.Combine("pocket-tts", "pocket-tts.exe"))
-                : _settings.PocketExecutablePath;
+                : Options.PocketExecutablePath;
             if (!File.Exists(executable))
             {
                 CompanionLog.Warning("Voice", $"Pocket TTS runtime is missing: {executable}");
@@ -90,12 +95,12 @@ public sealed class PocketTtsServerHost : IAsyncDisposable
             startInfo.ArgumentList.Add("--port");
             startInfo.ArgumentList.Add(endpointUri.Port.ToString());
             startInfo.ArgumentList.Add("--language");
-            startInfo.ArgumentList.Add(_settings.PocketLanguage);
+            startInfo.ArgumentList.Add(Options.PocketLanguage);
             startInfo.ArgumentList.Add("--default-voice");
-            startInfo.ArgumentList.Add(string.IsNullOrWhiteSpace(_settings.VoiceId) ? "vera" : _settings.VoiceId);
+            startInfo.ArgumentList.Add(string.IsNullOrWhiteSpace(Options.VoiceId) ? "vera" : Options.VoiceId);
             startInfo.Environment["HF_HOME"] = cacheDirectory;
             startInfo.Environment["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "1";
-            startInfo.Environment["RAYON_NUM_THREADS"] = Math.Clamp(_settings.PocketMaxThreads, 1, 2).ToString();
+            startInfo.Environment["RAYON_NUM_THREADS"] = Math.Clamp(Options.PocketMaxThreads, 1, 2).ToString();
 
             Process process = new() { StartInfo = startInfo, EnableRaisingEvents = true };
             process.OutputDataReceived += (_, eventArgs) =>
@@ -203,8 +208,10 @@ public sealed class PocketTtsServerHost : IAsyncDisposable
     {
         try
         {
-            using HttpClient client = new() { Timeout = TimeSpan.FromSeconds(1) };
-            using HttpResponseMessage response = await client.GetAsync(Endpoint + "/health", cancellationToken)
+            // One shared health client per host: a new HttpClient every 250 ms poll
+            // churned sockets on the senses hot path (2026-10-27 audit).
+            using HttpRequestMessage request = new(HttpMethod.Get, Endpoint + "/health");
+            using HttpResponseMessage response = await SharedHealthClient.SendAsync(request, cancellationToken)
                 .ConfigureAwait(false);
             return response.IsSuccessStatusCode;
         }
@@ -213,6 +220,11 @@ public sealed class PocketTtsServerHost : IAsyncDisposable
             return false;
         }
     }
+
+    private static readonly HttpClient SharedHealthClient = new()
+    {
+        Timeout = TimeSpan.FromSeconds(1)
+    };
 
     public async Task StopAsync()
     {
@@ -285,13 +297,15 @@ public sealed class PocketTtsServerHost : IAsyncDisposable
 /// <summary>HTTP adapter for Pocket's local multipart /tts endpoint.</summary>
 public sealed class PocketTtsSpeechSynthesizer : IStreamingSpeechSynthesizer
 {
-    private readonly VoiceSettings _settings;
+    /// <summary>Endpoint read live (2026-10-27 audit): a settings change must reach
+    /// the next synthesis request, not the one after a restart.</summary>
+    private readonly Func<VoiceSettings> _settings;
     private readonly HttpClient _client = new() { Timeout = TimeSpan.FromSeconds(45) };
 
-    public PocketTtsSpeechSynthesizer(VoiceSettings settings) => _settings = settings;
+    public PocketTtsSpeechSynthesizer(Func<VoiceSettings> settings) => _settings = settings;
 
     public string EngineName => "pocket";
-    public bool IsAvailable => Uri.TryCreate(_settings.PocketEndpoint, UriKind.Absolute, out Uri? endpoint) &&
+    public bool IsAvailable => Uri.TryCreate(_settings().PocketEndpoint, UriKind.Absolute, out Uri? endpoint) &&
                                endpoint.IsLoopback;
 
     public async Task<SpeechAudioStream?> OpenSpeechStreamAsync(string text, VoiceProfile profile,
@@ -304,7 +318,7 @@ public sealed class PocketTtsSpeechSynthesizer : IStreamingSpeechSynthesizer
         try
         {
             using HttpRequestMessage request = new(HttpMethod.Post,
-                _settings.PocketEndpoint.TrimEnd('/') + "/tts") { Content = form };
+                _settings().PocketEndpoint.TrimEnd('/') + "/tts") { Content = form };
             HttpResponseMessage response = await _client.SendAsync(request,
                 HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
             if (!response.IsSuccessStatusCode)
@@ -338,7 +352,7 @@ public sealed class PocketTtsSpeechSynthesizer : IStreamingSpeechSynthesizer
         try
         {
             using HttpResponseMessage response = await _client.PostAsync(
-                _settings.PocketEndpoint.TrimEnd('/') + "/tts", form, cancellationToken).ConfigureAwait(false);
+                _settings().PocketEndpoint.TrimEnd('/') + "/tts", form, cancellationToken).ConfigureAwait(false);
             if (!response.IsSuccessStatusCode)
             {
                 CompanionLog.Warning("Voice", $"Pocket TTS answered {(int)response.StatusCode}.");
@@ -366,16 +380,20 @@ public sealed class PocketTtsSpeechSynthesizer : IStreamingSpeechSynthesizer
 
 public static class SpeechSynthesizerFactory
 {
-    public static ISpeechSynthesizer Create(VoiceSettings settings)
+    /// <summary>Builds her synthesizer against a LIVE settings source: engine,
+    /// endpoint and voice changes from settings now reach the next spoken answer
+    /// instead of waiting for a restart (2026-10-27 audit).</summary>
+    public static ISpeechSynthesizer Create(Func<VoiceSettings> settings)
     {
-        if (settings.Engine.Equals("pocket", StringComparison.OrdinalIgnoreCase))
+        if (settings().Engine.Equals("pocket", StringComparison.OrdinalIgnoreCase))
         {
             return new PocketTtsSpeechSynthesizer(settings);
         }
 
-        if (settings.Engine.Equals("kokoro", StringComparison.OrdinalIgnoreCase))
+        if (settings().Engine.Equals("kokoro", StringComparison.OrdinalIgnoreCase))
         {
-            return new HttpSpeechSynthesizer(settings, settings.KokoroEndpoint, "kokoro");
+            return new HttpSpeechSynthesizer(settings,
+                endpointOverride: () => settings().KokoroEndpoint, engineName: "kokoro");
         }
 
         return new HttpSpeechSynthesizer(settings);

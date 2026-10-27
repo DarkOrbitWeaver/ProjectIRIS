@@ -78,13 +78,17 @@ public sealed class GpuMemoryProbe
     {
         try
         {
+            // stdout is redirected (that is where the CSV lands) but stderr is NOT.
+            // Redirecting stderr was a pipe-fill deadlock: nothing on this side read it,
+            // a chatty failure filled the pipe buffer, nvidia-smi blocked on its own
+            // write, stdout never closed, and ReadToEnd sat here forever holding the
+            // telemetry lock (2026-10-27 audit).
             ProcessStartInfo startInfo = new()
             {
                 FileName = "nvidia-smi",
                 UseShellExecute = false,
                 CreateNoWindow = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true
+                RedirectStandardOutput = true
             };
 
             startInfo.ArgumentList.Add("--query-gpu=memory.used,memory.total");
@@ -93,8 +97,15 @@ public sealed class GpuMemoryProbe
             using Process process = new() { StartInfo = startInfo };
             process.Start();
 
+            // The CSV output is a few dozen bytes, so ReadToEnd ends when the process
+            // closes its stdout; the watchdog below still bounds a hang after that.
             string output = process.StandardOutput.ReadToEnd();
-            process.WaitForExit(1500);
+            if (!process.WaitForExit(1500))
+            {
+                TryKill(process);
+                CompanionLog.Trace("Senses", "nvidia-smi did not exit within 1.5 s; killed it.");
+                return (0, 0);
+            }
 
             string firstLine = output
                 .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
@@ -114,6 +125,24 @@ public sealed class GpuMemoryProbe
         {
             CompanionLog.Trace("Senses", $"nvidia-smi unavailable: {exception.Message}");
             return (0, 0);
+        }
+    }
+
+    /// <summary>Best-effort kill of a hung probe, so no nvidia-smi lingers on the
+    /// telemetry path. The whole tree is included because CUDA tooling can fork
+    /// wrappers that outlive the parent.</summary>
+    private static void TryKill(Process process)
+    {
+        try
+        {
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+            }
+        }
+        catch (Exception exception)
+        {
+            CompanionLog.Trace("Senses", $"nvidia-smi kill failed: {exception.Message}");
         }
     }
 }

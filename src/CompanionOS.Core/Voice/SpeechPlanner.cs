@@ -25,8 +25,13 @@ public static partial class SpeechPlanner
     /// The records of 20:15 read like a radio show — four segments, nine seconds of
     /// voice for one request — which is why her voice carries one verdict sentence,
     /// plus at most one short follow-on, inside this ceiling.
+    ///
+    /// The 140-character economy stays as decided with the boss. The companion
+    /// SpeechBudgetCharacters setting (default 240) is removed rather than honored:
+    /// TrimForSpeech clamps to this constant anyway, so the setting only ever lied —
+    /// it promised to allow more than the voice would ever say (2026-10-27 audit).
     /// </summary>
-    private const int MaximumSpeechCharacters = 140;
+    public const int SpeechEconomyCharacters = 140;
 
     /// <summary>The tag-along sentence must be short or it stays on screen only.</summary>
     private const int TagAlongMaximumCharacters = 60;
@@ -40,7 +45,7 @@ public static partial class SpeechPlanner
     public static string TrimForSpeech(string? answerText, int budgetCharacters)
     {
         string text = (answerText ?? string.Empty).Trim();
-        int effectiveBudget = Math.Min(budgetCharacters, MaximumSpeechCharacters);
+        int effectiveBudget = Math.Min(budgetCharacters, SpeechEconomyCharacters);
         if (text.Length == 0 || effectiveBudget <= 0)
         {
             return text;

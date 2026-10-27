@@ -1593,8 +1593,11 @@ public sealed class CoreRegressionTests
     [Fact]
     public async Task MissingLocalSpeechModelIsReportedAsUnavailableNotSilence()
     {
-        using WhisperNetRecognizer recognizer = new(
-            Path.Combine(Path.GetTempPath(), $"missing-iris-whisper-{Guid.NewGuid():N}.bin"), "en");
+        using WhisperNetRecognizer recognizer = new(() => new EarsSettings
+        {
+            WhisperModelFile = $"missing-iris-whisper-{Guid.NewGuid():N}.bin",
+            Language = "en"
+        });
 
         SpeechRecognitionResult result = await recognizer.TranscribeAsync([0.1f, -0.1f], CancellationToken.None);
 
@@ -2006,7 +2009,7 @@ public sealed class CoreRegressionTests
             Engine = "pocket",
             PocketExecutablePath = Path.Combine(Path.GetTempPath(), $"missing-pocket-{Guid.NewGuid():N}.exe")
         };
-        await using PocketTtsServerHost host = new(settings);
+        await using PocketTtsServerHost host = new(() => settings);
 
         bool started = await host.StartAsync();
 
@@ -2016,9 +2019,8 @@ public sealed class CoreRegressionTests
     [Fact]
     public void DefaultEarsUseAModerateThresholdAndTwoRecognitionThreads()
     {
-        EarsSettings ears = new();
-        using WhisperNetRecognizer recognizer = new("missing-whisper-model.bin", "auto",
-            ears.MaxRecognitionThreads);
+        EarsSettings ears = new() { WhisperModelFile = "missing-whisper-model.bin" };
+        using WhisperNetRecognizer recognizer = new(() => ears);
 
         Assert.Equal(0.025, ears.VoiceThreshold);
         Assert.Equal(2, recognizer.ThreadCount);
@@ -2129,8 +2131,8 @@ public sealed class CoreRegressionTests
             PocketLanguage = "english_18m_2026-10"
         };
 
-        await using PocketTtsServerHost host = new(settings);
-        using PocketTtsSpeechSynthesizer synthesizer = new(settings);
+        await using PocketTtsServerHost host = new(() => settings);
+        using PocketTtsSpeechSynthesizer synthesizer = new(() => settings);
         using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(60));
         Assert.True(await host.StartAsync(timeout.Token));
 

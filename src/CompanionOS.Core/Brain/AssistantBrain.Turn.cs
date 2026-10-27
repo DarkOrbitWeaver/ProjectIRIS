@@ -262,7 +262,7 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
             // The written answer stays whole on screen; the voice carries the verdict.
             string spoken = SpeechPlanner.TrimForSpeech(
                 SpeechTextSanitizer.StripControlTags(answerText),
-                _settings.Current.Voice.SpeechBudgetCharacters);
+                SpeechPlanner.SpeechEconomyCharacters);
             await _voice.SpeakAsync(spoken, _speechSource.Token)
                 .ConfigureAwait(false);
         }
@@ -463,8 +463,13 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
 
     private void OnUserInterrupted()
     {
+        // Barge-in stops the WHOLE turn, not just the voice. Stopping speech alone left
+        // the model generating a full answer she could never deliver — tokens paid for a
+        // reply the interruption had just cancelled (2026-10-27 audit).
+        // CancelCurrentTurn is the same path Escape and the stop button use, so the
+        // cancellation semantics here are exactly the ones the stop button already has.
         _speechSource?.Cancel();
-        _voice.StopSpeaking();
+        CancelCurrentTurn();
     }
 
     private void OnUserCalledHer(string interactionId)

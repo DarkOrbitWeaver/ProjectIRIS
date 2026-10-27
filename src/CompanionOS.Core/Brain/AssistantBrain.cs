@@ -526,7 +526,7 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
                             // The speech-economy floor applies mid-stream too: a list-shaped
                             // sentence is dropped before it can cost seconds of synthesis.
                             string spoken = SpeechPlanner.TrimForSpeech(sentence,
-                                _settings.Current.Voice.SpeechBudgetCharacters);
+                                SpeechPlanner.SpeechEconomyCharacters);
                             if (string.IsNullOrWhiteSpace(spoken))
                             {
                                 continue;
@@ -625,7 +625,7 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
                 {
                     string remainingSpeech = SpeechPlanner.TrimForSpeech(
                         SpeechTextSanitizer.CleanForSpeech(speechBuffer.ToString()),
-                        _settings.Current.Voice.SpeechBudgetCharacters);
+                        SpeechPlanner.SpeechEconomyCharacters);
                     if (!string.IsNullOrWhiteSpace(remainingSpeech))
                     {
                         speechTail = QueueSpeechAfterAsync(speechTail, remainingSpeech, cancellationToken);

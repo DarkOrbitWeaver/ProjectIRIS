@@ -51,10 +51,31 @@ public sealed class SpeechAudioPlayer : IDisposable
             return false;
         }
 
-        float[] envelope = Array.Empty<float>();
+        float[] envelope;
         long generation;
         WaveOutEvent output;
         WaveStream reader;
+
+        // Envelope analysis runs OUTSIDE the playback lock. The decode pass walks the
+        // whole clip and used to sit inside the lock it does not need — so every
+        // concurrent Stop() (barge-in) or replacement playback queued behind a decode
+        // it could not influence (2026-10-27 audit). It keeps its own stream for the
+        // same reason as before: NAudio readers dispose the stream they wrap, so the
+        // analysis reader must not share the playback stream created below.
+        try
+        {
+            using MemoryStream analysisStream = new(audio.Bytes);
+            using WaveStream analysisReader = CreateReader(audio, analysisStream);
+            envelope = BuildEnvelope(analysisReader);
+        }
+        catch (Exception exception)
+        {
+            // Visualization only: playback still starts, just without the amplitude
+            // bars; a clip that cannot be decoded at all fails again in the player
+            // block below, under the existing catch.
+            CompanionLog.Trace("Voice", $"Envelope analysis skipped: {exception.Message}");
+            envelope = Array.Empty<float>();
+        }
 
         lock (_playbackLock)
         {
@@ -63,16 +84,6 @@ public sealed class SpeechAudioPlayer : IDisposable
 
             try
             {
-                // First pass: decode to compute the envelope, over its own stream.
-                // Why a separate stream: NAudio readers dispose the stream they wrap when
-                // they are disposed, so if the analysis reader shared the playback stream
-                // below, closing it would leave a dead stream under the player.
-                using MemoryStream analysisStream = new(audio.Bytes);
-                using WaveStream analysisReader = CreateReader(audio, analysisStream);
-                {
-                    envelope = BuildEnvelope(analysisReader);
-                }
-
                 _audioStream = new MemoryStream(audio.Bytes);
                 _reader = CreateReader(audio, _audioStream);
                 _outputDevice = DeviceNumber >= 0
@@ -198,7 +209,7 @@ public sealed class SpeechAudioPlayer : IDisposable
         bool streamFinished = false;
         while (provider.BufferedBytes < prebufferBytes && !streamFinished)
         {
-            int read = await wavStream.ReadAsync(chunk, cancellationToken).ConfigureAwait(false);
+            int read = await ReadBodyAsync(wavStream, chunk, cancellationToken).ConfigureAwait(false);
             if (read == 0)
             {
                 streamFinished = true;
@@ -248,7 +259,7 @@ public sealed class SpeechAudioPlayer : IDisposable
 
                 if (!streamFinished && provider.BufferedBytes < maximumBufferedBytes)
                 {
-                    int read = await wavStream.ReadAsync(chunk, cancellationToken).ConfigureAwait(false);
+                    int read = await ReadBodyAsync(wavStream, chunk, cancellationToken).ConfigureAwait(false);
                     if (read == 0)
                     {
                         streamFinished = true;
@@ -291,6 +302,31 @@ public sealed class SpeechAudioPlayer : IDisposable
             }
 
             AmplitudeChanged?.Invoke(0);
+        }
+    }
+
+    /// <summary>
+    /// One read from a live speech stream, wrapped in a stall watchdog. A TTS worker
+    /// that hung mid-response used to hang her whole spoken reply forever: the read
+    /// never completed, so neither barge-in nor the next sentence could ever arrive
+    /// (2026-10-27 audit). The watchdog fires at eight seconds of stream silence —
+    /// unless the CALLER was cancelled, in which case cancellation surfaces as it is.
+    /// </summary>
+    private static async Task<int> ReadBodyAsync(Stream stream, byte[] buffer, CancellationToken cancellationToken)
+    {
+        const int streamSilenceSeconds = 8;
+        using CancellationTokenSource watchdog =
+            CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        watchdog.CancelAfter(TimeSpan.FromSeconds(streamSilenceSeconds));
+        try
+        {
+            return await stream.ReadAsync(buffer, watchdog.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new IOException(
+                $"The speech stream went silent for more than {streamSilenceSeconds} seconds; " +
+                "stopping playback instead of leaving her voice frozen.");
         }
     }
 

@@ -26,6 +26,21 @@ public sealed class VoicePipeline : IAsyncDisposable
     private readonly MicrophoneCapture _microphone = new();
     private int _bargeInEnergyFrames;
 
+    /// <summary>
+    /// Barge-in confirmation, in capture frames (30 ms each). Two frames was a cough's
+    /// width — her own voice leaking back through the speakers cleared it and she
+    /// chopped her own sentences mid-word. Eight frames (~240 ms) means someone is
+    /// really committing to speak over her (2026-10-27 audit).
+    /// </summary>
+    private const int BargeInFrames = 8;
+
+    /// <summary>
+    /// Loudness of her own speech as the microphone hears it — the self-echo. Updated
+    /// by the playback callback, Interlocked-read (volatile) from the capture thread,
+    /// and used as the floor barge-in must clear above her own voice.
+    /// </summary>
+    private long _spokenLevelBits;
+
     // Dead-capture watchdog state. Capture frames are 30 ms, so the counter below
     // reaches its threshold after ~10 seconds of pure digital silence.
     private int _silentCaptureFrames;
@@ -56,8 +71,32 @@ public sealed class VoicePipeline : IAsyncDisposable
     private DateTimeOffset _conversationOpenUntil = DateTimeOffset.MinValue;
     private DateTimeOffset _lastLevelPublished = DateTimeOffset.MinValue;
     private DateTimeOffset _nextRecognitionFailureNotice = DateTimeOffset.MinValue;
-    private const int MaximumPendingSegments = 2;
-    private int _pendingSegments;
+    /// <summary>
+    /// An open segment is force-closed at this duration. The VAD only closes segments
+    /// on silence, so music, applause or her own TTS leaking into the microphone held
+    /// the level above threshold forever and grew one segment unbounded — a ~20-minute
+    /// utterance shipped to Whisper as a single request (2026-10-27 audit). 20 seconds
+    /// is longer than any natural spoken exchange; closing keeps her listening for the
+    /// next burst instead of batching the whole room into one transcript.
+    /// </summary>
+    private const int MaximumUtteranceMilliseconds = 20000;
+
+    /// <summary>The pipeline's fixed capture format: 16 kHz mono.</summary>
+    private const int CaptureSampleRate = 16000;
+
+    /// <summary>
+    /// Transcription workers and the queue in front of them. The old counter dropped a
+    /// finished sentence the instant its budget was hit, so a follow-up spoken while
+    /// the previous utterance was still transcribing was simply lost (2026-10-27
+    /// audit). Two workers bound the CPU the ears may take; up to two more segments
+    /// wait in the backlog. Everything either starts, queues or drops WITH a receipt,
+    /// so the day's records always say what happened to the sentence.
+    /// </summary>
+    private const int MaximumSegmentWorkers = 2;
+    private const int MaximumSegmentBacklog = 2;
+    private readonly Queue<float[]> _segmentBacklog = new();
+    private readonly object _backlogLock = new();
+    private int _activeSegmentWorkers;
     private DateTimeOffset _nextSpeechFailureNotice = DateTimeOffset.MinValue;
     private CancellationTokenSource? _reflexPreparationCancellation;
     private Task _reflexPreparationTask = Task.CompletedTask;
@@ -69,12 +108,15 @@ public sealed class VoicePipeline : IAsyncDisposable
         _events = events;
         _personaStore = personaStore;
         _wakeMatcher = new WakePhraseMatcher(personaStore.Current);
-        _pocketHost = new PocketTtsServerHost(settings.Current.Voice);
-        _kokoroHost = new KokoroTtsServerHost(settings.Current.Voice);
+        // Voice hosts, synthesizer and recognizer read LIVE settings (2026-10-27
+        // audit): SettingsStore.Update replaces Current wholesale, and everything the
+        // senses consult must follow the new values instead of pinning boot-time ones.
+        _pocketHost = new PocketTtsServerHost(() => settings.Current.Voice);
+        _kokoroHost = new KokoroTtsServerHost(() => settings.Current.Voice);
 
         Profile = VoiceProfile.FromSettings(settings.Current);
-        Synthesizer = SpeechSynthesizerFactory.Create(settings.Current.Voice);
-        Recognizer = CreateRecognizer(settings.Current);
+        Synthesizer = SpeechSynthesizerFactory.Create(() => settings.Current.Voice);
+        Recognizer = CreateRecognizer(() => settings.Current.Ears);
         WakeGate = CreateWakeGate();
         ReflexBank = new ReflexBank(personaStore.Current, Profile, Synthesizer, CompanionPaths.CacheDirectory);
 
@@ -790,7 +832,7 @@ public sealed class VoicePipeline : IAsyncDisposable
         }
 
         AreEarsSuspended = false;
-        Recognizer = CreateRecognizer(_settings.Current);
+        Recognizer = CreateRecognizer(() => _settings.Current.Ears);
         WakeGate = CreateWakeGate();
 
         if (_settings.Current.Ears.Enabled && Recognizer.IsAvailable)
@@ -818,7 +860,7 @@ public sealed class VoicePipeline : IAsyncDisposable
             await _speechOutputArbiter.RunAsync(token =>
             {
                 token.ThrowIfCancellationRequested();
-                ISpeechSynthesizer replacement = SpeechSynthesizerFactory.Create(_settings.Current.Voice);
+                ISpeechSynthesizer replacement = SpeechSynthesizerFactory.Create(() => _settings.Current.Voice);
                 ISpeechSynthesizer previous = Synthesizer;
 
                 Profile = profile;
@@ -1246,6 +1288,10 @@ public sealed class VoicePipeline : IAsyncDisposable
 
     private void OnSpokenAmplitude(double level)
     {
+        // Publish the self-echo level for the barge-in floor BEFORE anything else:
+        // her voice arriving back through the microphone must never count as a user
+        // interrupting her (2026-10-27 audit).
+        Volatile.Write(ref _spokenLevelBits, BitConverter.DoubleToInt64Bits(level));
         _events.Publish(new AudioLevelEvent { Level = level, IsMicrophone = false });
     }
 
@@ -1312,12 +1358,15 @@ public sealed class VoicePipeline : IAsyncDisposable
         }
 
         // Barge-in: if she is talking and the user starts speaking, she stops at once.
-        // Two above-threshold frames in a row confirm it, so a little of her own voice
-        // leaking into the microphone cannot chop her sentences into pieces. The bar
-        // follows the room's noise floor, so a quiet headset can still interrupt her.
+        // Eight sustained above-threshold frames (~240 ms) confirm the interruption,
+        // and the floor must clear her own voice's loudness too — speech leaking
+        // through the speakers used to make her interrupt herself and open VAD
+        // segments of her own words. A quiet headset still interrupts her, because
+        // the floor follows the room's noise floor.
         if (_player.IsPlaying && _settings.Current.Voice.BargeInEnabled)
         {
-            double bargeInLevel = Math.Max(CurrentThreshold() * 1.2, _noiseFloor * 3.0);
+            double spokenEcho = BitConverter.Int64BitsToDouble(Interlocked.Read(ref _spokenLevelBits));
+            double bargeInLevel = Math.Max(CurrentThreshold() * 1.2, Math.Max(_noiseFloor * 3.0, spokenEcho * 1.5));
             if (level > bargeInLevel)
             {
                 _bargeInEnergyFrames++;
@@ -1327,7 +1376,7 @@ public sealed class VoicePipeline : IAsyncDisposable
                 _bargeInEnergyFrames = 0;
             }
 
-            if (_bargeInEnergyFrames >= 2)
+            if (_bargeInEnergyFrames >= BargeInFrames)
             {
                 _bargeInEnergyFrames = 0;
                 IrisEvent.Log("Voice", "speech.barge_in", LogLevel.Info,
@@ -1363,6 +1412,16 @@ public sealed class VoicePipeline : IAsyncDisposable
                 _isSegmentOpen = true;
                 _silenceMilliseconds = 0;
                 _speechSegment.AddRange(samples);
+
+                // A loud room (music, applause, her own TTS leaking in) held the level
+                // above threshold forever and grew this segment unbounded — a 20-minute
+                // utterance shipped as one giant transcription request with no close in
+                // sight (2026-10-27 audit). Force-close at the ceiling and keep
+                // listening: the next loud burst opens a fresh segment.
+                if (_speechSegment.Count >= CaptureSampleRate * MaximumUtteranceMilliseconds / 1000)
+                {
+                    CloseSegmentLocked();
+                }
                 return;
             }
 
@@ -1377,31 +1436,72 @@ public sealed class VoicePipeline : IAsyncDisposable
 
             if (_silenceMilliseconds >= _settings.Current.Ears.SilenceMilliseconds)
             {
-                float[] finishedSegment = _speechSegment.ToArray();
-                _speechSegment.Clear();
-                _isSegmentOpen = false;
-                _silenceMilliseconds = 0;
-
-                int minimumSamples = 16000 * _settings.Current.Ears.MinimumSpeechMilliseconds / 1000;
-                if (finishedSegment.Length >= minimumSamples)
-                {
-                    if (Interlocked.Increment(ref _pendingSegments) > MaximumPendingSegments)
-                    {
-                        Interlocked.Decrement(ref _pendingSegments);
-                        LogSegmentDecision("segment_dropped_backlog", "queue",
-                            _settings.Current.Ears.RequireWakePhrase, IsConversationOpen, WakeGate.IsAvailable, 0);
-                    }
-                    else
-                    {
-                        _ = ProcessSegmentTrackedAsync(finishedSegment);
-                    }
-                }
+                CloseSegmentLocked();
             }
         }
     }
 
-    /// <summary>Transcribes one finished utterance and decides whether it was for her.</summary>
-    private async Task ProcessSegmentTrackedAsync(float[] segment)
+    /// <summary>
+    /// Turns the open segment into bytes for the brain. Must be called under
+    /// <see cref="_segmentLock"/> so both close paths (silence and the duration
+    /// ceiling) filter and submit exactly the same way.
+    /// </summary>
+    private void CloseSegmentLocked()
+    {
+        float[] finishedSegment = _speechSegment.ToArray();
+        _speechSegment.Clear();
+        _isSegmentOpen = false;
+        _silenceMilliseconds = 0;
+
+        int minimumSamples = CaptureSampleRate * _settings.Current.Ears.MinimumSpeechMilliseconds / 1000;
+        if (finishedSegment.Length >= minimumSamples)
+        {
+            SubmitSegment(finishedSegment);
+        }
+    }
+
+    /// <summary>
+    /// Queues one finished utterance for transcription instead of dropping it the
+    /// moment a worker is busy. Two workers cap the CPU the ears may take; up to two
+    /// more segments wait in the backlog, so a follow-up spoken while the previous
+    /// utterance is still transcribing gets processed after it instead of vanishing.
+    /// Every outcome — started, queued, dropped — is logged with the same receipt.
+    /// </summary>
+    private void SubmitSegment(float[] segment)
+    {
+        bool queued = false;
+        bool started = false;
+        lock (_backlogLock)
+        {
+            if (_activeSegmentWorkers < MaximumSegmentWorkers)
+            {
+                _activeSegmentWorkers++;
+                started = true;
+            }
+            else if (_segmentBacklog.Count < MaximumSegmentBacklog)
+            {
+                _segmentBacklog.Enqueue(segment);
+                queued = true;
+            }
+        }
+
+        if (started)
+        {
+            _ = RunSegmentWorkerAsync(segment);
+        }
+        else
+        {
+            LogSegmentDecision(queued ? "segment_queued_backlog" : "segment_dropped_backlog", "queue",
+                _settings.Current.Ears.RequireWakePhrase, IsConversationOpen, WakeGate.IsAvailable, 0);
+        }
+    }
+
+    /// <summary>
+    /// One transcription slot. When the work ends, a queued segment takes the slot in
+    /// this same task — so the worker count and the queue are changed under one lock
+    /// and a submit racing a completion can never strand either.
+    /// </summary>
+    private async Task RunSegmentWorkerAsync(float[] segment)
     {
         try
         {
@@ -1409,7 +1509,20 @@ public sealed class VoicePipeline : IAsyncDisposable
         }
         finally
         {
-            Interlocked.Decrement(ref _pendingSegments);
+            float[]? next;
+            lock (_backlogLock)
+            {
+                next = _segmentBacklog.Count > 0 ? _segmentBacklog.Dequeue() : null;
+                if (next is null)
+                {
+                    _activeSegmentWorkers--;
+                }
+            }
+
+            if (next is not null)
+            {
+                await RunSegmentWorkerAsync(next).ConfigureAwait(false);
+            }
         }
     }
 
@@ -1763,31 +1876,34 @@ public sealed class VoicePipeline : IAsyncDisposable
     /// </summary>
     private IWakeGate CreateWakeGate() => new UtteranceShapeWakeGate(_settings);
 
-    /// <summary>Chooses the ears: local Whisper when its model exists, otherwise the HTTP server.</summary>
-    private static ISpeechRecognizer CreateRecognizer(CompanionSettings settings)
+    /// <summary>Chooses the ears from a LIVE settings source, so a rebuild (suspension
+    /// or a settings change) always consults the current values. Whisper and the HTTP
+    /// ear keep re-reading their own options per transcribe call; only Parakeet takes
+    /// a snapshot here, by design: its native ABI pins the model file at load time
+    /// (2026-10-27 audit).</summary>
+    private static ISpeechRecognizer CreateRecognizer(Func<EarsSettings> ears)
     {
-        EarsSettings ears = settings.Ears;
-        ParakeetRecognizer parakeet = new(ears);
-        WhisperNetRecognizer whisper = new(CompanionPaths.Model(ears.WhisperModelFile), ears.Language,
-            ears.MaxRecognitionThreads);
+        EarsSettings options = ears();
+        ParakeetRecognizer parakeet = new(options);
+        WhisperNetRecognizer whisper = new(ears);
         HttpSpeechRecognizer http = new(ears);
 
         // Explicit choices leave no doubt about which engine runs.
-        if (ears.Recognizer.Equals("whisper", StringComparison.OrdinalIgnoreCase))
+        if (options.Recognizer.Equals("whisper", StringComparison.OrdinalIgnoreCase))
         {
             http.Dispose();
             parakeet.Dispose();
             return whisper;
         }
 
-        if (ears.Recognizer.Equals("parakeet", StringComparison.OrdinalIgnoreCase))
+        if (options.Recognizer.Equals("parakeet", StringComparison.OrdinalIgnoreCase))
         {
             http.Dispose();
             whisper.Dispose();
             return parakeet;
         }
 
-        if (ears.Recognizer.Equals("http", StringComparison.OrdinalIgnoreCase))
+        if (options.Recognizer.Equals("http", StringComparison.OrdinalIgnoreCase))
         {
             whisper.Dispose();
             parakeet.Dispose();

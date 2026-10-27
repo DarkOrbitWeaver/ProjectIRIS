@@ -56,8 +56,8 @@ public interface IStreamingSpeechSynthesizer : ISpeechSynthesizer
 public sealed class HttpSpeechSynthesizer : ISpeechSynthesizer
 {
     private readonly HttpClient _httpClient;
-    private readonly VoiceSettings _settings;
-    private readonly string _endpoint;
+    private readonly Func<VoiceSettings> _settings;
+    private readonly Func<string>? _endpointOverride;
     private readonly string _engineName;
 
     /// <summary>
@@ -66,23 +66,35 @@ public sealed class HttpSpeechSynthesizer : ISpeechSynthesizer
     /// never say "http" about a worker she spawned herself.
     /// </summary>
     public HttpSpeechSynthesizer(VoiceSettings settings, string? endpoint = null, string engineName = "http")
+        : this(() => settings, endpoint is null ? null : () => endpoint, engineName)
+    {
+    }
+
+    /// <summary>Settings and overrides resolve at call time — a configured endpoint
+    /// change reaches the next spoken answer instead of dying at boot
+    /// (2026-10-27 audit).</summary>
+    public HttpSpeechSynthesizer(Func<VoiceSettings> settings, Func<string>? endpointOverride = null,
+        string engineName = "http")
     {
         _settings = settings;
-        _endpoint = endpoint ?? settings.HttpEndpoint;
+        _endpointOverride = endpointOverride;
         _engineName = engineName;
         _httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
     }
 
     public string EngineName => _engineName;
 
-    public bool IsAvailable => !string.IsNullOrWhiteSpace(_endpoint);
+    public bool IsAvailable => !string.IsNullOrWhiteSpace(Endpoint);
+
+    private string Endpoint => _endpointOverride?.Invoke() ?? _settings().HttpEndpoint;
 
     public async Task<SpeechAudio?> SynthesizeAsync(string text, VoiceProfile profile,
         CancellationToken cancellationToken)
     {
+        VoiceSettings options = _settings();
         JsonObject body = new()
         {
-            ["model"] = _settings.HttpModel,
+            ["model"] = options.HttpModel,
             ["input"] = text,
             ["voice"] = profile.VoiceId,
             ["response_format"] = "wav",
@@ -92,11 +104,11 @@ public sealed class HttpSpeechSynthesizer : ISpeechSynthesizer
         try
         {
             using HttpRequestMessage request = new(HttpMethod.Post,
-                _endpoint.TrimEnd('/') + "/audio/speech");
+                Endpoint.TrimEnd('/') + "/audio/speech");
             request.Content = new StringContent(body.ToJsonString(), Encoding.UTF8, "application/json");
-            if (!string.IsNullOrWhiteSpace(_settings.ApiKey))
+            if (!string.IsNullOrWhiteSpace(options.ApiKey))
             {
-                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _settings.ApiKey);
+                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", options.ApiKey);
             }
 
             using HttpResponseMessage response = await _httpClient

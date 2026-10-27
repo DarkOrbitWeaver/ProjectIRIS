@@ -12,17 +12,22 @@ namespace CompanionOS.Core.Voice;
 /// </summary>
 public sealed class KokoroTtsServerHost : IAsyncDisposable
 {
-    private readonly VoiceSettings _settings;
+    /// <summary>Endpoints and thread budgets are read live (2026-10-27 audit), the same
+    /// contract as the Pocket TTS host: a settings change must reach the next worker
+    /// start instead of waiting for her restart.</summary>
+    private readonly Func<VoiceSettings> _settings;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private Process? _process;
 
-    public KokoroTtsServerHost(VoiceSettings settings) => _settings = settings;
+    public KokoroTtsServerHost(Func<VoiceSettings> settings) => _settings = settings;
 
-    public string Endpoint => _settings.KokoroEndpoint.TrimEnd('/');
+    private VoiceSettings Options => _settings();
+
+    public string Endpoint => Options.KokoroEndpoint.TrimEnd('/');
 
     public async Task<bool> StartAsync(CancellationToken cancellationToken = default)
     {
-        if (!_settings.Engine.Equals("kokoro", StringComparison.OrdinalIgnoreCase))
+        if (!Options.Engine.Equals("kokoro", StringComparison.OrdinalIgnoreCase))
         {
             return false;
         }
@@ -85,11 +90,11 @@ public sealed class KokoroTtsServerHost : IAsyncDisposable
             startInfo.ArgumentList.Add("--model-dir");
             startInfo.ArgumentList.Add(modelDirectory);
             startInfo.ArgumentList.Add("--threads");
-            startInfo.ArgumentList.Add(Math.Clamp(_settings.KokoroMaxThreads, 1, 4).ToString());
+            startInfo.ArgumentList.Add(Math.Clamp(Options.KokoroMaxThreads, 1, 4).ToString());
             startInfo.ArgumentList.Add("--default-voice");
-            startInfo.ArgumentList.Add(string.IsNullOrWhiteSpace(_settings.KokoroDefaultVoice)
+            startInfo.ArgumentList.Add(string.IsNullOrWhiteSpace(Options.KokoroDefaultVoice)
                 ? "af_heart"
-                : _settings.KokoroDefaultVoice);
+                : Options.KokoroDefaultVoice);
 
             Process process = new() { StartInfo = startInfo, EnableRaisingEvents = true };
             process.OutputDataReceived += (_, eventArgs) => OnWorkerLine(eventArgs.Data, "out");
@@ -234,8 +239,10 @@ public sealed class KokoroTtsServerHost : IAsyncDisposable
     {
         try
         {
-            using HttpClient client = new() { Timeout = TimeSpan.FromSeconds(1) };
-            using HttpResponseMessage response = await client.GetAsync(Endpoint + "/health", cancellationToken)
+            // One shared client per host: a fresh HttpClient on every health poll churned
+            // sockets on the senses hot path (2026-10-27 audit).
+            using HttpRequestMessage request = new(HttpMethod.Get, Endpoint + "/health");
+            using HttpResponseMessage response = await SharedHealthClient.SendAsync(request, cancellationToken)
                 .ConfigureAwait(false);
             return response.IsSuccessStatusCode;
         }
@@ -244,6 +251,11 @@ public sealed class KokoroTtsServerHost : IAsyncDisposable
             return false;
         }
     }
+
+    private static readonly HttpClient SharedHealthClient = new()
+    {
+        Timeout = TimeSpan.FromSeconds(1)
+    };
 
     public async Task StopAsync()
     {

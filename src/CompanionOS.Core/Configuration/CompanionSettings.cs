@@ -227,14 +227,6 @@ public sealed class VoiceSettings
     public bool SpeakReplies { get; set; } = true;
 
     /// <summary>
-    /// Spoken answers are capped at this many characters; the full text still renders on
-    /// screen, but the voice carries only the verdict and offers the rest. 0 keeps whole
-    /// answers. The library-list monologue (161 characters rendered, 9.4 s played) is why
-    /// this floor exists.
-    /// </summary>
-    public int SpeechBudgetCharacters { get; set; } = 240;
-
-    /// <summary>
     /// Her one switch for spontaneous chatter: the boot greeting and mode-change
     /// announcements. The old per-action acks ("I'll check") were removed outright —
     /// she now speaks real answers only, unless this switch allows her the niceties.

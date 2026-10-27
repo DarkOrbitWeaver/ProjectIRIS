@@ -44,18 +44,48 @@ public interface ISpeechRecognizer : IDisposable
 /// </summary>
 public sealed class WhisperNetRecognizer : ISpeechRecognizer
 {
-    private readonly string _modelPath;
-    private readonly string _language;
-    private readonly int _threadCount;
+    /// <summary>
+    /// Read live, not frozen at construction: the model path, language and thread
+    /// budget change in settings, and a stale ear must not outlive the decision
+    /// (2026-10-27 audit — SettingsStore replaces Current wholesale, so a snapshot
+    /// taken here kept the old values forever).
+    /// </summary>
+    private readonly Func<EarsSettings> _settings;
     private readonly object _factoryLock = new();
     private WhisperFactory? _factory;
+    private string? _factoryModelPath;
 
-    public WhisperNetRecognizer(string modelPath, string language, int configuredThreads = 0)
+    /// <summary>
+    /// The dataset boilerplate Whisper invents for silence, noise and music. The old
+    /// single-string filter ("[BLANK_AUDIO]") let song breaks turn into phantom user
+    /// requests — "Thank you for watching" became a turn into her brain. Exact matches
+    /// or ≥18-character prefixes count as NoSpeech; short real speech ("thank you" to
+    /// her alone) deliberately does not match enough of these to be swallowed.
+    /// </summary>
+    private static readonly string[] HallucinationPhrases =
+    [
+        "[BLANK_AUDIO]",
+        "[inaudible]",
+        "[music]",
+        "[applause]",
+        "[silence]",
+        "[placeholder]",
+        "thank you for watching",
+        "thanks for watching",
+        "see you in the next video",
+        "subscribe to my channel",
+        "you are watching",
+        "этой программой был", // common whisper dataset leak
+        "начать разговор", // whisper Russian dataset leak
+        "Ура! Вперёд"
+    ];
+
+    public WhisperNetRecognizer(Func<EarsSettings> settings)
     {
-        _modelPath = modelPath;
-        _language = language;
-        _threadCount = ResolveThreadCount(configuredThreads);
+        _settings = settings;
     }
+
+    private EarsSettings Options => _settings();
 
     /// <summary>
     /// How many cores transcription is allowed to touch.
@@ -66,7 +96,7 @@ public sealed class WhisperNetRecognizer : ISpeechRecognizer
     /// most of the machine for foreground applications and games. An explicit setting
     /// can raise this to four when the owner prefers speed over headroom.
     /// </summary>
-    public int ThreadCount => _threadCount;
+    public int ThreadCount => ResolveThreadCount(Options.MaxRecognitionThreads);
 
     private static int ResolveThreadCount(int configuredThreads)
     {
@@ -81,7 +111,7 @@ public sealed class WhisperNetRecognizer : ISpeechRecognizer
 
     public string EngineName => "whisper";
 
-    public bool IsAvailable => File.Exists(_modelPath);
+    public bool IsAvailable => File.Exists(CompanionPaths.Model(Options.WhisperModelFile));
 
     public async Task<SpeechRecognitionResult> TranscribeAsync(float[] samples, CancellationToken cancellationToken)
     {
@@ -98,12 +128,14 @@ public sealed class WhisperNetRecognizer : ISpeechRecognizer
         try
         {
             WhisperFactory factory = GetOrCreateFactory();
-            WhisperProcessorBuilder builder = factory.CreateBuilder().WithThreads(_threadCount);
+            WhisperProcessorBuilder builder = factory.CreateBuilder()
+                .WithThreads(ResolveThreadCount(Options.MaxRecognitionThreads));
 
-            if (!string.IsNullOrWhiteSpace(_language) &&
-                !_language.Equals("auto", StringComparison.OrdinalIgnoreCase))
+            string language = Options.Language;
+            if (!string.IsNullOrWhiteSpace(language) &&
+                !language.Equals("auto", StringComparison.OrdinalIgnoreCase))
             {
-                builder = builder.WithLanguage(_language);
+                builder = builder.WithLanguage(language);
             }
 
             using WhisperProcessor processor = builder.Build();
@@ -135,9 +167,15 @@ public sealed class WhisperNetRecognizer : ISpeechRecognizer
             }
 
             string text = transcript.ToString().Trim();
-            // Whisper sometimes emits this dataset placeholder for silence. Treat it as
-            // no speech so it never becomes a fake user request in the conversation.
-            if (text.Equals("[BLANK_AUDIO]", StringComparison.OrdinalIgnoreCase))
+            // Whisper invents dataset boilerplate for silence and music. The one-string
+            // filter ("[BLANK_AUDIO]") let everything else through as a fake user
+            // request — "Thank you for watching" over a song literally became a turn
+            // into her brain (2026-10-27 audit). The set is lowercase-compared trimmed
+            // text; anything here is NoSpeech, never a request.
+            string normalized = text.Trim().TrimEnd(' ', '.', ',', '!', '?');
+            if (HallucinationPhrases.Any(phrase =>
+                    normalized.Equals(phrase, StringComparison.OrdinalIgnoreCase) ||
+                    (phrase.Length > 18 && normalized.StartsWith(phrase, StringComparison.OrdinalIgnoreCase))))
             {
                 return new SpeechRecognitionResult(SpeechRecognitionOutcome.NoSpeech);
             }
@@ -210,8 +248,17 @@ public sealed class WhisperNetRecognizer : ISpeechRecognizer
     {
         lock (_factoryLock)
         {
-            // Loading the model takes a moment, so it is done once and kept.
-            _factory ??= WhisperFactory.FromPath(_modelPath);
+            // Loading the model takes a moment, so it is done once and kept. The path
+            // is re-read live: a model-file change in settings rebuilds the factory
+            // instead of transcribing with yesterday's weights.
+            string modelPath = CompanionPaths.Model(Options.WhisperModelFile);
+            if (_factory is null || !string.Equals(_factoryModelPath, modelPath, StringComparison.OrdinalIgnoreCase))
+            {
+                _factory?.Dispose();
+                _factoryModelPath = modelPath;
+                _factory = WhisperFactory.FromPath(modelPath);
+            }
+
             return _factory;
         }
     }
@@ -224,10 +271,11 @@ public sealed class WhisperNetRecognizer : ISpeechRecognizer
 /// </summary>
 public sealed class HttpSpeechRecognizer : ISpeechRecognizer
 {
-    private readonly EarsSettings _settings;
+    /// <summary>Read live: a changed endpoint must not wait for a restart to count.</summary>
+    private readonly Func<EarsSettings> _settings;
     private readonly HttpClient _httpClient;
 
-    public HttpSpeechRecognizer(EarsSettings settings)
+    public HttpSpeechRecognizer(Func<EarsSettings> settings)
     {
         _settings = settings;
         _httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
@@ -235,7 +283,7 @@ public sealed class HttpSpeechRecognizer : ISpeechRecognizer
 
     public string EngineName => "http";
 
-    public bool IsAvailable => !string.IsNullOrWhiteSpace(_settings.HttpEndpoint);
+    public bool IsAvailable => !string.IsNullOrWhiteSpace(_settings().HttpEndpoint);
 
     public async Task<SpeechRecognitionResult> TranscribeAsync(float[] samples, CancellationToken cancellationToken)
     {
@@ -253,14 +301,15 @@ public sealed class HttpSpeechRecognizer : ISpeechRecognizer
         try
         {
             byte[] waveBytes = PcmWavWriter.ToWaveBytes(samples, 16000);
+            EarsSettings options = _settings();
 
             using MultipartFormDataContent form = new();
-            form.Add(new StringContent(_settings.HttpModel), "model");
+            form.Add(new StringContent(options.HttpModel), "model");
             form.Add(new StringContent("json"), "response_format");
-            if (!string.IsNullOrWhiteSpace(_settings.Language) &&
-                !_settings.Language.Equals("auto", StringComparison.OrdinalIgnoreCase))
+            if (!string.IsNullOrWhiteSpace(options.Language) &&
+                !options.Language.Equals("auto", StringComparison.OrdinalIgnoreCase))
             {
-                form.Add(new StringContent(_settings.Language), "language");
+                form.Add(new StringContent(options.Language), "language");
             }
 
             ByteArrayContent audioContent = new(waveBytes);
@@ -268,11 +317,11 @@ public sealed class HttpSpeechRecognizer : ISpeechRecognizer
             form.Add(audioContent, "file", "speech.wav");
 
             using HttpRequestMessage request = new(HttpMethod.Post,
-                _settings.HttpEndpoint.TrimEnd('/') + "/audio/transcriptions");
+                options.HttpEndpoint.TrimEnd('/') + "/audio/transcriptions");
             request.Content = form;
-            if (!string.IsNullOrWhiteSpace(_settings.ApiKey))
+            if (!string.IsNullOrWhiteSpace(options.ApiKey))
             {
-                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _settings.ApiKey);
+                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", options.ApiKey);
             }
 
             using HttpResponseMessage response = await _httpClient
