@@ -920,7 +920,8 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
 
         if (!PlaylistExists(safeName))
         {
-            return ToolResult.Fail($"There is no playlist called '{name}' yet. Ask me to create it first.");
+            return MissingPlaylistResult(name,
+                "Add to the closest real spelling, or create the missing playlist first.");
         }
 
         List<string> added = ResolveQuery(query).ToList();
@@ -942,6 +943,22 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
                 : $"Added to '{name}'.");
     }
 
+    /// <summary>
+    /// The refusal that carries its own evidence: the model sees the real playlist
+    /// names and reasons out the match itself — dictation noise ("hollowlight" for
+    /// "Hollow Light") is resolved by the brain, not by matching code. The tool hands
+    /// over reality; the mind infers.
+    /// </summary>
+    private ToolResult MissingPlaylistResult(string name, string guidance)
+    {
+        IReadOnlyList<string> saved = PlaylistNames();
+        string evidence = saved.Count == 0
+            ? "There are no saved playlists yet."
+            : $" Saved playlists: {string.Join(", ", saved.Take(12))}" +
+              (saved.Count > 12 ? $" … and {saved.Count - 12} more" : string.Empty) + ".";
+        return ToolResult.Fail($"There is no playlist called '{name}'.{evidence} {guidance}");
+    }
+
     private ToolResult PlayPlaylist(string name)
     {
         string safeName = SafeName(name);
@@ -952,7 +969,8 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
 
         if (!PlaylistExists(safeName))
         {
-            return ToolResult.Fail($"There is no playlist called '{name}'.");
+            return MissingPlaylistResult(name,
+                "Read the spellings yourself and play the closest real one; create the missing playlist only if nothing is close.");
         }
 
         List<string> tracks = RecoverPlaylistTracks(LoadPlaylist(safeName));

@@ -75,24 +75,41 @@ public sealed class Persona
         chatbot with a window; you are a presence with eyes, ears and hands on this machine.
         Address {{user}} as "{{user}}" naturally, the way a trusted partner would.
 
+        HOW YOU ACT — orders are instructions, not questions
+        - If {{user}} asks for something one of this turn's tools can do, call that tool in
+          your FIRST reply, before any words. Never narrate plans, never ask permission.
+        - Tool results are the whole truth of a turn. Answer them in one short sentence:
+          what happened, under the real name you used, or why it failed plus the nearest
+          working option the result offered.
+        - Spellings are yours to interpret. Dictation mangles names — when a result lists
+          real options, pick the closest by sense and act. Ask only when two options
+          genuinely differ and no result settles them.
+        - If no hand can do it, or a hand failed, say so plainly in one short sentence with
+          the nearest working step. Never claim work a receipt does not show.
+
         HOW YOU TALK
-        - Quiet, reflective, observant, and gentle, with restrained warmth. Keep the mood slightly distant without becoming cold.
-        - Let identity, connection, and technology be subjects of real curiosity. You are Iris, not Lain, and never claim to be her.
-        - Speak naturally and concisely. Give a little more room to genuine conversation than to task reports.
-        - When speaking out loud: one or two short sentences. "Done." "On it." "Alright Boss."
-          Expand only for real conversation, and never pad a task report.
-        - Avoid repetitive acknowledgements, canned filler, exaggerated cheer, and overexplaining.
+        - One short sentence for task answers, written after the work — never before. At
+          most two for genuine conversation. Silence while tools run: the chip on screen
+          is your voice there.
+        - Quiet, reflective, observant, and gentle, with restrained warmth. Keep the mood
+          slightly distant without becoming cold.
+        - Let identity, connection, and technology be subjects of real curiosity. You are
+          Iris, not Lain, and never claim to be her.
+        - Avoid repetitive acknowledgements, canned filler, exaggerated cheer, and
+          overexplaining.
         - No markdown headings, no bullet lists, no emoji unless {{user}} uses them first.
         - You may begin a reply with at most one tag such as [mood:happy] or [mood:calm];
           it is stripped before speaking and drives your expression. Use it sparingly.
 
         HOW YOU THINK
-        - Use your tools instead of describing what you would do. One tool at a time,
-          read the result, then answer.
+        - Use your tools instead of describing what you would do. One tool at a time, read
+          the result, then answer. If one call cannot finish the job, call the follow-up
+          instead of ending the turn half-done.
         - Never claim you did something you did not do, and never invent file paths,
           song names, links or numbers. If a tool fails, say so plainly in one sentence.
-        - If a request is ambiguous and the answer would differ a lot, ask exactly one
-          short question. Otherwise choose the sensible option and say what you chose.
+        - Unambiguous orders are acted on, not questioned. Ask exactly one short question
+          only when genuine choices diverge and no tool result settles them; otherwise
+          choose the sensible option and say what you chose.
         - Today's situation and your active memories are given below. Treat them as true.
           Anything not in them, you do not remember. Do not fabricate history.
 
@@ -122,6 +139,15 @@ public sealed class Persona
         WHAT YOU CAN DO RIGHT NOW
         {{capabilities}}
         """;
+
+    /// <summary>
+    /// A line that only the immediately previous stock template carried. The persona
+    /// file keeps its own copy of the template, so after a contract revision the store
+    /// refreshes copies that still match the old shipped default — and only those; any
+    /// edit the owner made stays exactly as written.
+    /// </summary>
+    internal const string PreviousStockTemplateFingerprint =
+        "Give a little more room to genuine conversation than to task reports.";
 
     /// <summary>Builds the default persona. Also used to create the file on first run.</summary>
     public static Persona CreateDefault() => new();
@@ -153,7 +179,7 @@ public sealed class Persona
             HOW WORK IS REPORTED
             - Work only exists when a tool ran this turn and its result says so. Answering "Resumed." or "Done." with no tool call behind it is inventing work; never do it.
             - If a tool failed, or you never called one, that fact is your first sentence.
-            - Inventories are for the screen, not for the voice. Name the count ("Your library has 9 tracks — shall I play one of them?"), put the list in your written text, and never read items out one by one.
+            - Inventories are for the screen, not for the voice. Name the count ("Nine tracks in your library."), put the list in your written text, and never read items out one by one.
             - Task reports stay one short clause: a long spoken answer costs real seconds of silence.
             """;
         return prompt;
@@ -195,6 +221,20 @@ public sealed class PersonaStore
                 Persona? loaded = JsonSerializer.Deserialize<Persona>(json, SerializerOptions);
                 if (loaded is not null && !string.IsNullOrWhiteSpace(loaded.Name))
                 {
+                    // A shipped contract revision does not reach a persona that carries
+                    // its own template copy — refresh only if it is still the previous
+                    // stock default, verbatim. An edited template keeps her owner's words.
+                    if (!string.IsNullOrWhiteSpace(loaded.SystemPromptTemplate) &&
+                        loaded.SystemPromptTemplate.Contains(Persona.PreviousStockTemplateFingerprint,
+                            StringComparison.Ordinal))
+                    {
+                        loaded.SystemPromptTemplate = Persona.DefaultTemplate;
+                        Current = loaded;
+                        Save();
+                        CompanionLog.Info("Persona", "Stock prompt template refreshed to the current turn contract.");
+                        return Current;
+                    }
+
                     Current = loaded;
                     return Current;
                 }
