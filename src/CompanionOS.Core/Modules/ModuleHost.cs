@@ -736,8 +736,15 @@ public sealed class ModuleHost : IAsyncDisposable
         return action.Trim().TrimEnd('.');
     }
 
-    private static string DescribeAction(IAssistantModule module, ModuleTool tool, JsonElement arguments) =>
-        $"{module.DisplayName} wants to {DescribeActionPhrase(module, tool, arguments)}.";
+    private static string DescribeAction(IAssistantModule module, ModuleTool tool, JsonElement arguments)
+    {
+        if (tool.Presentation is { } presentation)
+        {
+            return $"{presentation.Doing.Trim().TrimEnd('.')}.";
+        }
+
+        return $"{module.DisplayName} wants to {DescribeActionPhrase(module, tool, arguments)}.";
+    }
 
     /// <summary>Turns a verb phrase into a card headline: "play 'hollowlight'" → "Play 'hollowlight'".</summary>
     private static string CapitalizeFirst(string text) =>

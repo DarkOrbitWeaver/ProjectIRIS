@@ -9,7 +9,8 @@ It is not a bot and does not use Telegram Login / OAuth.
    Python dependencies into its own `.venv` folder.
 2. In the Telegram card, enter your `api_id` and `api_hash` from
    [my.telegram.org](https://my.telegram.org) and save them. Iris stores these in its
-   current-user DPAPI secret store.
+   current-user DPAPI secret store. These are Telegram application credentials, not a
+   BotFather bot token.
 3. Choose **Connect account**. A local setup page displays a Telegram QR code. Scan
    it with the Telegram app from **Settings → Devices → Link Desktop Device**. If
    Telegram asks for your two-step verification password, enter it only in that

@@ -113,15 +113,28 @@ class TelegramModule:
             raise RuntimeError("api_id must be the numeric value from my.telegram.org.") from exc
 
     async def connect(self) -> TelegramClient:
-        if self.client and self.client.is_connected() and await self.client.is_user_authorized():
+        if self.client and self.client.is_connected():
             return self.client
         api_id, api_hash = self._require_credentials()
         saved = load_protected(SESSION_FILE, "")
         if not saved:
             raise RuntimeError("Telegram account is not connected. Open Modules → Telegram Personal → Connect account.")
-        client = TelegramClient(StringSession(saved), api_id, api_hash)
-        await client.connect()
-        if not await client.is_user_authorized():
+        client = TelegramClient(
+            StringSession(saved), api_id, api_hash,
+            timeout=8, request_retries=1, connection_retries=1, retry_delay=1
+        )
+        try:
+            await asyncio.wait_for(client.connect(), timeout=12)
+            authorized = await asyncio.wait_for(client.is_user_authorized(), timeout=8)
+        except TimeoutError as exc:
+            await client.disconnect()
+            raise RuntimeError(
+                "Telegram did not respond in time. Check your internet connection and firewall, then try again."
+            ) from exc
+        except Exception:
+            await client.disconnect()
+            raise
+        if not authorized:
             await client.disconnect()
             SESSION_FILE.unlink(missing_ok=True)
             raise RuntimeError("Saved Telegram session expired or was revoked. Connect the account again from Modules.")
@@ -205,7 +218,7 @@ class TelegramModule:
     async def _await_qr(self) -> None:
         try:
             await self.qr.wait()
-            self._store_session()
+            await self._store_session()
         except SessionPasswordNeededError:
             self.setup_state = "waiting_password"
         except Exception as exc:
@@ -216,16 +229,21 @@ class TelegramModule:
             raise RuntimeError("There is no pending two-step password request.")
         try:
             await self.setup_client.sign_in(password=password)
-            self._store_session()
         except Exception as exc:
             self.setup_error = "Telegram did not accept that password. Check it and try again."
             raise RuntimeError(self.setup_error) from exc
+        await self._store_session()
 
-    def _store_session(self) -> None:
+    async def _store_session(self) -> None:
+        if self.setup_client is None:
+            raise RuntimeError("Telegram setup client is unavailable.")
         save_protected(SESSION_FILE, self.setup_client.session.save())
         self.setup_state, self.setup_error = "connected", ""
         self.qr = None
-        asyncio.create_task(self.setup_client.disconnect())
+        try:
+            await self.setup_client.disconnect()
+        except Exception as exc:
+            self.setup_error = f"Telegram is connected, but setup cleanup failed: {exc}"
 
     async def handle_tool(self, name: str, args: dict[str, Any]) -> str:
         if name == "telegram_status":
