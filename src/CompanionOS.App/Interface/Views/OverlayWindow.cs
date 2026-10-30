@@ -15,7 +15,6 @@ using CompanionOS.Core.Configuration;
 using CompanionOS.Core.Mind;
 using CompanionOS.Core.Modules;
 using CompanionOS.Core.Modules.BuiltIn;
-using Microsoft.Web.WebView2.Core;
 
 namespace CompanionOS.App.Interface.Views;
 
@@ -31,22 +30,16 @@ namespace CompanionOS.App.Interface.Views;
 /// the main window, so orb state and levels are identical in both places.
 ///
 /// Hover is read from the whole window, not from the orb cell. A 5 px transparent inset
-/// leaves room for the called-state contour. Hover opens a smooth agent-chat panel beside
-/// the mascot, growing away from the docked screen edges; clicking the composer explicitly
-/// activates the window. Leaving collapses after a short grace period instead of flickering.
+/// leaves room for the called-state contour. Hover reveals the controls; clicking the
+/// purple orb opens the main app for chat. Leaving collapses after a short grace period.
 /// </summary>
 public sealed class OverlayWindow : Window
 {
     // The board's pill arithmetic, in DIPs. The border remains 44 px tall; transparent
     // space around it gives the attention halo room without clipping the pill's contents.
     private const double PillHeight = 44;
-    private const double AvatarSize = 220;
-    private const double ChatPanelWidth = 320;
-    private const double ChatPanelHeight = 360;
-    private const double ExpandedPadding = 12;
-    private const double ExpandedWidth = AvatarSize + Gap + ChatPanelWidth + (ExpandedPadding * 2);
-    private const double ExpandedHeight = ChatPanelHeight + (ExpandedPadding * 2);
-    private const double HomeHeight = AvatarSize + Gap + PillHeight + (AttentionAuraInset * 2);
+    private const double HomeWidth = CompactWidth + (AttentionAuraInset * 2);
+    private const double HomeHeight = PillHeight + (AttentionAuraInset * 2);
     private const double OrbSize = 22;
     private const double DotSize = 6;
     private const double Gap = 10;
@@ -65,7 +58,7 @@ public sealed class OverlayWindow : Window
                                            (EqualizerBarWidth * 3) + (EqualizerGap * 2) + PadRight;
     private const double OrbOnlyWidth = (Hairline * 2) + (OrbitOnlyPadding * 2) + OrbSize;
 
-    private static readonly TimeSpan CollapseDelay = TimeSpan.FromMilliseconds(280);
+    private static readonly TimeSpan CollapseDelay = TimeSpan.FromMilliseconds(380);
     private static readonly TimeSpan ResizeDuration = TimeSpan.FromMilliseconds(260);
 
     /// <summary>Few pixels between her docked edge and the screen edge.</summary>
@@ -86,12 +79,6 @@ public sealed class OverlayWindow : Window
     private readonly StackPanel _equalizerHost;
     private readonly Border _pill;
     private readonly Grid _pillSurface;
-    private readonly Border _avatarFrame;
-    private readonly WebView2 _mascotView;
-    private readonly StackPanel _homeGroup;
-    private readonly StackPanel _expandedGroup;
-    private readonly Border _surface;
-    private readonly AgentChatPanel _chatPanel;
     private readonly AttentionContour _attentionContour = new() { IsHitTestVisible = false };
     private readonly DispatcherTimer _syncTimer;
     private readonly DispatcherTimer _collapseTimer;
@@ -123,14 +110,7 @@ public sealed class OverlayWindow : Window
     private bool _pointerInside;
     private bool _dragging;
     private bool _growsLeft;
-    private bool _growsDown;
-    private bool _chatExpanded;
     private bool _hasPosition;
-    private bool _mascotReady;
-    private string? _lastMascotState;
-    private string? _mascotEventState;
-    private DateTimeOffset _mascotEventStateUntil = DateTimeOffset.MinValue;
-    private int _lastMascotAmplitudeStep = -1;
     private DateTimeOffset _attentionUntil = DateTimeOffset.MinValue;
     private DateTimeOffset _resizeStartedAt;
     private double _resizeFromWidth;
@@ -174,7 +154,7 @@ public sealed class OverlayWindow : Window
         ShowActivated = false;
         CanResize = false;
         WindowStartupLocation = WindowStartupLocation.Manual;
-        Width = AvatarSize;
+        Width = HomeWidth;
         Height = HomeHeight;
 
         _dot = new Border
@@ -192,7 +172,20 @@ public sealed class OverlayWindow : Window
             Spacing = Gap,
             VerticalAlignment = VerticalAlignment.Center
         };
-        identity.Children.Add(_orb);
+        Button openChatButton = new()
+        {
+            Width = OrbSize,
+            Height = OrbSize,
+            Padding = new Thickness(0),
+            Background = Brushes.Transparent,
+            BorderThickness = new Thickness(0),
+            CornerRadius = new CornerRadius(OrbSize / 2),
+            Content = _orb,
+            Cursor = new Cursor(StandardCursorType.Hand)
+        };
+        ToolTip.SetTip(openChatButton, "Open Iris chat");
+        openChatButton.Click += (_, _) => showMainWindow();
+        identity.Children.Add(openChatButton);
         identity.Children.Add(_dot);
 
         StackPanel buttonsHost = new()
@@ -250,40 +243,6 @@ public sealed class OverlayWindow : Window
             Child = row
         };
 
-        string mascotPagePath = System.IO.Path.Combine(AppContext.BaseDirectory, "iris-mascot.html");
-        if (!File.Exists(mascotPagePath))
-        {
-            throw new FileNotFoundException("The Iris mascot page was not copied to the application output directory.",
-                mascotPagePath);
-        }
-
-        UriBuilder mascotPage = new(new Uri(mascotPagePath))
-        {
-            Query = "overlay=1"
-        };
-        _mascotView = new WebView2
-        {
-            DefaultBackgroundColor = System.Drawing.Color.Transparent,
-            Focusable = false,
-            IsTabStop = false
-        };
-        _mascotView.CoreWebView2InitializationCompleted += OnMascotWebViewInitialized;
-        _mascotView.Source = mascotPage.Uri;
-
-        // WebView2 is a native HWND hosted above Avalonia's visual tree; ancestor
-        // clipping and animated frame resizing can desynchronize its visible bounds.
-        // Keep it fixed-size and inset within the expanded card instead.
-        _avatarFrame = new Border
-        {
-            Width = AvatarSize,
-            Height = AvatarSize,
-            CornerRadius = new CornerRadius(14),
-            BorderThickness = new Thickness(1),
-            BorderBrush = Palette.StrokeBrush,
-            Background = Palette.BackgroundBrush,
-            Child = _mascotView
-        };
-
         _pillSurface = new Grid
         {
             Width = WindowWidth(PillShape.Compact),
@@ -293,37 +252,7 @@ public sealed class OverlayWindow : Window
         _pillSurface.Children.Add(_pill);
         _pillSurface.Children.Add(_attentionContour);
 
-        _homeGroup = new StackPanel
-        {
-            Orientation = Orientation.Vertical,
-            Spacing = Gap,
-            HorizontalAlignment = HorizontalAlignment.Center
-        };
-        _homeGroup.Children.Add(_avatarFrame);
-        _homeGroup.Children.Add(_pillSurface);
-
-        _chatPanel = new AgentChatPanel(_model, ActivateChatInput)
-        {
-            Width = ChatPanelWidth,
-            Height = ChatPanelHeight,
-            IsVisible = false
-        };
-        _expandedGroup = new StackPanel
-        {
-            Orientation = Orientation.Horizontal,
-            Spacing = Gap,
-            HorizontalAlignment = HorizontalAlignment.Left,
-            VerticalAlignment = VerticalAlignment.Bottom
-        };
-        _expandedGroup.Children.Add(_homeGroup);
-        _surface = new Border
-        {
-            Background = Brushes.Transparent,
-            BorderThickness = new Thickness(0),
-            CornerRadius = new CornerRadius(18),
-            Child = _expandedGroup
-        };
-        Content = _surface;
+        Content = _pillSurface;
 
         // Apply the resting shape before the first paint. Previously the construction
         // width was the compact one while both button and equalizer hosts still had their
@@ -410,9 +339,6 @@ public sealed class OverlayWindow : Window
             _backgroundTaskSubscription?.Dispose();
             _moduleSurfaceStateSubscription?.Dispose();
             _taskFeedbackSubscription?.Dispose();
-            _mascotReady = false;
-            _mascotView.CoreWebView2InitializationCompleted -= OnMascotWebViewInitialized;
-            _mascotView.NavigationCompleted -= OnMascotNavigationCompleted;
             if (_nowPlaying is not null)
             {
                 _nowPlaying.PropertyChanged -= OnNowPlayingChanged;
@@ -450,7 +376,6 @@ public sealed class OverlayWindow : Window
         _conversationSubscription = _model.Runtime.Events.Subscribe<ConversationEvent>(payload =>
             Dispatcher.UIThread.Post(() =>
             {
-                HandleMascotConversation(payload);
                 HandleModuleConversation(payload);
             }));
         _moduleProgressSubscription = _model.Runtime.Events.Subscribe<ModuleProgressEvent>(payload =>
@@ -605,8 +530,6 @@ public sealed class OverlayWindow : Window
         // unfolds to the left, a pill on the left unfolds to the right. This is what keeps
         // the hovered pill under the pointer instead of moving it.
         _growsLeft = Position.X + (pixelWidth / 2.0) > work.X + (work.Width / 2.0);
-        _growsDown = Position.Y + (pixelHeight / 2.0) < work.Y + (work.Height / 2.0);
-        UpdateExpandedGroupOrder();
     }
 
     /// <summary>True while her window sits within the dock tolerance of the screen's
@@ -669,14 +592,6 @@ public sealed class OverlayWindow : Window
             _model.SpeechLevel,
             _model.Runtime.Settings.Current.Interface.ReduceMotion);
 
-        // Keep the live mascot visible, except when the user dims gaming.
-        double speechMotion = _model.IsSpeaking ? Math.Clamp(_model.SpeechLevel, 0, 1) : 0;
-        _avatarFrame.Opacity = state == MindState.Gaming &&
-                               _model.Runtime.Settings.Current.Interface.DimWhileGaming
-            ? 0.4
-            : 0.92 + (speechMotion * 0.08);
-        SyncMascot(state);
-
         SyncMusicOverlay();
         SyncTimerOverlay();
         SyncPermissionOverlay();
@@ -693,155 +608,7 @@ public sealed class OverlayWindow : Window
         }
     }
 
-    private void OnMascotWebViewInitialized(object? sender, CoreWebView2InitializationCompletedEventArgs args)
-    {
-        if (!args.IsSuccess)
-        {
-            SystemWatch.Fault("overlay-mascot",
-                args.InitializationException ?? new InvalidOperationException("The embedded browser failed to initialize."),
-                "The mascot WebView2 browser could not start.");
-            return;
-        }
-
-        _mascotView.NavigationCompleted += OnMascotNavigationCompleted;
-    }
-
-    private void HandleMascotConversation(ConversationEvent payload)
-    {
-        switch (payload.Phase)
-        {
-            case ConversationPhase.UserMessage:
-            case ConversationPhase.AssistantStarted:
-            case ConversationPhase.TurnCancelled:
-                _mascotEventState = null;
-                _mascotEventStateUntil = DateTimeOffset.MinValue;
-                break;
-
-            case ConversationPhase.ToolStarted:
-                _mascotEventState = MascotToolState(payload);
-                _mascotEventStateUntil = DateTimeOffset.MaxValue;
-                break;
-
-            case ConversationPhase.ToolFinished:
-                _mascotEventState = payload.Detail?.Contains("did not allow", StringComparison.OrdinalIgnoreCase) == true
-                    ? "confused"
-                    : "success";
-                _mascotEventStateUntil = DateTimeOffset.Now.AddSeconds(1.5);
-                break;
-
-            case ConversationPhase.AssistantCompleted:
-                _mascotEventState = "success";
-                _mascotEventStateUntil = DateTimeOffset.Now.AddSeconds(1.5);
-                break;
-
-            case ConversationPhase.TurnFailed:
-                _mascotEventState = "error";
-                _mascotEventStateUntil = DateTimeOffset.Now.AddSeconds(2.5);
-                break;
-        }
-
-        SyncMascot(_model.State);
-    }
-
-    private static string MascotToolState(ConversationEvent payload)
-    {
-        string activity = $"{payload.IconKey} {payload.ModuleId} {payload.Text} {payload.Detail}";
-        if (activity.Contains("search", StringComparison.OrdinalIgnoreCase) ||
-            activity.Contains("browse", StringComparison.OrdinalIgnoreCase) ||
-            activity.Contains("browser", StringComparison.OrdinalIgnoreCase) ||
-            activity.Contains("web", StringComparison.OrdinalIgnoreCase))
-        {
-            return "searching";
-        }
-
-        if (activity.Contains("read file", StringComparison.OrdinalIgnoreCase) ||
-            activity.Contains("open file", StringComparison.OrdinalIgnoreCase) ||
-            activity.Contains("document", StringComparison.OrdinalIgnoreCase))
-        {
-            return "reading";
-        }
-
-        return "coding";
-    }
-
-    private void OnMascotNavigationCompleted(object? sender, CoreWebView2NavigationCompletedEventArgs args)
-    {
-        if (!args.IsSuccess)
-        {
-            SystemWatch.Trace("overlay-mascot",
-                $"The mascot page failed to load in the embedded browser: {args.WebErrorStatus}.");
-            return;
-        }
-
-        _mascotReady = true;
-        _lastMascotState = null;
-        _lastMascotAmplitudeStep = -1;
-        SyncMascot(_model.State);
-    }
-
-    private void SyncMascot(MindState state)
-    {
-        if (!_mascotReady)
-        {
-            return;
-        }
-
-        string mascotState = _model.IsSpeaking ? "speaking" : state switch
-        {
-            MindState.Booting or MindState.Thinking => "thinking",
-            MindState.Idle or MindState.Gaming => "idle",
-            MindState.Listening => "listening",
-            MindState.Acting => "coding",
-            MindState.Speaking => "idle",
-            MindState.PermissionWait => "confused",
-            MindState.Sleeping => "sleeping",
-            MindState.Error => "error",
-            _ => "idle"
-        };
-        if (!_model.IsSpeaking && _mascotEventState is not null)
-        {
-            if (DateTimeOffset.Now < _mascotEventStateUntil)
-            {
-                mascotState = _mascotEventState;
-            }
-            else
-            {
-                _mascotEventState = null;
-                _mascotEventStateUntil = DateTimeOffset.MinValue;
-            }
-        }
-
-        bool stateChanged = !string.Equals(mascotState, _lastMascotState, StringComparison.Ordinal);
-        int amplitudeStep = (int)Math.Round(Math.Clamp(_model.SpeechLevel, 0, 1) * 20);
-        bool amplitudeChanged = _model.IsSpeaking && amplitudeStep != _lastMascotAmplitudeStep;
-        if (!stateChanged && !amplitudeChanged)
-        {
-            return;
-        }
-
-        _lastMascotState = mascotState;
-        _lastMascotAmplitudeStep = _model.IsSpeaking ? amplitudeStep : -1;
-        string stateCommand = stateChanged ? $"window.irisMascot.setState('{mascotState}');" : string.Empty;
-        string amplitudeCommand = amplitudeChanged
-            ? $"window.irisMascot.setAmplitude({amplitudeStep}/20);"
-            : string.Empty;
-        Task invocation = _mascotView.ExecuteScriptAsync(
-            $"if(window.irisMascot){{{stateCommand}{amplitudeCommand}}}");
-        _ = invocation.ContinueWith(
-            task =>
-            {
-                if (task.Exception is { } exception)
-                {
-                    SystemWatch.Fault("overlay-mascot", exception.GetBaseException(),
-                        "Updating the mascot animation.");
-                }
-            },
-            CancellationToken.None,
-            TaskContinuationOptions.OnlyOnFaulted,
-            TaskScheduler.Default);
-    }
-
-    /// <summary>Cards share a single top-right stack beneath the pill and portrait.
+    /// <summary>Cards share a single top-right stack beneath the pill.
     /// A newly shown card gets the newest sequence and takes the first slot, shifting
     /// earlier cards down in their existing order.</summary>
     private void ArrangeVisibleOverlays()
@@ -1307,8 +1074,6 @@ public sealed class OverlayWindow : Window
     /// </summary>
     private void RefreshShapeFromState()
     {
-        SetChatExpanded(_pointerInside && !_dragging);
-
         PillShape shape;
         if (_model.State == MindState.Gaming)
         {
@@ -1354,8 +1119,6 @@ public sealed class OverlayWindow : Window
                 }
 
                 _growsLeft = Position.X + (PixelWidth() / 2.0) > work.X + (work.Width / 2.0);
-                _growsDown = Position.Y + (PixelHeight() / 2.0) < work.Y + (work.Height / 2.0);
-                UpdateExpandedGroupOrder();
             }
 
             _model.Runtime.Settings.Current.Interface.OverlayPositionPx =
@@ -1371,12 +1134,12 @@ public sealed class OverlayWindow : Window
 
     /// <summary>
     /// Updates the pill and animates the whole card from its docked edge, keeping the
-    /// portrait anchored while the chat surface unfolds beside it.
+    /// pill anchored while the chat surface unfolds beside it.
     /// </summary>
     private void ApplyShape(PillShape shape, bool initial = false)
     {
-        double targetWidth = _chatExpanded ? ExpandedWidth : AvatarSize;
-        double targetHeight = _chatExpanded ? ExpandedHeight : HomeHeight;
+        double targetWidth = WindowWidth(shape);
+        double targetHeight = HomeHeight;
         if (!initial && _shape == shape &&
             Math.Abs(_resizeToWidth - targetWidth) < 0.1 &&
             Math.Abs(_resizeToHeight - targetHeight) < 0.1)
@@ -1429,9 +1192,8 @@ public sealed class OverlayWindow : Window
         _resizeToHeight = targetHeight;
         _resizeFromPosition = Position;
         int widthDelta = (int)Math.Round((targetWidth - Width) * Scaling);
-        int heightDelta = (int)Math.Round((targetHeight - Height) * Scaling);
         int x = _growsLeft ? Position.X - widthDelta : Position.X;
-        int y = _growsDown ? Position.Y : Position.Y - heightDelta;
+        int y = Position.Y;
         int targetPixelWidth = Math.Max(1, (int)Math.Ceiling(targetWidth * Scaling));
         int targetPixelHeight = Math.Max(1, (int)Math.Ceiling(targetHeight * Scaling));
         _resizeToPosition = new PixelPoint(
@@ -1460,50 +1222,6 @@ public sealed class OverlayWindow : Window
             Position = _resizeToPosition;
             _resizeTimer.Stop();
         }
-    }
-
-    private void SetChatExpanded(bool expanded)
-    {
-        if (_chatExpanded == expanded)
-        {
-            return;
-        }
-
-        _chatExpanded = expanded;
-        _chatPanel.IsVisible = expanded;
-        _surface.Background = expanded ? Palette.BackgroundBrush : Brushes.Transparent;
-        _surface.BorderBrush = expanded ? Palette.StrokeBrush : Brushes.Transparent;
-        _surface.BorderThickness = expanded ? new Thickness(1) : new Thickness(0);
-        _surface.Padding = expanded ? new Thickness(ExpandedPadding - 1) : new Thickness(0);
-        UpdateExpandedGroupOrder();
-    }
-
-    private void UpdateExpandedGroupOrder()
-    {
-        _expandedGroup.Children.Clear();
-        if (_chatExpanded && _growsLeft)
-        {
-            _expandedGroup.Children.Add(_chatPanel);
-            _expandedGroup.Children.Add(_homeGroup);
-        }
-        else
-        {
-            _expandedGroup.Children.Add(_homeGroup);
-            if (_chatExpanded)
-            {
-                _expandedGroup.Children.Add(_chatPanel);
-            }
-        }
-
-        _expandedGroup.VerticalAlignment = _growsDown ? VerticalAlignment.Top : VerticalAlignment.Bottom;
-        _expandedGroup.HorizontalAlignment = _growsLeft ? HorizontalAlignment.Right : HorizontalAlignment.Left;
-        _homeGroup.VerticalAlignment = _growsDown ? VerticalAlignment.Top : VerticalAlignment.Bottom;
-    }
-
-    private void ActivateChatInput()
-    {
-        ShowActivated = true;
-        Activate();
     }
 
     private static bool IsInsideButton(object? source)

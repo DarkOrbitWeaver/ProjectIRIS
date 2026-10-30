@@ -1586,7 +1586,7 @@ public sealed class CoreRegressionTests
     }
 
     [Fact]
-    public void VoiceAddressingUsesConversationStateCapturedBeforeSlowRecognition()
+    public void WakePhraseRemainsRequiredDuringConversationWindow()
     {
         WakePhraseMatcher matcher = new(new Persona());
         bool conversationWasOpenWhenSegmentStarted = true;
@@ -1594,8 +1594,8 @@ public sealed class CoreRegressionTests
         VoiceAddressingDecision decision = VoiceAddressingPolicy.Decide(
             "play the next song", requiresWakePhrase: true, conversationWasOpenWhenSegmentStarted, matcher);
 
-        Assert.Equal(VoiceAddressingOutcome.OpenConversationRequest, decision.Outcome);
-        Assert.Equal("play the next song", decision.RequestText);
+        Assert.Equal(VoiceAddressingOutcome.WakeMiss, decision.Outcome);
+        Assert.Empty(decision.RequestText);
     }
 
     [Fact]

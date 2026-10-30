@@ -8,7 +8,7 @@ public enum VoiceAddressingOutcome
     WakeMiss
 }
 
-/// <summary>The addressing result for one transcript, based on the conversation state when capture began.</summary>
+/// <summary>The addressing result for one transcript.</summary>
 public sealed record VoiceAddressingDecision(VoiceAddressingOutcome Outcome, string RequestText);
 
 /// <summary>Decides whether a transcript belongs to Iris without consulting mutable live state.</summary>
@@ -18,7 +18,10 @@ public static class VoiceAddressingPolicy
         bool conversationWasOpen, WakePhraseMatcher wakeMatcher)
     {
         ArgumentNullException.ThrowIfNull(wakeMatcher);
-        if (!requiresWakePhrase || conversationWasOpen)
+        // An open microphone or recent wake must not claim nearby conversation as
+        // addressed speech. If wake phrase protection is enabled, every request must
+        // begin with Iris, including follow-ups.
+        if (!requiresWakePhrase)
         {
             return new VoiceAddressingDecision(VoiceAddressingOutcome.OpenConversationRequest, transcript.Trim());
         }

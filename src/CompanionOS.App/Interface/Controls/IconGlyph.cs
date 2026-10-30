@@ -6,7 +6,7 @@ namespace CompanionOS.App.Interface.Controls;
 
 /// <summary>
 /// The interface's icon set — the same 24-unit stroke glyphs the design boards use,
-/// one geometry per glyph, rendered as a scaled Path. Nothing is lorem-ipsumed: every
+/// one geometry per glyph, rendered on the same 24-unit artboard. Nothing is lorem-ipsumed: every
 /// glyph here comes from the delivered HTML.
 ///
 /// Full icon paths in the board markup are stored verbatim; the 20 px rail icons and
@@ -103,20 +103,46 @@ public static class IconGlyph
             return MakeDash(size, stroke);
         }
 
-        return new Avalonia.Controls.Shapes.Path
+        Avalonia.Controls.Shapes.Path path = new()
         {
             Data = StreamGeometry.Parse(geometry),
+            Width = 24,
+            Height = 24,
+            Stretch = Stretch.None,
+            Stroke = stroke,
+            StrokeThickness = 1.75,
+            StrokeLineCap = PenLineCap.Round,
+            StrokeJoin = PenLineJoin.Round,
+            // Balance the two asymmetric shapes within the common 24-unit canvas.
+            RenderTransform = geometry switch
+            {
+                Microphone => new TranslateTransform(0, -1.5),
+                Play => new TranslateTransform(0.8, 0),
+                _ => null
+            }
+        };
+
+        // Keep the original 24-unit artboard. Stretching each path to its own tight
+        // bounds made glyphs with different geometry bounds (especially the mic and
+        // transport controls) appear off-centre and inconsistently sized.
+        return new Viewbox
+        {
             Width = size,
             Height = size,
             HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Center,
             VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center,
             Stretch = Stretch.Uniform,
-            Stroke = stroke,
-            StrokeThickness = size / 24.0 * 1.75,
-            StrokeLineCap = PenLineCap.Round,
-            StrokeJoin = PenLineJoin.Round
+            Child = path
         };
     }
+
+    /// <summary>Gets the stroke path from a rendered icon, if it has one.</summary>
+    public static Avalonia.Controls.Shapes.Path? GetPath(Control glyph) => glyph switch
+    {
+        Avalonia.Controls.Shapes.Path path => path,
+        Viewbox { Child: Avalonia.Controls.Shapes.Path path } => path,
+        _ => null
+    };
 
     /// <summary>
     /// The window minimize dash, drawn as a filled rounded bar the way the boards

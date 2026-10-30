@@ -864,8 +864,8 @@ internal sealed class ModuleCardControl
         Background = Palette.StrokeBrush
     };
 
-    private static Avalonia.Controls.Shapes.Path MakeChevron(bool expanded) =>
-        (Avalonia.Controls.Shapes.Path)IconGlyph.Make(
+    private static Control MakeChevron(bool expanded) =>
+        IconGlyph.Make(
             expanded ? IconGlyph.ChevronDown : IconGlyph.ChevronRight, 12, Palette.AccentSoftBrush);
 
     private (Button button, Border knob) BuildSwitch()
@@ -913,7 +913,7 @@ internal sealed class ModuleCardControl
 
         _dot.Background = _isEnabled ? Palette.SuccessBrush : Palette.TextFaintBrush;
         _statusText.Text = _isEnabled ? "Active" : "Off";
-        if (_glyph is Avalonia.Controls.Shapes.Path glyphPath)
+        if (IconGlyph.GetPath(_glyph) is { } glyphPath)
         {
             glyphPath.Stroke = _isEnabled ? Palette.TextPrimaryBrush : Palette.TextSecondaryBrush;
         }

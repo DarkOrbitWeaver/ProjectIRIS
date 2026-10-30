@@ -341,7 +341,7 @@ public sealed class EarsSettings
     /// <summary>Higher values need louder speech before recording starts.</summary>
     public double VoiceThreshold { get; set; } = 0.025;
 
-    /// <summary>Answer only when her name is heard, or when the mic was explicitly opened.</summary>
+    /// <summary>Require her name in each utterance before she answers.</summary>
     public bool RequireWakePhrase { get; set; } = true;
 
     /// <summary>

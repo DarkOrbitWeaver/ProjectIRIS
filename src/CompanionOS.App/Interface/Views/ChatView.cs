@@ -634,7 +634,13 @@ public sealed class ChatView : UserControl
     /// <summary>The mic ring is cyan while her ears are open, a quiet slate while closed.</summary>
     private void UpdateVoiceChrome()
     {
-        if (_micButton.Content is not Avalonia.Controls.Shapes.Path icon)
+        Avalonia.Controls.Shapes.Path? icon = _micButton.Content switch
+        {
+            Avalonia.Controls.Shapes.Path path => path,
+            Viewbox { Child: Avalonia.Controls.Shapes.Path path } => path,
+            _ => null
+        };
+        if (icon is null)
         {
             return;
         }

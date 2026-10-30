@@ -886,8 +886,8 @@ public sealed class VoicePipeline : IAsyncDisposable
     }
 
     /// <summary>
-    /// Keeps the conversation open for a while after she is addressed, so a follow-up
-    /// ("and make it louder") does not need her name again. This is how people talk.
+    /// Tracks the recent exchange for diagnostic receipts. Wake phrase protection still
+    /// applies to every utterance, so nearby conversation is never treated as a reply.
     /// </summary>
     public void OpenConversationWindow(int seconds = 45) =>
         _conversationOpenUntil = DateTimeOffset.Now.AddSeconds(seconds);
@@ -1539,8 +1539,8 @@ public sealed class VoicePipeline : IAsyncDisposable
         int recognizedCharacters = 0;
         try
         {
-            // The cheap question first. While she is expecting an answer, everything is
-            // transcribed; the rest of the time a sentence has to look worth the CPU.
+            // The cheap question first. With wake phrases enabled, every utterance must
+            // pass the shape gate before transcription, even during a recent exchange.
             EarsSettings ears = _settings.Current.Ears;
             bool conversationWasOpen = IsConversationOpen;
             bool wakeGateAvailable = WakeGate.IsAvailable;
@@ -1563,7 +1563,7 @@ public sealed class VoicePipeline : IAsyncDisposable
                 return;
             }
 
-            bool expectsAnswer = !ears.RequireWakePhrase || conversationWasOpen || capturingForTraining;
+            bool expectsAnswer = !ears.RequireWakePhrase || capturingForTraining;
             if (!expectsAnswer && wakeGateAvailable &&
                 WakeGate.Check(segment, CancellationToken.None) == WakeGateVerdict.Skip)
             {
@@ -1878,13 +1878,23 @@ public sealed class VoicePipeline : IAsyncDisposable
 
     /// <summary>Chooses the ears from a LIVE settings source, so a rebuild (suspension
     /// or a settings change) always consults the current values. Whisper and the HTTP
-    /// ear keep re-reading their own options per transcribe call; only Parakeet takes
-    /// a snapshot here, by design: its native ABI pins the model file at load time
-    /// (2026-10-27 audit).</summary>
+    /// ear keep re-reading their own options per transcribe call; Parakeet takes a
+    /// snapshot here because its selected model path and native recognizer are fixed
+    /// for the lifetime of the microphone session.</summary>
     private static ISpeechRecognizer CreateRecognizer(Func<EarsSettings> ears)
     {
         EarsSettings options = ears();
-        ParakeetRecognizer parakeet = new(options);
+        ParakeetRecognizer ggufParakeet = new(options);
+        ParakeetOnnxRecognizer onnxParakeet = new(options);
+        ISpeechRecognizer parakeet = ggufParakeet.IsAvailable ? ggufParakeet : onnxParakeet;
+        if (parakeet == ggufParakeet)
+        {
+            onnxParakeet.Dispose();
+        }
+        else
+        {
+            ggufParakeet.Dispose();
+        }
         WhisperNetRecognizer whisper = new(ears);
         HttpSpeechRecognizer http = new(ears);
 
@@ -1910,11 +1920,10 @@ public sealed class VoicePipeline : IAsyncDisposable
             return http;
         }
 
-        // "auto": Parakeet is the production ears and wins whenever its model and the
-        // transcribe.cpp runtime are installed. A local whisper model is the fallback
-        // for machines without them, and the HTTP endpoint is last because it depends
-        // on someone having started a server. The runner-ups are always disposed, so
-        // no client outlives the choice.
+        // "auto": Parakeet is the production ears and wins when either its GGUF
+        // transcribe.cpp stack or configured Sherpa-ONNX model is installed. A local
+        // whisper model is the fallback, and HTTP is last because it needs a running
+        // server. The runner-ups are always disposed, so no client outlives the choice.
         if (parakeet.IsAvailable)
         {
             http.Dispose();

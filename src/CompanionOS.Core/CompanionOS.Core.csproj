@@ -26,6 +26,8 @@
     <!-- Offline speech recognition on the CPU, in the ears tier, at 0 GB of VRAM. -->
     <PackageReference Include="Whisper.net" Version="1.7.0" />
     <PackageReference Include="Whisper.net.Runtime" Version="1.7.0" />
+    <!-- Run the Parakeet ONNX bundle already used by this checkout, on CPU. -->
+    <PackageReference Include="org.k2fsa.sherpa.onnx" Version="1.13.8" />
   </ItemGroup>
 </Project>
 

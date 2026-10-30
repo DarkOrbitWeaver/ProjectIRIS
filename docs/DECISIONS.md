@@ -217,6 +217,12 @@ lives with the segment layer, not the engine; and per the owner's call the old
 can fall back to the weaker ears by accident. The `whisper` recogniser remains a code-level
 option for someone who supplies their own model file.
 
+For checkouts that already contain the Sherpa-ONNX Parakeet TDT bundle, Iris also supports
+that format through Sherpa-ONNX's CPU runtime when its model directory is selected in
+`Ears.ParakeetModelFile`. The GGUF/transcribe.cpp path remains preferred when both are
+installed; the ONNX adapter lets an existing local Parakeet model run without downloading a
+second copy or converting between incompatible formats.
+
 ---
 
 ## Process
