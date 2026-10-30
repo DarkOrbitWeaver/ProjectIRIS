@@ -27,6 +27,21 @@ internal static class ModuleIconGlyph
         "download" or "downloader" => IconGlyph.Download,
         "sandbox" or "box" or "package" => IconGlyph.Package,
         "shield" => IconGlyph.Shield,
+        "eye" or "screen" => IconGlyph.Eye,
+        "sleep" => IconGlyph.Sleep,
+        "mic" or "microphone" => IconGlyph.Microphone,
+        "play" => IconGlyph.Play,
+        "pause" => IconGlyph.Pause,
+        "stop" => IconGlyph.Stop,
+        "next" => IconGlyph.PlayNext,
+        "previous" => IconGlyph.PlayPrevious,
+        "note" => IconGlyph.Rename,
+        "app" or "status" => IconGlyph.Monitor,
+        "folder" or "files" => IconGlyph.Package,
+        "question" => IconGlyph.InfoCircle,
+        "voice" or "activity" => IconGlyph.VoiceWave,
+        "check" => IconGlyph.CheckCircle,
+        "alert" => IconGlyph.AlertCircle,
         _ => IconGlyph.Body
     };
 

@@ -141,23 +141,37 @@ public sealed class ModulesView : UserControl
         _pluginsHost.Content = BuildPluginsSection();
     }
 
+    private static Control LegendItem(string glyph, IBrush brush, string text) => new StackPanel
+    {
+        Orientation = Orientation.Horizontal,
+        Spacing = 6,
+        Children =
+        {
+            IconGlyph.Make(glyph, 12, brush),
+            Ui.Text(text, Palette.FontCaption, Palette.TextSecondaryBrush, FontWeight.Medium, wrap: false)
+        }
+    };
+
     private Control BuildLayout()
     {
         TextBlock title = Ui.Text("What I can do", Palette.FontPage, Palette.TextPrimaryBrush,
             FontWeight.SemiBold, wrap: false);
         title.LineHeight = 34;
 
+        // One legend, three icons: how each action behaves, so no card has to repeat it.
         StackPanel shieldNote = new()
         {
             Orientation = Orientation.Horizontal,
-            Spacing = 6,
-            VerticalAlignment = VerticalAlignment.Center
+            Spacing = 16,
+            VerticalAlignment = VerticalAlignment.Center,
+            Children =
+            {
+                LegendItem(IconGlyph.Eye, Palette.TextSecondaryBrush, "Runs on its own"),
+                LegendItem(IconGlyph.Shield, Palette.WarningBrush, "Asks the first time"),
+                LegendItem(IconGlyph.Clock14, Palette.WarningBrush, "Asks once a session"),
+                LegendItem(IconGlyph.Shield, Palette.DangerBrush, "Asks every time")
+            }
         };
-        shieldNote.Children.Add(Ui.Text("Anything marked", Palette.FontCaption,
-            Palette.TextSecondaryBrush, FontWeight.Medium, wrap: false));
-        shieldNote.Children.Add(IconGlyph.Make(IconGlyph.Shield, 12, Palette.WarningBrush));
-        shieldNote.Children.Add(Ui.Text("asks before it runs.", Palette.FontCaption,
-            Palette.TextSecondaryBrush, FontWeight.Medium, wrap: false));
 
         StackPanel heading = new() { Spacing = 4 };
         heading.Children.Add(title);
@@ -190,7 +204,7 @@ public sealed class ModulesView : UserControl
     /// </summary>
     private Control BuildPluginsSection()
     {
-        TextBlock caption = Ui.Text("Plugins · from her folder", Palette.FontCaption,
+        TextBlock caption = Ui.Text("Plugins \u00B7 from her folder", Palette.FontCaption,
             Palette.TextSecondaryBrush, FontWeight.SemiBold, wrap: false);
         caption.LineHeight = 16;
         caption.LetterSpacing = 0.88;
@@ -280,171 +294,33 @@ public sealed class ModulesView : UserControl
                 cards.RowDefinitions.Add(new RowDefinition(GridLength.Auto));
             }
 
-            string transportWord = plugin.Transport.ToUpperInvariant();
-
-            TextBlock name = Ui.Text($"{plugin.Name} · v{plugin.Version}", Palette.FontEmphasis,
-                Palette.TextPrimaryBrush, FontWeight.SemiBold, wrap: false);
-            name.LineHeight = 22;
-
-            TextBlock transport = Ui.Text(transportWord, Palette.FontCaption,
-                Palette.AccentSoftBrush, FontWeight.SemiBold, wrap: false);
-            transport.LineHeight = 16;
-            transport.LetterSpacing = 0.88;
-            transport.VerticalAlignment = VerticalAlignment.Center;
-
-            TextBlock toolsLine = Ui.Text($"{plugin.Tools.Count} tools", Palette.FontCaption,
-                Palette.TextSecondaryBrush, FontWeight.Medium, wrap: false);
-            toolsLine.LineHeight = 16;
-            toolsLine.LetterSpacing = 0.88;
-            toolsLine.VerticalAlignment = VerticalAlignment.Center;
-
-            StackPanel headerRow = new()
-            {
-                Orientation = Orientation.Horizontal,
-                Spacing = 10,
-                Children = { name, transport, toolsLine }
-            };
-            if (plugin.AsksPermission.Count > 0)
-            {
-                headerRow.Children.Add(IconGlyph.Make(IconGlyph.Shield, 12, Palette.WarningBrush));
-            }
+            // Same card as the built-ins. A plugin that is switched off is not registered, so a
+            // display-only adapter supplies its tool list.
             string moduleId = $"plugin:{plugin.Id}";
-            bool activeThisSession = _runtime.Modules.IsEnabled(moduleId);
-            bool enable = plugin.Disabled || !activeThisSession;
-            string pluginState = plugin.Disabled
-                ? "DISABLED"
-                : activeThisSession ? "ACTIVE" : "OFF";
-            TextBlock stateTag = Ui.Text(pluginState, Palette.FontCaption,
-                !plugin.Disabled && activeThisSession ? Palette.SuccessBrush : Palette.TextSecondaryBrush,
-                FontWeight.SemiBold, wrap: false);
-            stateTag.LineHeight = 16;
-            stateTag.LetterSpacing = 0.88;
-            stateTag.VerticalAlignment = VerticalAlignment.Center;
-            headerRow.Children.Add(stateTag);
+            IAssistantModule module = _runtime.Modules.Modules.FirstOrDefault(candidate =>
+                                          string.Equals(candidate.Id, moduleId, StringComparison.OrdinalIgnoreCase))
+                                      ?? new PluginModuleAdapter(_runtime.Plugins, plugin);
+            bool isOn = !plugin.Disabled && _runtime.Modules.IsEnabled(moduleId);
 
-            Button launchToggle = new()
+            StackPanel footer = new() { Spacing = 10 };
+            if (BuildPluginSetupActions(plugin) is { } setup)
             {
-                Content = Ui.Text(enable ? "Enable now" : "Disable now",
-                    Palette.FontCaption, Palette.AccentSoftBrush, FontWeight.Medium, wrap: false),
-                Background = Brushes.Transparent,
-                BorderBrush = Palette.StrokeBrush,
-                BorderThickness = new Thickness(1),
-                CornerRadius = new CornerRadius(8),
-                Padding = new Thickness(10, 5),
-                HorizontalAlignment = HorizontalAlignment.Left
-            };
-            ToolTip.SetTip(launchToggle, enable
-                ? "Load this external plugin and refresh its tools now"
-                : "Stop routing to this plugin and close its active server now");
-            launchToggle.Click += async (_, _) => await SetPluginLaunchEnabledAsync(plugin, enable);
-
-            // Permanent setup actions live on the card, not in a one-time toast that is
-            // easy to miss. The browser plugin needs its Chrome extension loaded once.
-            StackPanel actions = new() { Orientation = Orientation.Horizontal, Spacing = 8 };
-            actions.Children.Add(launchToggle);
-            if (plugin.Id.Equals("browser", StringComparison.OrdinalIgnoreCase))
-            {
-                string extensionInstaller = Path.Combine(plugin.Folder, "install-extension.ps1");
-                if (File.Exists(extensionInstaller))
-                {
-                    Button extensionSetup = new()
-                    {
-                        Content = Ui.Text("Set up Chrome", Palette.FontCaption, Palette.SuccessBrush,
-                            FontWeight.Medium, wrap: false),
-                        Background = Brushes.Transparent,
-                        BorderBrush = Palette.StrokeBrush,
-                        BorderThickness = new Thickness(1),
-                        CornerRadius = new CornerRadius(8),
-                        Padding = new Thickness(10, 5),
-                        HorizontalAlignment = HorizontalAlignment.Left
-                    };
-                    ToolTip.SetTip(extensionSetup,
-                        "Copy the Iris extension into place and open Chrome to load it once, then pair");
-                    extensionSetup.Click += (_, _) => StartBrowserExtensionSetup(extensionInstaller);
-                    actions.Children.Add(extensionSetup);
-                }
-            }
-            else if (plugin.Id.Equals("telegram-personal", StringComparison.OrdinalIgnoreCase))
-            {
-                string setupScript = Path.Combine(plugin.Folder, "setup.ps1");
-                if (File.Exists(setupScript))
-                {
-                    Button telegramRuntime = new()
-                    {
-                        Content = Ui.Text("Set up Telegram", Palette.FontCaption, Palette.SuccessBrush,
-                            FontWeight.Medium, wrap: false),
-                        Background = Brushes.Transparent,
-                        BorderBrush = Palette.StrokeBrush,
-                        BorderThickness = new Thickness(1),
-                        CornerRadius = new CornerRadius(8),
-                        Padding = new Thickness(10, 5),
-                        HorizontalAlignment = HorizontalAlignment.Left
-                    };
-                    telegramRuntime.Click += async (_, _) => await SetupTelegramRuntimeAsync(telegramRuntime, setupScript);
-                    actions.Children.Add(telegramRuntime);
-
-                    Button connectTelegram = new()
-                    {
-                        Content = Ui.Text("Connect account", Palette.FontCaption, Palette.AccentSoftBrush,
-                            FontWeight.Medium, wrap: false),
-                        Background = Brushes.Transparent,
-                        BorderBrush = Palette.StrokeBrush,
-                        BorderThickness = new Thickness(1),
-                        CornerRadius = new CornerRadius(8),
-                        Padding = new Thickness(10, 5),
-                        HorizontalAlignment = HorizontalAlignment.Left
-                    };
-                    ToolTip.SetTip(connectTelegram,
-                        "Open the local Telegram QR setup page. First set up the runtime and API credentials.");
-                    connectTelegram.Click += async (_, _) => await OpenTelegramSetupPageAsync();
-                    actions.Children.Add(connectTelegram);
-                }
-            }
-
-            StackPanel body = new() { Spacing = 6 };
-            if (!string.IsNullOrWhiteSpace(plugin.Description))
-            {
-                TextBlock description = Ui.Text(plugin.Description, Palette.FontBody,
-                    Palette.TextSecondaryBrush);
-                description.LineHeight = 20;
-                body.Children.Add(description);
-            }
-
-            foreach (PluginTool tool in plugin.Tools)
-            {
-                StackPanel toolRow = new() { Orientation = Orientation.Horizontal, Spacing = 8 };
-                toolRow.Children.Add(Ui.Text(tool.Name, Palette.FontCaption, Palette.TextPrimaryBrush,
-                    FontWeight.Medium, wrap: false));
-                if (!string.IsNullOrWhiteSpace(tool.Permission))
-                {
-                    toolRow.Children.Add(IconGlyph.Make(IconGlyph.Shield, 11, Palette.WarningBrush));
-                }
-                if (tool.AlwaysConfirm)
-                {
-                    toolRow.Children.Add(Ui.Text("CONFIRM EACH TIME", Palette.FontCaption,
-                        Palette.WarningBrush, FontWeight.Medium, wrap: false));
-                }
-                body.Children.Add(toolRow);
+                footer.Children.Add(setup);
             }
 
             foreach (string secretName in plugin.Secrets)
             {
-                body.Children.Add(BuildModuleSecretRow(plugin, secretName));
+                footer.Children.Add(BuildModuleSecretRow(plugin, secretName));
             }
 
-            Border card = new()
-            {
-                Margin = new Thickness(0, 0, 0, 16),
-                Background = Palette.ElevatedBrush,
-                BorderBrush = Palette.StrokeBrush,
-                BorderThickness = new Thickness(1),
-                CornerRadius = new CornerRadius(Palette.RadiusPanel),
-                Padding = new Thickness(20),
-                Child = new StackPanel { Spacing = 10, Children = { headerRow, body, actions } }
-            };
-            Grid.SetRow(card, row);
-            Grid.SetColumn(card, column);
-            cards.Children.Add(card);
+            ModuleCardControl card = new(module, isOn, _toolsExpanded,
+                () => _ = SetPluginLaunchEnabledAsync(plugin, !isOn),
+                tag: $"Plugin \u00B7 {plugin.Transport.ToUpperInvariant()}",
+                footer: footer.Children.Count > 0 ? footer : null);
+            _cards.Add(card);
+            Grid.SetRow(card.Control, row);
+            Grid.SetColumn(card.Control, column);
+            cards.Children.Add(card.Control);
         }
 
         foreach ((string folder, string reason) in _runtime.Plugins.Rejected)
@@ -469,6 +345,38 @@ public sealed class ModulesView : UserControl
         }
 
         return section;
+    }
+
+    /// <summary>The one-time setup buttons a plugin needs, in the same button style as everything else.</summary>
+    private Control? BuildPluginSetupActions(PluginManifest plugin)
+    {
+        StackPanel actions = new() { Orientation = Orientation.Horizontal, Spacing = 8 };
+        if (plugin.Id.Equals("browser", StringComparison.OrdinalIgnoreCase))
+        {
+            string installer = Path.Combine(plugin.Folder, "install-extension.ps1");
+            if (File.Exists(installer))
+            {
+                Button setup = Ui.GhostButton("Set up Chrome", () => StartBrowserExtensionSetup(installer));
+                ToolTip.SetTip(setup, "Copy the Iris extension into place and open Chrome to load it once, then pair");
+                actions.Children.Add(setup);
+            }
+        }
+        else if (plugin.Id.Equals("telegram-personal", StringComparison.OrdinalIgnoreCase))
+        {
+            string script = Path.Combine(plugin.Folder, "setup.ps1");
+            if (File.Exists(script))
+            {
+                Button runtime = null!;
+                runtime = Ui.GhostButton("Set up Telegram", async () => await SetupTelegramRuntimeAsync(runtime, script));
+                Button connect = Ui.GhostButton("Connect account", async () => await OpenTelegramSetupPageAsync());
+                ToolTip.SetTip(connect,
+                    "Open the local Telegram QR setup page. First set up the runtime and API credentials.");
+                actions.Children.Add(runtime);
+                actions.Children.Add(connect);
+            }
+        }
+
+        return actions.Children.Count == 0 ? null : actions;
     }
 
     private static void CopyDirectory(string source, string destination)
@@ -741,7 +649,7 @@ internal sealed class ModuleCardControl
     /// <param name="onToggle">Invoked instead of touching module state directly, so the
     /// collection that owns this card can decide what a switch press means.</param>
     public ModuleCardControl(IAssistantModule module, bool isEnabled, bool toolsExpanded,
-        Action onToggle)
+        Action onToggle, string? tag = null, Control? footer = null)
     {
         _module = module;
         _isEnabled = isEnabled;
@@ -765,7 +673,11 @@ internal sealed class ModuleCardControl
         _switch.VerticalAlignment = VerticalAlignment.Center;
 
         _glyph = IconGlyph.Make(
-            GlyphById.TryGetValue(module.Id, out string? geometry) ? geometry : IconGlyph.Monitor,
+            GlyphById.TryGetValue(module.Id, out string? geometry)
+                ? geometry
+                : module.Id.StartsWith("plugin:", StringComparison.OrdinalIgnoreCase)
+                    ? ModuleIconGlyph.Resolve(module.IconKey)
+                    : IconGlyph.Monitor,
             24, Palette.TextPrimaryBrush);
         _glyph.VerticalAlignment = VerticalAlignment.Center;
 
@@ -778,6 +690,12 @@ internal sealed class ModuleCardControl
         StackPanel identity = new() { Orientation = Orientation.Horizontal, Spacing = 12 };
         identity.Children.Add(_glyph);
         identity.Children.Add(title);
+        if (tag is not null)
+        {
+            Border chip = Ui.Chip(tag, Palette.Iris);
+            chip.VerticalAlignment = VerticalAlignment.Center;
+            identity.Children.Add(chip);
+        }
 
         Grid header = new()
         {
@@ -830,8 +748,14 @@ internal sealed class ModuleCardControl
         StackPanel shell = new() { Spacing = 12 };
         shell.Children.Add(header);
         shell.Children.Add(purpose);
+        shell.Children.Add(BuildSummary(module.Tools));
         shell.Children.Add(toolsToggle);
         shell.Children.Add(expanded);
+        if (footer is not null)
+        {
+            shell.Children.Add(Divider());
+            shell.Children.Add(footer);
+        }
 
         Border card = new()
         {
@@ -919,6 +843,50 @@ internal sealed class ModuleCardControl
         }
     }
 
+    private enum Asking { Free, FirstTime, Session, EveryTime }
+
+    private static Asking Classify(ModuleTool tool)
+    {
+        if (tool.AlwaysConfirm)
+        {
+            return Asking.EveryTime;
+        }
+
+        if (tool.Tier == ToolTier.Reflex)
+        {
+            return Asking.Free;
+        }
+
+        return tool.SessionTrust ? Asking.Session : Asking.FirstTime;
+    }
+
+    private static (string Words, string Glyph, IBrush Brush) Describe(Asking asking) => asking switch
+    {
+        Asking.Free => ("Runs on its own", IconGlyph.Eye, Palette.TextSecondaryBrush),
+        Asking.Session => ("Asks once a session", IconGlyph.Clock14, Palette.WarningBrush),
+        Asking.EveryTime => ("Asks every time", IconGlyph.Shield, Palette.DangerBrush),
+        _ => ("Asks the first time", IconGlyph.Shield, Palette.WarningBrush)
+    };
+
+    /// <summary>One calm line instead of a warning tag on every row.</summary>
+    private static Control BuildSummary(IReadOnlyList<ModuleTool> tools)
+    {
+        List<string> parts = new();
+        int free = tools.Count(tool => Classify(tool) == Asking.Free);
+        int first = tools.Count(tool => Classify(tool) == Asking.FirstTime);
+        int session = tools.Count(tool => Classify(tool) == Asking.Session);
+        int every = tools.Count(tool => Classify(tool) == Asking.EveryTime);
+        if (free > 0) { parts.Add($"{free} run on their own"); }
+        if (first > 0) { parts.Add($"{first} ask the first time"); }
+        if (session > 0) { parts.Add($"{session} ask once a session"); }
+        if (every > 0) { parts.Add($"{every} ask every time"); }
+
+        TextBlock line = Ui.Text(string.Join(" \u00B7 ", parts), Palette.FontCaption,
+            Palette.TextFaintBrush, FontWeight.Medium, wrap: true);
+        line.LineHeight = 16;
+        return line;
+    }
+
     private void BuildToolRows()
     {
         _toolsGrid.Children.Clear();
@@ -928,49 +896,32 @@ internal sealed class ModuleCardControl
         for (int index = 0; index < tools.Count; index++)
         {
             ModuleTool tool = tools[index];
-            bool guarded = tool.Tier is ToolTier.Scoped or ToolTier.SystemCritical;
+            (string words, string glyphGeometry, IBrush brush) = Describe(Classify(tool));
 
-            // The name is the board's uppercase mono caption. It is trimmed to its
-            // column because a NoWrap mono name drives its own width and pushes the
-            // second column's text around — exactly the spill this row structure
-            // used to have.
-            TextBlock name = new()
-            {
-                Text = tool.Name.ToUpperInvariant(),
-                FontFamily = Palette.MonoFont,
-                FontSize = Palette.FontCaption,
-                LineHeight = 16,
-                FontWeight = FontWeight.Medium,
-                Foreground = Palette.TextPrimaryBrush,
-                LetterSpacing = 0.88,
-                TextWrapping = TextWrapping.NoWrap,
-                TextTrimming = TextTrimming.CharacterEllipsis
-            };
-            TextBlock description = Ui.Text(tool.Description, Palette.FontBody,
-                Palette.TextSecondaryBrush);
-            description.LineHeight = 18;
+            // Plain words on top, how it behaves underneath. The technical name and the
+            // model-facing description are one hover away, not on the page.
+            TextBlock name = Ui.Text(ToolPresentationCatalog.Resolve(tool, default).Doing, Palette.FontBody,
+                Palette.TextPrimaryBrush, FontWeight.Medium, wrap: false);
+            name.LineHeight = 18;
+            name.TextTrimming = TextTrimming.CharacterEllipsis;
+            TextBlock how = Ui.Text(words, Palette.FontCaption, Palette.TextSecondaryBrush,
+                FontWeight.Medium, wrap: false);
+            how.LineHeight = 16;
 
-            // Each cell is its own grid so the text column gets a hard width and the
-            // description wraps inside it instead of painting over the next cell.
-            Grid cellText = new() { RowDefinitions = new RowDefinitions("Auto,Auto") };
-            Grid.SetRow(name, 0);
-            Grid.SetRow(description, 1);
-            cellText.Children.Add(name);
-            cellText.Children.Add(description);
-
+            StackPanel text = new() { Spacing = 1, Children = { name, how } };
             Grid cell = new()
             {
                 ColumnDefinitions = new ColumnDefinitions("Auto,*"),
                 Margin = new Thickness(0, 0, 0, 12)
             };
-            Control glyph = IconGlyph.Make(guarded ? IconGlyph.Shield : IconGlyph.Eye, 12,
-                guarded ? Palette.WarningBrush : Palette.TextSecondaryBrush);
+            Control glyph = IconGlyph.Make(glyphGeometry, 14, brush);
             glyph.VerticalAlignment = VerticalAlignment.Top;
-            glyph.Margin = new Thickness(0, 2, 8, 0);
+            glyph.Margin = new Thickness(0, 2, 10, 0);
             Grid.SetColumn(glyph, 0);
-            Grid.SetColumn(cellText, 1);
+            Grid.SetColumn(text, 1);
             cell.Children.Add(glyph);
-            cell.Children.Add(cellText);
+            cell.Children.Add(text);
+            ToolTip.SetTip(cell, $"{tool.Name}\n{tool.Description}");
 
             int row = index / 2;
             while (_toolsGrid.RowDefinitions.Count <= row)

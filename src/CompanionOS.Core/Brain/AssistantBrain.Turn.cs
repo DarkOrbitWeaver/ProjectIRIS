@@ -1,3 +1,4 @@
+using CompanionOS.Core.Prompts;
 using System.Text;
 using System.Text.Json;
 using CompanionOS.Core.Configuration;
@@ -534,8 +535,63 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
         return flat;
     }
 
-    private void OnUserRequested(RecognizedVoiceRequest request) =>
+    private void OnUserRequested(RecognizedVoiceRequest request)
+    {
+        // "one", "the second", "approve", "deny": answer the open question first, and never
+        // let those words reach the model as chat.
+        if (TryAnswerPrompt(request.Text, PromptSource.Voice))
+        {
+            return;
+        }
+
         ForgetWithReceipt(HandleVoiceRequestAsync(request), "voice request");
+    }
+
+    /// <summary>
+    /// Offers a spoken or typed line to the open question. True means it was consumed.
+    /// Safety rules live in <see cref="PromptSpeechMatcher"/>; this only routes and speaks the reply.
+    /// </summary>
+    private bool TryAnswerPrompt(string text, PromptSource source)
+    {
+        // Her own readout ("say approve, or deny") can come back through the microphone as text.
+        // While she is speaking, only a short reply counts as an answer; a long line is her echo.
+        if (source == PromptSource.Voice && _voice.IsSpeaking && _modules.Prompts.Active is not null &&
+            text.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length > 3)
+        {
+            return true;
+        }
+
+        PromptUtteranceResult result = _modules.Prompts.HandleUtterance(text, source);
+        if (!result.Handled)
+        {
+            return false;
+        }
+
+        _lastActivity = DateTimeOffset.Now;
+        _voice.OpenConversationWindow(45);
+        if (source == PromptSource.Voice && !string.IsNullOrWhiteSpace(result.Reply) &&
+            _mind.CurrentMode == OperatingMode.Awake)
+        {
+            ForgetWithReceipt(_voice.SpeakAsync(result.Reply, CancellationToken.None), "prompt reply");
+        }
+
+        return true;
+    }
+
+    /// <summary>Reads a new question aloud and keeps the ears open for the answer.</summary>
+    private void OnPromptChanged(PromptChangedEvent payload)
+    {
+        IrisPrompt? prompt = payload.Active;
+        if (prompt is null || payload.Resolved is not null || !prompt.SpeakAloud ||
+            !_modules.Prompts.Policy.SpeakPrompts || _mind.CurrentMode != OperatingMode.Awake)
+        {
+            return;
+        }
+
+        _lastActivity = DateTimeOffset.Now;
+        _voice.OpenConversationWindow((int)Math.Ceiling(prompt.Timeout.TotalSeconds) + 10);
+        ForgetWithReceipt(_voice.SpeakAsync(prompt.DescribeForSpeech(), CancellationToken.None), "prompt readout");
+    }
 
     private void OnUserInterrupted()
     {
@@ -545,6 +601,15 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
         // CancelCurrentTurn is the same path Escape and the stop button use, so the
         // cancellation semantics here are exactly the ones the stop button already has.
         _speechSource?.Cancel();
+
+        // Talking over her while she reads the options is how people answer. It must stop
+        // her voice, not cancel the turn that is waiting for that answer.
+        if (_modules.Prompts.Active is not null)
+        {
+            _voice.StopSpeaking();
+            return;
+        }
+
         CancelCurrentTurn();
     }
 

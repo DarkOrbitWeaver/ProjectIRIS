@@ -3,6 +3,7 @@ using System.Text.Json.Serialization;
 using CompanionOS.Core.Configuration;
 using CompanionOS.Core.Diagnostics;
 using CompanionOS.Core.Events;
+using CompanionOS.Core.Prompts;
 
 namespace CompanionOS.Core.Modules;
 
@@ -36,20 +37,23 @@ public enum PermissionDecision
 {
     Deny,
     AllowOnce,
-    AllowAlways
+    AllowAlways,
+
+    /// <summary>Allowed until Iris closes. Never written to disk.</summary>
+    AllowSession
 }
 
 /// <summary>
-/// A question waiting for the user: "Iris wants to close Discord — allow?"
-/// The interface answers it by calling <see cref="Answer"/>.
+/// A question waiting for the user: "Browser wants to click on the page."
+/// It is a confirm <see cref="IrisPrompt"/> underneath, so it gets the same card, voice
+/// answers, safety rules and timeout as every other question. The old Answer / Cancel /
+/// CanAlwaysAllow surface stays so existing callers keep working.
 /// </summary>
 public sealed class PermissionRequest
 {
-    private readonly TaskCompletionSource<PermissionDecision> _answerSource =
-        new(TaskCreationOptions.RunContinuationsAsynchronously);
-
     public PermissionRequest(string moduleId, string moduleName, string toolName, string question, ToolTier tier,
-        string? permissionScope = null, bool alwaysConfirm = false)
+        string? permissionScope = null, bool alwaysConfirm = false, bool sessionTrust = false,
+        PromptRisk risk = PromptRisk.Sensitive, TimeSpan? timeout = null)
     {
         ModuleId = moduleId;
         ModuleName = moduleName;
@@ -58,9 +62,41 @@ public sealed class PermissionRequest
         Tier = tier;
         PermissionScope = permissionScope;
         CanAlwaysAllow = !alwaysConfirm;
+        CanTrustSession = sessionTrust && !alwaysConfirm;
+
+        List<PromptOption> options = new()
+        {
+            new PromptOption(PromptIds.Deny, "Deny", Role: PromptOptionRole.Deny,
+                Aliases: new[] { "deny", "no" }),
+            new PromptOption(PromptIds.AllowOnce, "Allow once", Role: PromptOptionRole.Approve)
+        };
+        if (CanTrustSession)
+        {
+            // Pressed, never spoken: a misheard word must not trust a whole session.
+            options.Add(new PromptOption(PromptIds.AllowSession, "This session", VoiceAllowed: false));
+        }
+
+        if (CanAlwaysAllow)
+        {
+            options.Add(new PromptOption(PromptIds.AllowAlways, "Always", Role: PromptOptionRole.Primary,
+                VoiceAllowed: false));
+        }
+
+        string? detail = alwaysConfirm
+            ? "Iris asks every time for this one."
+            : string.IsNullOrWhiteSpace(permissionScope)
+                ? null
+                : $"Access: {permissionScope}";
+
+        Prompt = new IrisPrompt(PromptKind.Confirm, "Needs your OK", question, options, risk,
+            timeout ?? TimeSpan.FromSeconds(30), PromptIds.Deny, speakAloud: true, moduleId, moduleName, "shield")
+        {
+            Detail = detail
+        };
     }
 
-    public Guid Id { get; } = Guid.NewGuid();
+    public Guid Id => Prompt.Id;
+    public IrisPrompt Prompt { get; }
     public string ModuleId { get; }
     public string ModuleName { get; }
     public string ToolName { get; }
@@ -68,17 +104,38 @@ public sealed class PermissionRequest
     public ToolTier Tier { get; }
     public string? PermissionScope { get; }
     public bool CanAlwaysAllow { get; }
+    public bool CanTrustSession { get; }
     public DateTimeOffset RequestedAt { get; } = DateTimeOffset.Now;
 
     /// <summary>Completes the request. Later answers are ignored.</summary>
-    public void Answer(PermissionDecision decision) => _answerSource.TrySetResult(decision);
+    public void Answer(PermissionDecision decision) =>
+        Prompt.TryAnswer(new PromptAnswer(OptionIdFor(decision), PromptSource.Button));
 
     /// <summary>Cancels the request, which counts as a refusal.</summary>
-    public void Cancel() => _answerSource.TrySetResult(PermissionDecision.Deny);
+    public void Cancel() => Prompt.TryAnswer(new PromptAnswer(PromptIds.Deny, PromptSource.Cancelled));
 
     /// <summary>Waits for the user, or refuses when time runs out.</summary>
-    public Task<PermissionDecision> WaitAsync(TimeSpan timeout, CancellationToken cancellationToken) =>
-        _answerSource.Task.WaitAsync(timeout, cancellationToken);
+    public async Task<PermissionDecision> WaitAsync(TimeSpan timeout, CancellationToken cancellationToken)
+    {
+        PromptAnswer answer = await Prompt.Completion.WaitAsync(timeout, cancellationToken).ConfigureAwait(false);
+        return DecisionFor(answer.OptionId);
+    }
+
+    public static string OptionIdFor(PermissionDecision decision) => decision switch
+    {
+        PermissionDecision.AllowOnce => PromptIds.AllowOnce,
+        PermissionDecision.AllowSession => PromptIds.AllowSession,
+        PermissionDecision.AllowAlways => PromptIds.AllowAlways,
+        _ => PromptIds.Deny
+    };
+
+    public static PermissionDecision DecisionFor(string optionId) => optionId switch
+    {
+        PromptIds.AllowOnce => PermissionDecision.AllowOnce,
+        PromptIds.AllowSession => PermissionDecision.AllowSession,
+        PromptIds.AllowAlways => PermissionDecision.AllowAlways,
+        _ => PermissionDecision.Deny
+    };
 }
 
 /// <summary>
@@ -94,20 +151,67 @@ public sealed class PermissionRequest
 /// </summary>
 public sealed class SandboxGuard
 {
-    private static readonly TimeSpan PermissionTimeout = TimeSpan.FromSeconds(15);
-
     private readonly EventBus _events;
     private readonly IAuditTrail _audit;
     private readonly PermissionGrantStore _grants;
+    private readonly PromptService _prompts;
+    private readonly HashSet<string> _sessionGrants = new(StringComparer.Ordinal);
+    private readonly object _sessionLock = new();
 
-    public SandboxGuard(EventBus events, IAuditTrail audit, PermissionGrantStore grants)
+    public SandboxGuard(EventBus events, IAuditTrail audit, PermissionGrantStore grants,
+        PromptService? prompts = null)
     {
         _events = events;
         _audit = audit;
         _grants = grants;
+        _prompts = prompts ?? new PromptService(events);
     }
 
     public PermissionGrantStore Grants => _grants;
+
+    /// <summary>Every approval and every module question goes through this one service.</summary>
+    public PromptService Prompts => _prompts;
+
+    /// <summary>How many "allow for this session" grants are active. Shown in Settings.</summary>
+    public int SessionGrantCount
+    {
+        get
+        {
+            lock (_sessionLock)
+            {
+                return _sessionGrants.Count;
+            }
+        }
+    }
+
+    /// <summary>Forgets every session grant right away.</summary>
+    public void ClearSessionGrants()
+    {
+        lock (_sessionLock)
+        {
+            _sessionGrants.Clear();
+        }
+    }
+
+    private static string SessionKey(string moduleId, ModuleTool tool) =>
+        string.IsNullOrWhiteSpace(tool.PermissionScope)
+            ? $"{moduleId}|tool:{tool.Name}"
+            : $"{moduleId}|scope:{tool.PermissionScope}";
+
+    private bool IsSessionGranted(string key)
+    {
+        lock (_sessionLock)
+        {
+            return _sessionGrants.Contains(key);
+        }
+    }
+
+    /// <summary>Look-only access can be answered with a plain "yes". Anything that acts needs "approve".</summary>
+    private static PromptRisk RiskOf(ModuleTool tool) =>
+        tool.Tier == ToolTier.Reflex ||
+        (!tool.AlwaysConfirm && ToolPresentationCatalog.AccessOf(tool) == ToolAccess.Reads)
+            ? PromptRisk.Normal
+            : PromptRisk.Sensitive;
 
     /// <summary>Asks for permission according to the tool's tier and the user's saved grants.</summary>
     public async Task<AuthorizationOutcome> AuthorizeAsync(string moduleId, string moduleName, ModuleTool tool,
@@ -122,6 +226,15 @@ public sealed class SandboxGuard
             IrisEvent.Log("Sandbox", "permission.auto", LogLevel.Trace,
                 data: new Dictionary<string, string?> { ["tool"] = tool.Name, ["module"] = moduleId, ["tier"] = "reflex" });
             await _audit.RecordAsync(moduleId, tool.Name, tool.Tier, "auto", auditAction, cancellationToken)
+                .ConfigureAwait(false);
+            return AuthorizationOutcome.Allowed();
+        }
+
+        if (!tool.AlwaysConfirm && tool.SessionTrust && IsSessionGranted(SessionKey(moduleId, tool)))
+        {
+            IrisEvent.Log("Sandbox", "permission.session_granted", LogLevel.Trace,
+                data: new Dictionary<string, string?> { ["tool"] = tool.Name, ["module"] = moduleId });
+            await _audit.RecordAsync(moduleId, tool.Name, tool.Tier, "session", auditAction, cancellationToken)
                 .ConfigureAwait(false);
             return AuthorizationOutcome.Allowed();
         }
@@ -163,13 +276,15 @@ public sealed class SandboxGuard
             return AuthorizationOutcome.Allowed();
         }
 
-        string question = string.IsNullOrWhiteSpace(tool.PermissionScope)
-            ? plainEnglishAction
-            : $"{plainEnglishAction} Requested access: {tool.PermissionScope}." +
-              (tool.AlwaysConfirm ? " Iris will ask again before this action is run." :
-                  $" Always allow will remember this capability for {moduleName}.");
-        PermissionRequest request = new(moduleId, moduleName, tool.Name, question,
-            tool.Tier, tool.PermissionScope, tool.AlwaysConfirm);
+        // The card says the action in plain words. Scope and "always" details sit in a small
+        // caption the prompt carries itself, so nothing here reads like a config file.
+        PermissionRequest request = new(moduleId, moduleName, tool.Name, plainEnglishAction,
+            tool.Tier, tool.PermissionScope, tool.AlwaysConfirm, tool.SessionTrust, RiskOf(tool),
+            _prompts.Policy.ConfirmTimeout);
+
+        // Queue first, announce second: a subscriber that answers synchronously still lands
+        // on a prompt that already exists.
+        Task<PromptAnswer> pending = _prompts.AskAsync(request.Prompt, cancellationToken);
         _events.Publish(new PermissionRequestedEvent { Request = request });
         IrisEvent.Log("Sandbox", "permission.asked", LogLevel.Info,
             data: new Dictionary<string, string?>
@@ -184,13 +299,17 @@ public sealed class SandboxGuard
         PermissionStop stop = PermissionStop.Denied;
         try
         {
-            decision = await request.WaitAsync(PermissionTimeout, cancellationToken).ConfigureAwait(false);
-        }
-        catch (TimeoutException)
-        {
-            decision = PermissionDecision.Deny;
-            stop = PermissionStop.TimedOut;
-            CompanionLog.Warning("Sandbox", $"No answer for '{tool.Name}' in 15 s, so it was not allowed this time.");
+            PromptAnswer answer = await pending.ConfigureAwait(false);
+            decision = PermissionRequest.DecisionFor(answer.OptionId);
+            if (answer.TimedOut)
+            {
+                stop = PermissionStop.TimedOut;
+                CompanionLog.Warning("Sandbox", $"No answer for '{tool.Name}' in time, so it was not allowed this time.");
+            }
+            else if (answer.WasCancelled)
+            {
+                stop = PermissionStop.Interrupted;
+            }
         }
         catch (OperationCanceledException)
         {
@@ -201,6 +320,21 @@ public sealed class SandboxGuard
         if (tool.AlwaysConfirm && decision == PermissionDecision.AllowAlways)
         {
             decision = PermissionDecision.AllowOnce;
+        }
+
+        if (decision == PermissionDecision.AllowSession)
+        {
+            if (tool.SessionTrust && !tool.AlwaysConfirm)
+            {
+                lock (_sessionLock)
+                {
+                    _sessionGrants.Add(SessionKey(moduleId, tool));
+                }
+            }
+            else
+            {
+                decision = PermissionDecision.AllowOnce;
+            }
         }
 
         if (decision == PermissionDecision.AllowAlways)
@@ -222,6 +356,7 @@ public sealed class SandboxGuard
             _ => decision switch
             {
                 PermissionDecision.AllowOnce => "allowed-once",
+                PermissionDecision.AllowSession => "allowed-session",
                 PermissionDecision.AllowAlways => "allowed-always",
                 _ => "denied"
             }
@@ -249,7 +384,7 @@ public sealed class SandboxGuard
         string refusalReason = stop switch
         {
             PermissionStop.TimedOut =>
-                $"Permission timed out: no one answered the prompt for {tool.Name} within 15 seconds. " +
+                $"Permission timed out: no one answered the prompt for {tool.Name} in time. " +
                 "Nobody refused — answer the truth and offer the next step in one short sentence.",
             PermissionStop.Interrupted =>
                 $"Permission prompt for {tool.Name} was interrupted (turn stopped).",

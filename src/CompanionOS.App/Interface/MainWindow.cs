@@ -84,9 +84,7 @@ public sealed partial class MainWindow : Window
     private readonly TextBlock _microphoneLabel = new();
     private readonly ItemsControl _notices;
     private readonly Border _permissionCard = new();
-    private Button? _permissionAlwaysButton;
-    private TextBlock? _permissionCaption;
-    private readonly TextBlock _permissionQuestion = Ui.Text(string.Empty, Palette.FontEmphasis);
+    private PromptCardControl _promptCard = null!;
     private readonly DispatcherTimer _uiSyncTimer;
     private readonly Dictionary<string, Button> _railButtons = new(StringComparer.Ordinal);
 
@@ -98,7 +96,6 @@ public sealed partial class MainWindow : Window
     private OverlayWindow? _overlay;
     private bool _isShuttingDown;
     private bool _isAsleep;
-    private PermissionRequest? _shownPermission;
     private readonly IDisposable _attentionSubscription;
 
     /// <summary>Provided by the application: puts her in the notification area.</summary>
@@ -845,26 +842,16 @@ public sealed partial class MainWindow : Window
 
     private Control BuildPermissionCardContent()
     {
-        _permissionQuestion.Margin = new Thickness(0, 0, 0, Palette.SpaceLg);
-
-        Button deny = Ui.GhostButton("Deny", () => _model.AnswerPermission(PermissionDecision.Deny));
-        Button allowOnce = Ui.GhostButton("Allow once", () => _model.AnswerPermission(PermissionDecision.AllowOnce));
-        Button always = Ui.PrimaryButton("Always allow", () => _model.AnswerPermission(PermissionDecision.AllowAlways));
-        _permissionAlwaysButton = always;
-
-        StackPanel buttons = Ui.Row(Palette.SpaceMd, deny, allowOnce, always);
-        buttons.HorizontalAlignment = HorizontalAlignment.Right;
-
-        StackPanel content = new() { Spacing = Palette.SpaceMd };
-        content.Children.Add(Ui.Chip("Needs your approval", Palette.Warning, filled: true));
-        content.Children.Add(Ui.Text("Permission", Palette.FontTitle, Palette.TextPrimaryBrush,
-            FontWeight.SemiBold));
-        content.Children.Add(_permissionQuestion);
-        _permissionCaption = Ui.Caption(string.Empty);
-        content.Children.Add(_permissionCaption);
-        content.Children.Add(buttons);
-
-        return CardCentered(content);
+        // The same card the desktop overlay uses: approvals, choices and numbered lists.
+        _promptCard = new PromptCardControl(
+            (promptId, optionId) => _model.AnswerPrompt(promptId, optionId),
+            _model.DismissPrompt)
+        {
+            MaxWidth = 460,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        return new Grid { Children = { _promptCard } };
     }
 
     private static Control CardCentered(Control content)

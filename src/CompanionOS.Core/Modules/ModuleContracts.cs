@@ -3,6 +3,7 @@ using CompanionOS.Core.Configuration;
 using CompanionOS.Core.Events;
 using CompanionOS.Core.Mind;
 using CompanionOS.Core.Perception;
+using CompanionOS.Core.Prompts;
 
 namespace CompanionOS.Core.Modules;
 
@@ -74,8 +75,29 @@ public sealed class ModuleTool
     /// <summary>Extra words that help the router pick this tool for a request.</summary>
     public IReadOnlyList<string> RoutingKeywords { get; }
 
-    /// <summary>Short line for the tool capsule in the chat.</summary>
-    public string ShortLabel => Description.Split('.')[0];
+    /// <summary>
+    /// Overrides how this tool reads to a person ("Resumed your music"). Plugins set it from
+    /// plugin.json; built-ins are described in <see cref="ToolPresentationCatalog"/>.
+    /// </summary>
+    public ToolPresentation? Presentation { get; init; }
+
+    /// <summary>The tool's own name inside its plugin, before Iris qualifies it with a hash.</summary>
+    public string? LocalName { get; init; }
+
+    /// <summary>Declares a look-only or changes-something tool. Null lets Iris infer it.</summary>
+    public ToolAccess? Access { get; init; }
+
+    /// <summary>
+    /// Offers "allow for this session" on the approval card. The grant lives in memory only and
+    /// is gone when Iris closes. Ignored when <see cref="AlwaysConfirm"/> is set.
+    /// </summary>
+    public bool SessionTrust { get; init; }
+
+    /// <summary>Per-tool wait limit in seconds. Tools that wait on the user need more than the default.</summary>
+    public int? TimeoutSeconds { get; init; }
+
+    /// <summary>Short line for the tool capsule in the chat. Plain words, never the model description.</summary>
+    public string ShortLabel => ToolPresentationCatalog.Resolve(this, default).Doing;
 }
 
 /// <summary>What a module may use. Passed once at initialisation, never stored.</summary>
@@ -109,6 +131,12 @@ public sealed class ModuleContext
     /// transition also lands in her log, so a faded card never loses its history.
     /// </summary>
     public required IModuleUi Ui { get; init; }
+
+    /// <summary>
+    /// Ask the user something: Yes/No, a few buttons, or a numbered list. The answer can come
+    /// from a button, a spoken reply or typing, and the core handles the safety rules.
+    /// </summary>
+    public IModulePrompts Prompts { get; init; } = NullModulePrompts.Instance;
 
     /// <summary>Her writable folder. Modules should keep everything here.</summary>
     public required string WorkspaceDirectory { get; init; }
@@ -450,4 +478,14 @@ public sealed class RememberRequest
 
     /// <summary>Optional former target explicitly replaced by this correction.</summary>
     public string? Supersedes { get; init; }
+}
+
+
+/// <summary>Used when a module runs without a shell (tests, harness). Nobody answers, so nothing is chosen.</summary>
+public sealed class NullModulePrompts : IModulePrompts
+{
+    public static readonly NullModulePrompts Instance = new();
+
+    public Task<PromptAnswer> AskAsync(PromptRequest request, CancellationToken cancellationToken) =>
+        Task.FromResult(new PromptAnswer(string.Empty, PromptSource.Cancelled));
 }

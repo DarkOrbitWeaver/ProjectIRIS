@@ -250,3 +250,48 @@ user explicitly enables it.
   ]
 }
 ```
+
+
+## Asking the user: questions, choices and approvals
+
+Every approval and every module question goes through one service (`ModuleHost.Prompts`,
+`CompanionOS.Core.Prompts.PromptService`). Modules never build their own dialog.
+
+- **Three shapes.** `Confirm` (approve or deny), `Choice` (two to four buttons) and `Numbered` (a
+  longer list, five at a time). Leave `PromptRequest.Kind` empty and Iris picks from the options.
+- **Three ways to answer, first one wins.** A button on the overlay or in the app, a spoken reply
+  ("one", "the second one", "the lofi one", "approve", "deny", "more", "repeat that", "never mind"),
+  or typing the same words in the chat box. The other paths dismiss.
+- **Safety rules for voice** (`PromptSpeechMatcher`, covered by unit tests):
+  a refusal is always accepted and beats any approval; a sensitive action needs a clear phrase
+  ("approve", "allow it", "confirm") and a bare "yes" or "okay" only gets "say approve"; "always
+  allow" and "this session" can only be pressed, never spoken; long chatter is never read as an
+  answer; two different numbers, or a number that disagrees with a name, ask again; unanswered
+  prompts time out to deny (30 s for approvals, 60 s for choices).
+- **From C# modules:** `context.Prompts.ChooseAsync("Which tab?", options)`, `ConfirmAsync(...)`, or
+  `AskAsync(new PromptRequest { ... })`. `PromptOption.Aliases` adds phrases the voice matcher accepts
+  and `PromptOption.VoiceAllowed = false` makes an option button-only.
+- **From the model:** the built-in `ask_user` tool takes a question and two to twelve options, shows
+  them, and returns the option the user picked. Plugins that need a choice should say so in their tool
+  description; the model then asks with `ask_user` and calls the plugin again with the answer.
+- **Not yet:** a command or MCP plugin cannot open a prompt by itself in the middle of a call.
+  The planned route is an MCP `elicitation/create` request and a `prompt` JSONL envelope for command
+  modules; both would land in `PromptService.AskAsync` unchanged.
+
+## Plain-language labels and permission behaviour
+
+The chat and overlay show what a tool did in plain words ("Resumed your music", "Set a 10 min timer",
+"Couldn't open that page"), not the first sentence of the model-facing description. Built-in tools are
+listed in `ToolPresentationCatalog`. A plugin can override any of it per tool in `plugin.json`:
+
+```json
+{ "name": "make_clip", "permission": "media.write", "access": "act", "sessionTrust": true,
+  "label": "Making a clip", "doneLabel": "Made a clip", "icon": "video" }
+```
+
+- `access`: `"read"` or `"act"`. Only changes how the Modules page describes the tool.
+- `sessionTrust`: the approval card offers **This session**. The grant lives in memory, is never saved
+  and is gone when Iris closes. Ignored when `alwaysConfirm` is set.
+- `alwaysConfirm`: asks every single time and offers no remembered choice. Keep it for things like typing
+  into a page or sending a message.
+- `label` / `doneLabel` / `icon`: the words and glyph shown while and after the tool runs.

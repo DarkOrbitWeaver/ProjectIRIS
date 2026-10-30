@@ -6,6 +6,7 @@ using CompanionOS.Core.Common;
 using CompanionOS.Core.Events;
 using CompanionOS.Core.Mind;
 using CompanionOS.Core.Modules;
+using CompanionOS.Core.Prompts;
 
 namespace CompanionOS.App.Interface;
 
@@ -47,7 +48,7 @@ public sealed partial class ShellModel : ObservableObject
         _subscriptions.Add(events.Subscribe<ModelStatusEvent>(payload => OnUiThread(() => HandleModelStatus(payload))));
         _subscriptions.Add(events.Subscribe<RuntimeReadyEvent>(_ => OnUiThread(() => IsRuntimeReady = true)));
         _subscriptions.Add(events.Subscribe<TelemetryEvent>(payload => OnUiThread(() => HandleTelemetry(payload))));
-        _subscriptions.Add(events.Subscribe<PermissionRequestedEvent>(payload => OnUiThread(() => HandlePermission(payload))));
+        _subscriptions.Add(events.Subscribe<PromptChangedEvent>(payload => OnUiThread(() => HandlePrompt(payload))));
         _subscriptions.Add(events.Subscribe<NoticeEvent>(payload => OnUiThread(() => HandleNotice(payload))));
         _subscriptions.Add(events.Subscribe<TranscriptEvent>(payload => OnUiThread(() => HandleTranscript(payload))));
         _subscriptions.Add(events.Subscribe<EarsEvent>(payload => OnUiThread(() => HandleEars(payload))));
@@ -178,7 +179,7 @@ public sealed partial class ShellModel : ObservableObject
                 {
                     activeTool.Detail = Trim(payload.Detail ?? string.Empty, 160);
                     activeTool.IsToolRunning = false;
-                    activeTool.ToolStatus = payload.Succeeded == false ? "Failed" : "Finished";
+                    activeTool.ToolStatus = payload.Succeeded == false ? "Failed" : "Done";
                 }
                 else
                 {
@@ -191,7 +192,7 @@ public sealed partial class ShellModel : ObservableObject
                         Detail = Trim(payload.Detail ?? string.Empty, 160),
                         IconKey = payload.IconKey,
                         TurnId = payload.TurnId,
-                        ToolStatus = payload.Succeeded == false ? "Failed" : "Finished"
+                        ToolStatus = payload.Succeeded == false ? "Failed" : "Done"
                     });
                 }
 
@@ -381,13 +382,64 @@ public sealed partial class ShellModel : ObservableObject
         }
     }
 
-    private void HandlePermission(PermissionRequestedEvent payload)
+    /// <summary>
+    /// One handler for every question. Shows the one at the front of the queue, and when one
+    /// finishes it leaves a plain line in the chat ("Approved", "You chose 2 · Lofi mix") plus
+    /// a short "done" card on the desktop overlay.
+    /// </summary>
+    private void HandlePrompt(PromptChangedEvent payload)
     {
-        PendingPermission = payload.Request;
-        // Restart the deadline for this request. A second request replaces the card, so
-        // the old question must not clear the new one when its own clock runs out.
-        _permissionTimer.Stop();
-        _permissionTimer.Start();
+        PendingPrompt = payload.Active;
+        if (payload.Resolved is not { } done || payload.Answer is not { } answer)
+        {
+            return;
+        }
+
+        PromptNotice notice = DescribePromptAnswer(done, answer);
+        LastPromptNotice = notice;
+        Messages.Add(new ChatEntry
+        {
+            Role = ChatRole.Tool,
+            Text = notice.Headline,
+            Detail = Trim(notice.Detail, 160),
+            IconKey = done.IconKey,
+            ToolStatus = notice.Status
+        });
+    }
+
+    private static PromptNotice DescribePromptAnswer(IrisPrompt prompt, PromptAnswer answer)
+    {
+        string how = answer.Source switch
+        {
+            PromptSource.Voice => "by voice",
+            PromptSource.Typed => "typed",
+            PromptSource.Button => "button",
+            _ => string.Empty
+        };
+        string question = prompt.Question;
+        string detail = how.Length == 0 ? question : $"{question} \u00B7 {how}";
+
+        if (!answer.IsDeliberate)
+        {
+            return new PromptNotice(answer.TimedOut ? "No answer" : "Dismissed", question, false,
+                answer.TimedOut ? "No answer" : "Dismissed", DateTimeOffset.Now);
+        }
+
+        PromptOption? option = prompt.FindOption(answer.OptionId);
+        if (prompt.Kind == PromptKind.Confirm)
+        {
+            return answer.OptionId switch
+            {
+                PromptIds.AllowSession => new PromptNotice("Allowed for this session", detail, true, "Allowed", DateTimeOffset.Now),
+                PromptIds.AllowAlways => new PromptNotice("Always allowed", detail, true, "Allowed", DateTimeOffset.Now),
+                _ when option?.Role == PromptOptionRole.Approve =>
+                    new PromptNotice("Approved", detail, true, "Approved", DateTimeOffset.Now),
+                _ => new PromptNotice("Denied", detail, false, "Denied", DateTimeOffset.Now)
+            };
+        }
+
+        string label = option?.Label ?? answer.OptionId;
+        return new PromptNotice($"You chose {label}", detail, true, "Answered", DateTimeOffset.Now);
     }
 
     private void HandleNotice(NoticeEvent payload)
@@ -503,7 +555,6 @@ public sealed partial class ShellModel : ObservableObject
         SystemWatch.UiFaultObserved -= OnSystemWatchFault;
         _streamFlushTimer.Stop();
         _noticeTimer.Stop();
-        _permissionTimer.Stop();
         foreach (IDisposable subscription in _subscriptions)
         {
             subscription.Dispose();

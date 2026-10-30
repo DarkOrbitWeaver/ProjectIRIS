@@ -933,15 +933,19 @@ public sealed class ChatView : UserControl
             {
                 detail.Text = entry.Detail;
             }
-            status.Text = string.IsNullOrWhiteSpace(entry.ToolStatus)
-                ? entry.IsToolRunning ? "Running" : "Tool result"
+            string word = string.IsNullOrWhiteSpace(entry.ToolStatus)
+                ? entry.IsToolRunning ? "Working\u2026" : "Done"
                 : entry.ToolStatus;
+            status.Text = entry.IsToolRunning ? word : $"{word} \u00B7 {entry.TimeText}";
             status.Foreground = entry.IsToolRunning
                 ? Palette.AccentSoftBrush
                 : status.Text.Contains("error", StringComparison.OrdinalIgnoreCase) ||
                   status.Text.Contains("fail", StringComparison.OrdinalIgnoreCase)
                     ? Palette.DangerBrush
-                    : status.Text.Contains("cancel", StringComparison.OrdinalIgnoreCase)
+                    : status.Text.Contains("cancel", StringComparison.OrdinalIgnoreCase) ||
+                      status.Text.StartsWith("Denied", StringComparison.Ordinal) ||
+                      status.Text.StartsWith("No answer", StringComparison.Ordinal) ||
+                      status.Text.StartsWith("Dismissed", StringComparison.Ordinal)
                         ? Palette.TextSecondaryBrush
                         : Palette.SuccessBrush;
         }

@@ -7,6 +7,7 @@ using CompanionOS.Core.Common;
 using CompanionOS.Core.Events;
 using CompanionOS.Core.Mind;
 using CompanionOS.Core.Modules;
+using CompanionOS.Core.Prompts;
 
 namespace CompanionOS.App.Interface;
 
@@ -133,12 +134,12 @@ public sealed partial class ShellModel : ObservableObject
     private DateTimeOffset _activityStartedAt;
     private double _microphoneLevel;
     private double _speechLevel;
-    private PermissionRequest? _pendingPermission;
+    private IrisPrompt? _pendingPrompt;
+    private PromptNotice? _lastPromptNotice;
     private IReadOnlyList<RecalledMemory> _pendingRecall = Array.Empty<RecalledMemory>();
     private string _pendingRecallTurnId = string.Empty;
     private string _pendingUserDetail = string.Empty;
     private bool _isRuntimeReady;
-    private readonly DispatcherTimer _permissionTimer;
 
     public ShellModel(CompanionRuntime runtime)
     {
@@ -156,18 +157,6 @@ public sealed partial class ShellModel : ObservableObject
         // segment or one switch press, then leaves the screen instead of becoming noise.
         _earsTimer = new DispatcherTimer(
             TimeSpan.FromSeconds(7), DispatcherPriority.Background, OnEarsTimerTick);
-
-        // The guard gives the user exactly fifteen seconds to answer. The card used to
-        // stay on screen after that deadline with a question that could no longer be
-        // answered, so the model clears it on the same clock.
-        _permissionTimer = new DispatcherTimer(
-            TimeSpan.FromSeconds(15), DispatcherPriority.Normal, (sender, _) =>
-            {
-                (sender as DispatcherTimer)?.Stop();
-                PendingPermission?.Cancel();
-                PendingPermission = null;
-            });
-        _permissionTimer.Stop();
 
         Subscribe();
     }
@@ -362,23 +351,28 @@ public sealed partial class ShellModel : ObservableObject
 
     public string SleepButtonLabel => Mode == OperatingMode.Awake ? "Rest" : "Wake";
 
-    /// <summary>The permission question currently blocking a tool, if any.</summary>
-    public PermissionRequest? PendingPermission
+    /// <summary>The question on screen right now (approval, choice or numbered list), if any.</summary>
+    public IrisPrompt? PendingPrompt
     {
-        get => _pendingPermission;
+        get => _pendingPrompt;
         private set
         {
-            if (SetProperty(ref _pendingPermission, value))
+            if (SetProperty(ref _pendingPrompt, value))
             {
                 OnPropertyChanged(nameof(HasPendingPermission));
-                OnPropertyChanged(nameof(PendingPermissionQuestion));
             }
         }
     }
 
-    public bool HasPendingPermission => _pendingPermission is not null;
+    /// <summary>True while any question is open. Other overlays step aside for it.</summary>
+    public bool HasPendingPermission => _pendingPrompt is not null;
 
-    public string PendingPermissionQuestion => _pendingPermission?.Question ?? string.Empty;
+    /// <summary>The last answered question, kept for a moment so the overlay can say "done".</summary>
+    public PromptNotice? LastPromptNotice
+    {
+        get => _lastPromptNotice;
+        private set => SetProperty(ref _lastPromptNotice, value);
+    }
 
     /// <summary>The name she answers to, taken from her persona.</summary>
     public string PersonaName => _runtime.Persona.Current.Name;
@@ -548,13 +542,21 @@ public sealed partial class ShellModel : ObservableObject
         return _runtime.Brain.SetManualGamingAsync(enterGaming, CancellationToken.None);
     }
 
-    /// <summary>Answers the permission card.</summary>
+    /// <summary>Answers the open question with one of its options (a button press).</summary>
+    public void AnswerPrompt(Guid promptId, string optionId) =>
+        _runtime.Modules.Prompts.Answer(promptId, optionId, PromptSource.Button);
+
+    /// <summary>The X on the card: deny an approval, or drop a question without choosing.</summary>
+    public void DismissPrompt() => _runtime.Modules.Prompts.CancelActive();
+
+    /// <summary>Kept for older callers: answers an approval with the matching button.</summary>
     public void AnswerPermission(PermissionDecision decision)
     {
-        PermissionRequest? request = PendingPermission;
-        PendingPermission = null;
-        _permissionTimer.Stop();
-        request?.Answer(decision);
+        IrisPrompt? prompt = PendingPrompt;
+        if (prompt is not null)
+        {
+            AnswerPrompt(prompt.Id, PermissionRequest.OptionIdFor(decision));
+        }
     }
 
     /// <summary>Stops her voice and cancels the turn (Escape).</summary>
@@ -564,3 +566,7 @@ public sealed partial class ShellModel : ObservableObject
         _runtime.Brain.CancelCurrentTurn();
     }
 }
+
+
+/// <summary>What happened to the last question, in words a person would say.</summary>
+public sealed record PromptNotice(string Headline, string Detail, bool Positive, string Status, DateTimeOffset At);

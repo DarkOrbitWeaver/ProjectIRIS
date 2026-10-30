@@ -14,6 +14,7 @@ using CompanionOS.Core.Events;
 using CompanionOS.Core.Configuration;
 using CompanionOS.Core.Mind;
 using CompanionOS.Core.Modules;
+using CompanionOS.Core.Prompts;
 using CompanionOS.Core.Modules.BuiltIn;
 
 namespace CompanionOS.App.Interface.Views;
@@ -86,7 +87,7 @@ public sealed class OverlayWindow : Window
     private readonly DispatcherTimer _backgroundCompletionTimer;
     private readonly MusicOverlayWindow _musicOverlay;
     private readonly TimerOverlayWindow _timerOverlay;
-    private readonly PermissionOverlayWindow _permissionOverlay;
+    private readonly PromptOverlayWindow _permissionOverlay;
     private readonly ActivityOverlayWindow _activityOverlay;
     private readonly ModuleTaskFeedbackOverlayWindow _taskFeedbackOverlay;
     private readonly Dictionary<string, ModuleSurfaceOverlayWindow> _moduleSurfaceOverlays =
@@ -134,7 +135,7 @@ public sealed class OverlayWindow : Window
         _model = model;
         _musicOverlay = new MusicOverlayWindow(model);
         _timerOverlay = new TimerOverlayWindow(model);
-        _permissionOverlay = new PermissionOverlayWindow(model);
+        _permissionOverlay = new PromptOverlayWindow(model);
         _activityOverlay = new ActivityOverlayWindow(showMainWindow);
         _taskFeedbackOverlay = new ModuleTaskFeedbackOverlayWindow(model);
         _backgroundCompletionTimer = new DispatcherTimer(TimeSpan.FromMilliseconds(1800), DispatcherPriority.Background,
@@ -714,14 +715,28 @@ public sealed class OverlayWindow : Window
 
     private void SyncPermissionOverlay()
     {
-        bool shouldShow = IsVisible && _model.HasPendingPermission && _model.State != MindState.Gaming;
+        // A question stays up until answered; after the answer a short "done" card lingers so
+        // you can see it landed without opening the app.
+        IrisPrompt? prompt = _model.PendingPrompt;
+        PromptNotice? notice = _model.LastPromptNotice;
+        bool showResult = prompt is null && notice is not null &&
+                          DateTimeOffset.Now - notice.At < TimeSpan.FromMilliseconds(1600);
+        bool shouldShow = IsVisible && _model.State != MindState.Gaming && (prompt is not null || showResult);
         if (!shouldShow)
         {
             _permissionOverlay.Hide();
             return;
         }
 
-        _permissionOverlay.Bind(_model.PendingPermission);
+        if (prompt is not null)
+        {
+            _permissionOverlay.Bind(prompt);
+        }
+        else
+        {
+            _permissionOverlay.BindResult(notice!);
+        }
+
         if (WorkArea() is { } work)
         {
             _permissionOverlay.PlaceNear(Position, PixelWidth(), PixelHeight(), work, _growsLeft);

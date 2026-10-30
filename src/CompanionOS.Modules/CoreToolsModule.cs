@@ -1,6 +1,8 @@
+using System.Text.Json;
 using CompanionOS.Core.Events;
 using CompanionOS.Core.Mind;
 using CompanionOS.Core.Modules;
+using CompanionOS.Core.Prompts;
 
 namespace CompanionOS.Core.Modules.BuiltIn;
 
@@ -30,6 +32,35 @@ public sealed class CoreToolsModule : IAssistantModule
 
     public IReadOnlyList<ModuleTool> Tools { get; } = new List<ModuleTool>
     {
+        new(
+            "ask_user",
+            "Ask the user to pick from a short list, with on-screen buttons they can also answer by voice " +
+            "(\"two\", \"the second one\", \"yes\"). Use it whenever a request is ambiguous (several matching " +
+            "browser tabs, songs, files or playlists) or before a step that cannot be undone, instead of guessing. " +
+            "Give 2 to 12 short options. It returns the option the user picked, or says they did not answer.",
+            ToolTier.Reflex,
+            """
+            {
+              "type": "object",
+              "properties": {
+                "question": { "type": "string", "maxLength": 300, "description": "One short question, e.g. 'Which tab do you mean?'" },
+                "options": {
+                  "type": "array",
+                  "minItems": 2,
+                  "maxItems": 12,
+                  "items": { "type": "string", "maxLength": 120 },
+                  "description": "Short labels such as song titles or tab names."
+                }
+              },
+              "required": ["question", "options"]
+            }
+            """,
+            "which one", "which tab", "choose", "pick", "ask me", "options", "multiple", "several", "confirm")
+        {
+            // The prompt waits up to 60 s by itself, so the tool needs more than the 45 s default.
+            TimeoutSeconds = 90
+        },
+
         new(
             "remember",
             "Store a durable fact about the user, their tastes, their setup or a rule they want followed. " +
@@ -139,6 +170,43 @@ public sealed class CoreToolsModule : IAssistantModule
 
         switch (invocation.Tool.Name)
         {
+            case "ask_user":
+            {
+                string question = invocation.GetString("question").Trim();
+                List<PromptOption> options = new();
+                if (invocation.Arguments.ValueKind == JsonValueKind.Object &&
+                    invocation.Arguments.TryGetProperty("options", out JsonElement raw) &&
+                    raw.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (JsonElement item in raw.EnumerateArray())
+                    {
+                        string label = item.ValueKind == JsonValueKind.String ? item.GetString() ?? string.Empty : item.ToString();
+                        if (!string.IsNullOrWhiteSpace(label) && options.Count < 12)
+                        {
+                            options.Add(new PromptOption((options.Count + 1).ToString(), label.Trim()));
+                        }
+                    }
+                }
+
+                if (question.Length == 0 || options.Count < 2)
+                {
+                    return ToolResult.Fail("Ask with a question and at least two options.");
+                }
+
+                PromptAnswer answer = await context.Prompts.AskAsync(
+                    new PromptRequest { Question = question, Options = options }, cancellationToken)
+                    .ConfigureAwait(false);
+                PromptOption? chosen = answer.IsDeliberate
+                    ? options.FirstOrDefault(option => option.Id == answer.OptionId)
+                    : null;
+                return chosen is null
+                    ? ToolResult.Fail(answer.TimedOut
+                        ? "The user did not answer in time. Say so plainly and do not guess."
+                        : "The user dismissed the question without choosing. Do not guess.")
+                    : ToolResult.Ok($"The user chose option {chosen.Id}: {chosen.Label}",
+                        displayText: $"You chose {chosen.Id} · {chosen.Label}");
+            }
+
             case "remember":
                 return await RememberAsync(context, invocation, cancellationToken).ConfigureAwait(false);
 

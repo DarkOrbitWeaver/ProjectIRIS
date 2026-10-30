@@ -12,15 +12,15 @@
   "discoverTools": true,
   "asksPermission": ["browser.read", "browser.act"],
   "tools": [
-    { "name": "browser_pair", "permission": "browser.act", "alwaysConfirm": true },
-    { "name": "browser_status", "permission": "browser.read" },
-    { "name": "browser_search", "permission": "browser.read" },
-    { "name": "browser_read_page", "permission": "browser.read" },
-    { "name": "browser_focus", "permission": "browser.read" },
-    { "name": "browser_attend", "permission": "browser.read" },
-    { "name": "browser_scroll", "permission": "browser.read" },
-    { "name": "browser_navigate", "permission": "browser.act", "alwaysConfirm": true },
-    { "name": "browser_click", "permission": "browser.act", "alwaysConfirm": true },
-    { "name": "browser_type", "permission": "browser.act", "alwaysConfirm": true }
+    { "name": "browser_pair", "permission": "browser.act", "access": "act", "sessionTrust": true },
+    { "name": "browser_status", "permission": "browser.read", "access": "read" },
+    { "name": "browser_search", "permission": "browser.read", "access": "read" },
+    { "name": "browser_read_page", "permission": "browser.read", "access": "read" },
+    { "name": "browser_focus", "permission": "browser.read", "access": "read" },
+    { "name": "browser_attend", "permission": "browser.read", "access": "read" },
+    { "name": "browser_scroll", "permission": "browser.read", "access": "read" },
+    { "name": "browser_navigate", "permission": "browser.act", "access": "act", "sessionTrust": true },
+    { "name": "browser_click", "permission": "browser.act", "access": "act", "sessionTrust": true },
+    { "name": "browser_type", "permission": "browser.act", "access": "act", "alwaysConfirm": true }
   ]
 }

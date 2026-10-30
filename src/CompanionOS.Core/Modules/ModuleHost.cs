@@ -58,6 +58,9 @@ public sealed class ModuleHost : IAsyncDisposable
     /// <summary>Bounded background work contributed by explicitly opted-in module tools.</summary>
     public IBackgroundTaskAccess BackgroundTasks => _backgroundTasks;
 
+    /// <summary>The shared question service: approvals, choices and numbered lists.</summary>
+    public CompanionOS.Core.Prompts.PromptService Prompts => _sandbox.Prompts;
+
     /// <summary>
     /// Her body as seen from a module. Set once by the runtime after the brain exists,
     /// because the brain owns the modules and the modules need the brain.
@@ -443,8 +446,8 @@ public sealed class ModuleHost : IAsyncDisposable
         {
             ToolResult invalidArguments = ToolResult.Fail(
                 $"I did not run {tool.Name} because its arguments did not match the action's requirements. {schemaFailure}.");
-            PublishToolStarted(turnId, owner, tool);
-            PublishToolFinished(turnId, owner, tool, invalidArguments);
+            PublishToolStarted(turnId, owner, tool, arguments);
+            PublishToolFinished(turnId, owner, tool, invalidArguments, arguments);
             IrisEvent.Log("Modules", "tool.arguments.invalid", LogLevel.Warning,
                 message: $"Rejected arguments for '{tool.Name}': {schemaFailure}.",
                 data: new Dictionary<string, string?>
@@ -463,7 +466,7 @@ public sealed class ModuleHost : IAsyncDisposable
         if (!authorization.IsAllowed)
         {
             ToolResult refusal = ToolResult.Fail(authorization.RefusalReason);
-            PublishToolFinished(turnId, owner, tool, refusal);
+            PublishToolFinished(turnId, owner, tool, refusal, arguments);
             return refusal;
         }
 
@@ -473,10 +476,10 @@ public sealed class ModuleHost : IAsyncDisposable
             {
                 Phase = ConversationPhase.ToolStarted,
                 TurnId = turnId,
-                Text = tool.ShortLabel,
+                Text = ToolPresentationCatalog.Resolve(tool, arguments).Doing,
                 Detail = owner.DisplayName,
                 ModuleId = owner.Id,
-                IconKey = owner.IconKey
+                IconKey = ToolIconKey(owner, tool, arguments)
             });
             try
             {
@@ -490,13 +493,13 @@ public sealed class ModuleHost : IAsyncDisposable
                     DisplayText = $"Started in background · {taskId}",
                     BackgroundTaskId = taskId
                 };
-                PublishToolFinished(turnId, owner, tool, started);
+                PublishToolFinished(turnId, owner, tool, started, arguments);
                 return started;
             }
             catch (InvalidOperationException exception)
             {
                 ToolResult unavailable = ToolResult.Fail(exception.Message);
-                PublishToolFinished(turnId, owner, tool, unavailable);
+                PublishToolFinished(turnId, owner, tool, unavailable, arguments);
                 return unavailable;
             }
         }
@@ -517,10 +520,11 @@ public sealed class ModuleHost : IAsyncDisposable
             {
                 Phase = ConversationPhase.ToolStarted,
                 TurnId = turnId,
-                Text = CapitalizeFirst(DescribeActionPhrase(owner, tool, arguments)),
+                // Plain words: "Resuming your music", not the first sentence of the model's description.
+                Text = ToolPresentationCatalog.Resolve(tool, arguments).Doing,
                 Detail = owner.DisplayName,
                 ModuleId = owner.Id,
-                IconKey = owner.IconKey
+                IconKey = ToolIconKey(owner, tool, arguments)
             });
         }
 
@@ -535,7 +539,7 @@ public sealed class ModuleHost : IAsyncDisposable
         long started = System.Diagnostics.Stopwatch.GetTimestamp();
         ToolResult result;
         using CancellationTokenSource timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeoutSource.CancelAfter(isBackground ? TimeSpan.FromMinutes(5) : TimeSpan.FromSeconds(ToolTimeoutSeconds));
+        timeoutSource.CancelAfter(isBackground ? TimeSpan.FromMinutes(5) : TimeSpan.FromSeconds(tool.TimeoutSeconds ?? ToolTimeoutSeconds));
 
         try
         {
@@ -586,7 +590,7 @@ public sealed class ModuleHost : IAsyncDisposable
         double elapsed = System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds;
         if (publishConversationEvents)
         {
-            PublishToolFinished(turnId, owner, tool, result);
+            PublishToolFinished(turnId, owner, tool, result, arguments);
         }
 
         IrisEvent.Log("Modules",
@@ -688,6 +692,7 @@ public sealed class ModuleHost : IAsyncDisposable
         Sandbox = _sandbox,
         BackgroundTasks = _backgroundTasks,
         Ui = _moduleUi.ForModule(module.Id, module.DisplayName, module.IconKey),
+        Prompts = _sandbox.Prompts.ForModule(module.Id, module.DisplayName, module.IconKey),
         WorkspaceDirectory = CompanionPaths.WorkspaceDirectory,
         ModelsDirectory = CompanionPaths.ModelsDirectory,
         CacheDirectory = CompanionPaths.CacheDirectory
@@ -738,30 +743,40 @@ public sealed class ModuleHost : IAsyncDisposable
     private static string CapitalizeFirst(string text) =>
         string.IsNullOrEmpty(text) ? text : char.ToUpperInvariant(text[0]) + text[1..];
 
-    private void PublishToolFinished(string turnId, IAssistantModule owner, ModuleTool tool, ToolResult result)
+    private void PublishToolFinished(string turnId, IAssistantModule owner, ModuleTool tool, ToolResult result,
+        JsonElement arguments = default)
     {
+        ToolPresentation words = ToolPresentationCatalog.Resolve(tool, arguments);
         _events.Publish(new ConversationEvent
         {
             Phase = ConversationPhase.ToolFinished,
             TurnId = turnId,
-            Text = tool.ShortLabel,
+            Text = result.Succeeded ? words.Done : words.Failed,
             Detail = result.Succeeded ? result.DisplayText ?? result.ModelText : result.ModelText,
             ModuleId = owner.Id,
-            IconKey = owner.IconKey,
+            IconKey = ToolIconKey(owner, tool, arguments),
             Succeeded = result.Succeeded
         });
     }
 
-    private void PublishToolStarted(string turnId, IAssistantModule owner, ModuleTool tool)
+    /// <summary>The icon for one call: the tool's own glyph when it has one, else the module's.</summary>
+    private static string ToolIconKey(IAssistantModule owner, ModuleTool tool, JsonElement arguments)
+    {
+        string icon = ToolPresentationCatalog.Resolve(tool, arguments).IconKey;
+        return string.Equals(icon, "body", StringComparison.OrdinalIgnoreCase) ? owner.IconKey : icon;
+    }
+
+    private void PublishToolStarted(string turnId, IAssistantModule owner, ModuleTool tool,
+        JsonElement arguments = default)
     {
         _events.Publish(new ConversationEvent
         {
             Phase = ConversationPhase.ToolStarted,
             TurnId = turnId,
-            Text = tool.ShortLabel,
+            Text = ToolPresentationCatalog.Resolve(tool, arguments).Doing,
             Detail = owner.DisplayName,
             ModuleId = owner.Id,
-            IconKey = owner.IconKey
+            IconKey = ToolIconKey(owner, tool, arguments)
         });
     }
 

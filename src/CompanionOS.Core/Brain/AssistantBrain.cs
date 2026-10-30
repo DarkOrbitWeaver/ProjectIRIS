@@ -7,6 +7,7 @@ using CompanionOS.Core.Memory;
 using CompanionOS.Core.Mind;
 using CompanionOS.Core.Modules;
 using CompanionOS.Core.Perception;
+using CompanionOS.Core.Prompts;
 using CompanionOS.Core.Recovery;
 using CompanionOS.Core.Voice;
 
@@ -51,6 +52,7 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
     private readonly TurnJournal _journal;
     private readonly MindStateMachine _mind;
     private readonly IDisposable _backgroundTaskJournalSubscription;
+    private readonly IDisposable _promptSubscription;
     private readonly object _backgroundTaskJournalLock = new();
     private readonly Dictionary<string, string> _lastBackgroundTaskStates = new(StringComparer.Ordinal);
 
@@ -94,6 +96,7 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
         _journal = journal;
         _mind = mind;
         _backgroundTaskJournalSubscription = events.Subscribe<BackgroundTaskChangedEvent>(RecordBackgroundTaskState);
+        _promptSubscription = events.Subscribe<PromptChangedEvent>(OnPromptChanged);
 
         _voice.UserRequested += OnUserRequested;
         _voice.UserInterrupted += OnUserInterrupted;
@@ -169,6 +172,14 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
         string? interactionId = null)
     {
         if (string.IsNullOrWhiteSpace(userText) && string.IsNullOrWhiteSpace(attachedImageDataUri))
+        {
+            return string.Empty;
+        }
+
+        // An open question gets the first chance at typed text. This must happen BEFORE the
+        // turn gate: the turn that asked is holding it while it waits for this very answer.
+        if (attachedImageDataUri is null && origin != "voice" &&
+            TryAnswerPrompt(userText, PromptSource.Typed))
         {
             return string.Empty;
         }
@@ -381,6 +392,8 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
         _voice.UserCalledHer -= OnUserCalledHer;
         _perception.SituationUpdated -= OnSituationUpdated;
         _backgroundTaskJournalSubscription.Dispose();
+        _promptSubscription.Dispose();
+        _modules.Prompts.CancelAll();
         _currentTurnSource?.Dispose();
         _speechSource?.Dispose();
         _modeGate.Dispose();

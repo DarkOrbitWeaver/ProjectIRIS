@@ -36,7 +36,19 @@ public sealed class PluginModuleAdapter : IAssistantModule, IModuleSurfaceProvid
             {
                 PermissionScope = tool.Permission,
                 BackgroundCapable = tool.Background,
-                AlwaysConfirm = tool.AlwaysConfirm
+                AlwaysConfirm = tool.AlwaysConfirm,
+                SessionTrust = tool.SessionTrust,
+                LocalName = tool.Name,
+                Access = tool.Access switch
+                {
+                    "read" => ToolAccess.Reads,
+                    "act" => ToolAccess.Acts,
+                    _ => null
+                },
+                Presentation = tool.Label is null
+                    ? null
+                    : new ToolPresentation(tool.Label, tool.DoneLabel ?? tool.Label, "That didn't work",
+                        tool.Icon ?? plugin.Icon ?? "body")
             })
             .ToList();
     }

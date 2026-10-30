@@ -885,7 +885,9 @@ public sealed class SettingsView : UserControl
     private static void Place(Grid grid, Control card, int row, int column)
     {
         // The gutter lives in the grid itself; rows breathe 16 px apart.
-        card.Margin = row == 0 ? new Thickness(0, 0, 0, 16) : new Thickness(0);
+        // Every row gets its gap below. Row 1 used to get none, which is why the Setup
+        // readiness card sat flush against the cards above it.
+        card.Margin = new Thickness(0, 0, 0, 16);
         Grid.SetRow(card, row);
         Grid.SetColumn(card, column);
         grid.Children.Add(card);

@@ -144,13 +144,41 @@ public sealed class PluginManifest
                         alwaysConfirm = alwaysConfirmElement.ValueKind == JsonValueKind.True;
                     }
 
+                    static string? OptionalText(JsonElement element, string property, int maximum)
+                    {
+                        if (element.TryGetProperty(property, out JsonElement value) &&
+                            value.ValueKind == JsonValueKind.String)
+                        {
+                            string text = (value.GetString() ?? string.Empty).Trim();
+                            return text.Length == 0 ? null : text.Length > maximum ? text[..maximum] : text;
+                        }
+
+                        return null;
+                    }
+
+                    // Optional, friendly extras. A plugin that omits them still works and still reads
+                    // in plain words, because Iris humanizes the tool name.
+                    bool sessionTrust = tool.TryGetProperty("sessionTrust", out JsonElement sessionTrustElement) &&
+                                        sessionTrustElement.ValueKind == JsonValueKind.True;
+                    string? access = OptionalText(tool, "access", 8);
+                    if (access is not null && access is not ("read" or "act"))
+                    {
+                        rejectionReason = "tool 'access' must be \"read\" or \"act\"";
+                        return false;
+                    }
+
                     tools.Add(new PluginTool(
                         Name: tool.TryGetProperty("name", out JsonElement nameElement) ? nameElement.GetString() ?? "" : "",
                         Description: tool.TryGetProperty("description", out JsonElement descriptionElement) ? descriptionElement.GetString() ?? "" : "",
                         Permission: permission,
                         Schema: tool.TryGetProperty("schema", out JsonElement schemaElement) ? schemaElement.GetRawText() : "{}",
                         Background: backgroundCapable,
-                        AlwaysConfirm: alwaysConfirm));
+                        AlwaysConfirm: alwaysConfirm,
+                        SessionTrust: sessionTrust,
+                        Label: OptionalText(tool, "label", 80),
+                        DoneLabel: OptionalText(tool, "doneLabel", 80),
+                        Icon: OptionalText(tool, "icon", 32),
+                        Access: access));
                 }
             }
 
@@ -740,7 +768,12 @@ public sealed record PluginTool(
     string? Permission,
     string Schema,
     bool Background = false,
-    bool AlwaysConfirm = false);
+    bool AlwaysConfirm = false,
+    bool SessionTrust = false,
+    string? Label = null,
+    string? DoneLabel = null,
+    string? Icon = null,
+    string? Access = null);
 
 public sealed record PluginSurfaceManifest(
     string Id,
