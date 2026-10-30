@@ -24,6 +24,12 @@ public sealed class PromptSpeechMatcherTests
         "Nightcall - Kavinsky", "Synthwave Drive 2024"
     };
 
+    [Fact]
+    public void PermissionPromptKeepsDetailsOnScreenInsteadOfReadingThemAloud()
+    {
+        Assert.False(Approval(PromptRisk.Normal).SpeakAloud);
+    }
+
     [Theory]
     [InlineData("yes")]
     [InlineData("okay")]

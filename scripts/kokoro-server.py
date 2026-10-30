@@ -48,14 +48,19 @@ def receipt(event: str, **fields) -> None:
     print(f"receipt {event} {payload}", flush=True)
 
 
-def load_kokoro(model_path: str, voices_path: str, threads: int) -> Kokoro:
+def load_kokoro(model_path: str, voices_path: str, threads: int, default_voice: str) -> Kokoro:
     options = ort.SessionOptions()
     options.intra_op_num_threads = threads
     options.inter_op_num_threads = 1
+    options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
     options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+    options.add_session_config_entry("session.intra_op.allow_spinning", "0")
+    options.add_session_config_entry("session.inter_op.allow_spinning", "0")
     session = ort.InferenceSession(model_path, sess_options=options,
                                    providers=["CPUExecutionProvider"])
-    return Kokoro.from_session(session, voices_path)
+    kokoro = Kokoro.from_session(session, voices_path)
+    kokoro.create("Ready.", voice=default_voice, speed=1.0, lang="en-us")
+    return kokoro
 
 
 class _State:
@@ -210,7 +215,8 @@ def main() -> int:
     try:
         state = _State()
         started = time.perf_counter()
-        state.kokoro = load_kokoro(str(model_path), str(voices_path), max(1, min(4, args.threads)))
+        state.kokoro = load_kokoro(str(model_path), str(voices_path),
+                                   max(1, min(4, args.threads)), args.default_voice)
         state.voices = [str(name) for name in state.kokoro.get_voices()]
     except (KeyError, RuntimeError, TypeError, ValueError) as failure:
         receipt("boot.failed", reason=repr(failure))

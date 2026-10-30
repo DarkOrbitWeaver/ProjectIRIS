@@ -74,6 +74,7 @@ public static class IconGlyph
     // letterboxes the whole icon — the "broken, off-centre circle" on notice toasts.
     private const string Circle24 = "M21 12a9 9 0 1 1-18 0a9 9 0 0 1 18 0Z";
     public const string CheckCircle = Circle24 + " M9.2 12.2l2.5 2.5 3.6-3.8";
+    public const string Check16 = "M5 12.5l4.5 4.5L19 7";
     public const string AlertCircle = Circle24 + " M12 8v4M12 16h.01";
     public const string InfoCircle = Circle24 + " M12 11v5 M12 8h.01";
 

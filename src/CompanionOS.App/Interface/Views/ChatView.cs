@@ -95,6 +95,8 @@ public sealed class ChatView : UserControl
         _emptyState = BuildEmptyState();
 
         _messages.ItemsSource = _model.Messages;
+        _messages.ItemsPanel = new FuncTemplate<Panel?>(() => new StackPanel { Spacing = 10 });
+        _messages.Margin = new Thickness(0, 0, 0, 6);
         // Recycling stays off: each bubble subscribes to its own entry's live streaming
         // text, so a recycled template would speak another entry's words mid-flight.
         _messages.ItemTemplate = new FuncDataTemplate<ChatEntry>(
@@ -468,7 +470,7 @@ public sealed class ChatView : UserControl
         // This is the field the auto-scroll uses — the old local ScrollViewer meant every
         // ScrollToEnd() ran on a control that was never on screen, so new replies could
         // land below the fold.
-        _scrollViewer.Margin = new Thickness(24, 24, 24, 0);
+        _scrollViewer.Margin = new Thickness(24, 24, 24, 8);
         // A chat with no scrollbar is a transcript you cannot trust to have older lines;
         // the bar stays visible once content overflows instead of hiding until hover.
         _scrollViewer.AllowAutoHide = false;
@@ -608,7 +610,7 @@ public sealed class ChatView : UserControl
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(14),
             Height = 56,
-            Margin = new Thickness(24, 0, 24, 24),
+            Margin = new Thickness(24, 6, 24, 20),
             Padding = new Thickness(10, 0),
             Child = content
         };
@@ -733,7 +735,12 @@ public sealed class ChatView : UserControl
 
     private Control BuildHerRow(ChatEntry entry)
     {
-        StackPanel stack = new() { Orientation = Orientation.Horizontal, Spacing = 12 };
+        StackPanel stack = new()
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 12,
+            Margin = new Thickness(0, 2, 48, 0)
+        };
         stack.Children.Add(AvatarDot());
 
         StackPanel bubbleContent = new();
@@ -742,6 +749,7 @@ public sealed class ChatView : UserControl
             Palette.FontEmphasis,
             Palette.TextPrimaryBrush);
         text.LineHeight = 22;
+        text.TextWrapping = TextWrapping.Wrap;
         bubbleContent.Children.Add(text);
 
         // The recall evidence can arrive while the entry is already streaming, so the
@@ -767,13 +775,8 @@ public sealed class ChatView : UserControl
 
         Border bubble = new()
         {
-            // Board: max-width 480, #1A1C24, 1 px stroke, radius 4 16 16 16, padding 12×16.
-            Background = Palette.ElevatedBrush,
-            BorderBrush = Palette.StrokeBrush,
-            BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(4, 16, 16, 16),
-            Padding = new Thickness(16, 12),
-            MaxWidth = 480,
+            Padding = new Thickness(0, 2, 0, 0),
+            MaxWidth = 560,
             Child = bubbleContent
         };
 
@@ -800,24 +803,25 @@ public sealed class ChatView : UserControl
             return;
         }
 
-        WrapPanel panel = new() { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 0) };
+        WrapPanel panel = new() { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 6, 0, 0) };
         foreach (RecalledMemory memory in entry.RecalledMemories.Take(4))
         {
             Button chip = new()
             {
-                Background = new SolidColorBrush(Palette.Iris, 0.14),
+                Background = new SolidColorBrush(Palette.Iris, 0.10),
                 CornerRadius = new CornerRadius(Palette.RadiusPill),
                 BorderThickness = new Thickness(0),
-                Padding = new Thickness(10, 3),
+                Padding = new Thickness(8, 1),
                 Margin = new Thickness(0, 0, 6, 0),
+                Height = 18,
                 Cursor = new Cursor(StandardCursorType.Hand),
                 Focusable = true,
                 Content = new TextBlock
                 {
                     Text = memory.Title,
-                    FontSize = Palette.FontCaption,
+                    FontSize = 10,
                     FontWeight = FontWeight.Medium,
-                    Foreground = Palette.AccentSoftBrush
+                    Foreground = Palette.TextSecondaryBrush
                 }
             };
             ToolTip.SetTip(chip, DescribeRecall(memory));
@@ -852,8 +856,8 @@ public sealed class ChatView : UserControl
             // Board: your words sit accent-tinted at 14 %, even 16 px, aligned to the end.
             Background = new SolidColorBrush(Palette.Iris, 0.14),
             BorderThickness = new Thickness(0),
-            CornerRadius = new CornerRadius(16),
-            Padding = new Thickness(16, 12),
+            CornerRadius = new CornerRadius(16, 16, 4, 16),
+            Padding = new Thickness(14, 10),
             MaxWidth = 480,
             HorizontalAlignment = HorizontalAlignment.Right,
             Child = text
@@ -906,93 +910,7 @@ public sealed class ChatView : UserControl
         }
     };
 
-    private static Control BuildToolCapsule(ChatEntry entry)
-    {
-        TextBlock title = new()
-        {
-            Text = string.Empty,
-            FontSize = Palette.FontCaption,
-            FontWeight = FontWeight.SemiBold,
-            LineHeight = 16,
-            Foreground = Palette.TextPrimaryBrush,
-            TextWrapping = TextWrapping.NoWrap,
-            TextTrimming = TextTrimming.CharacterEllipsis
-        };
-        TextBlock status = new()
-        {
-            FontSize = Palette.FontCaption,
-            FontWeight = FontWeight.Medium,
-            Foreground = Palette.AccentSoftBrush,
-            TextWrapping = TextWrapping.NoWrap
-        };
-        TextBlock? detail = null;
-        void Refresh()
-        {
-            title.Text = entry.Text;
-            if (detail is not null)
-            {
-                detail.Text = entry.Detail;
-            }
-            string word = string.IsNullOrWhiteSpace(entry.ToolStatus)
-                ? entry.IsToolRunning ? "Working\u2026" : "Done"
-                : entry.ToolStatus;
-            status.Text = entry.IsToolRunning ? word : $"{word} \u00B7 {entry.TimeText}";
-            status.Foreground = entry.IsToolRunning
-                ? Palette.AccentSoftBrush
-                : status.Text.Contains("error", StringComparison.OrdinalIgnoreCase) ||
-                  status.Text.Contains("fail", StringComparison.OrdinalIgnoreCase)
-                    ? Palette.DangerBrush
-                    : status.Text.Contains("cancel", StringComparison.OrdinalIgnoreCase) ||
-                      status.Text.StartsWith("Denied", StringComparison.Ordinal) ||
-                      status.Text.StartsWith("No answer", StringComparison.Ordinal) ||
-                      status.Text.StartsWith("Dismissed", StringComparison.Ordinal)
-                        ? Palette.TextSecondaryBrush
-                        : Palette.SuccessBrush;
-        }
-
-        Refresh();
-        entry.PropertyChanged += (_, _) => Dispatcher.UIThread.Post(Refresh);
-
-        Grid titleRow = new() { ColumnDefinitions = new ColumnDefinitions("*,Auto"), ColumnSpacing = 8 };
-        titleRow.Children.Add(title);
-        Grid.SetColumn(status, 1);
-        titleRow.Children.Add(status);
-        StackPanel copy = new() { Spacing = 2 };
-        copy.Children.Add(titleRow);
-        if (!string.IsNullOrWhiteSpace(entry.Detail))
-        {
-            detail = new TextBlock
-            {
-                Text = entry.Detail,
-                FontSize = Palette.FontCaption,
-                LineHeight = 16,
-                Foreground = Palette.TextFaintBrush,
-                TextWrapping = TextWrapping.NoWrap,
-                TextTrimming = TextTrimming.CharacterEllipsis
-            };
-            copy.Children.Add(detail);
-        }
-
-        Grid row = new()
-        {
-            ColumnDefinitions = new ColumnDefinitions("Auto,*"),
-            ColumnSpacing = 9,
-            Margin = new Thickness(36, 3, 48, 3)
-        };
-        row.Children.Add(ModuleIconGlyph.Create(entry.IconKey, 16, Palette.AccentSoftBrush));
-        Grid.SetColumn(copy, 1);
-        row.Children.Add(copy);
-        return new Border
-        {
-            Background = Palette.ElevatedBrush,
-            BorderBrush = Palette.StrokeBrush,
-            BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(Palette.RadiusControl),
-            Padding = new Thickness(9, 7),
-            MaxWidth = 680,
-            Child = row
-        };
-    }
+    private static Control BuildToolCapsule(ChatEntry entry) => new TaskStepsCard(entry);
 
     private void OnComposerKeyDown(object? sender, KeyEventArgs eventArgs)
     {

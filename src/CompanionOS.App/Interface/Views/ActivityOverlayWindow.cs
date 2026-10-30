@@ -15,7 +15,7 @@ namespace CompanionOS.App.Interface.Views;
 internal sealed class ActivityOverlayWindow : Window
 {
     private const double CardWidth = 326;
-    private const double CardHeight = 104;
+    private const double DefaultCardHeight = 104;
 
     /// <summary>Transparent breathing room around the card so the drop shadow paints
     /// inside the window instead of getting clipped into a hard rim at the edges.</summary>
@@ -27,11 +27,15 @@ internal sealed class ActivityOverlayWindow : Window
     private readonly TextBlock _detail;
     private readonly Border _progressTrack;
     private readonly Border _progressFill;
+    private readonly ScrollViewer _stepsScroll;
     private readonly Button _hide;
     private readonly Button _open;
     private readonly Button _cancel;
     private string _boundTurnId = string.Empty;
     private string _hiddenTurnId = string.Empty;
+    private double _cardHeight = DefaultCardHeight;
+    private ChatEntry? _stepsEntry;
+    private TaskStepsCard? _stepsCard;
 
     public ActivityOverlayWindow(Action openMainWindow)
     {
@@ -44,7 +48,7 @@ internal sealed class ActivityOverlayWindow : Window
         CanResize = false;
         WindowStartupLocation = WindowStartupLocation.Manual;
         Width = CardWidth + (ShadowGutter * 2);
-        Height = CardHeight + (ShadowGutter * 2);
+        Height = _cardHeight + (ShadowGutter * 2);
 
         _module = Label(Palette.FontCaption, Palette.TextFaintBrush, FontWeight.SemiBold);
         _module.LetterSpacing = 0.9;
@@ -68,6 +72,12 @@ internal sealed class ActivityOverlayWindow : Window
             IsVisible = false
         };
         _progressTrack.SizeChanged += (_, _) => RenderProgress();
+        _stepsScroll = new ScrollViewer
+        {
+            HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Disabled,
+            VerticalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Auto,
+            IsVisible = false
+        };
 
         _hide = IconButton(IconGlyph.Minimize, "Hide activity card", () =>
         {
@@ -97,7 +107,7 @@ internal sealed class ActivityOverlayWindow : Window
         StackPanel body = new()
         {
             Spacing = 5,
-            Children = { header, _step, _detail, _progressTrack }
+            Children = { header, _step, _detail, _stepsScroll, _progressTrack }
         };
         Content = new Border
         {
@@ -137,11 +147,17 @@ internal sealed class ActivityOverlayWindow : Window
             RenderProgress(model.ActivityProgress!.Value / model.ActivityTotal!.Value);
         }
 
+        ChatEntry? stepsEntry = model.Messages.LastOrDefault(entry =>
+            entry.Role == ChatRole.Tool && entry.TurnId == model.ActivityTurnId && entry.Steps.Count > 0);
+        BindSteps(stepsEntry);
         return _hiddenTurnId != _boundTurnId;
     }
 
     public bool Bind(BackgroundTaskSnapshot task, IBackgroundTaskAccess tasks)
     {
+        ClearSteps();
+        _step.IsVisible = true;
+        _detail.IsVisible = true;
         if (!string.Equals(_boundTurnId, task.Id, StringComparison.Ordinal))
         {
             _boundTurnId = task.Id;
@@ -167,6 +183,46 @@ internal sealed class ActivityOverlayWindow : Window
         return _hiddenTurnId != _boundTurnId;
     }
 
+    private void BindSteps(ChatEntry? entry)
+    {
+        if (entry is null)
+        {
+            ClearSteps();
+            _step.IsVisible = true;
+            _detail.IsVisible = true;
+            return;
+        }
+
+        if (!ReferenceEquals(_stepsEntry, entry))
+        {
+            ClearSteps();
+            _stepsEntry = entry;
+            _stepsCard = new TaskStepsCard(entry, compact: true);
+            _stepsScroll.Content = _stepsCard;
+        }
+
+        _stepsScroll.IsVisible = true;
+        _step.IsVisible = false;
+        _detail.IsVisible = false;
+        double rowsHeight = entry.Steps.Sum(step =>
+            26 + (step.Status == StepStatus.Failed && !string.IsNullOrWhiteSpace(step.Detail) ? 30 : 0));
+        _stepsScroll.Height = Math.Min(152, rowsHeight + 16);
+        _cardHeight = Math.Max(DefaultCardHeight,
+            54 + _stepsScroll.Height + (_progressTrack.IsVisible ? 7 : 0));
+        Height = _cardHeight + (ShadowGutter * 2);
+    }
+
+    private void ClearSteps()
+    {
+        _stepsScroll.IsVisible = false;
+        _stepsScroll.Content = null;
+        _stepsCard?.Dispose();
+        _stepsCard = null;
+        _stepsEntry = null;
+        _cardHeight = DefaultCardHeight;
+        Height = _cardHeight + (ShadowGutter * 2);
+    }
+
     private IBackgroundTaskAccess? _boundTasks;
 
     private void OnCancelBackgroundTask(object? sender, Avalonia.Interactivity.RoutedEventArgs args)
@@ -184,7 +240,7 @@ internal sealed class ActivityOverlayWindow : Window
         int width = (int)Math.Ceiling(CardWidth * scale);
         int gutter = (int)Math.Ceiling(ShadowGutter * scale);
         int windowWidth = width + (gutter * 2);
-        int windowHeight = (int)Math.Ceiling(CardHeight * scale) + (gutter * 2);
+        int windowHeight = (int)Math.Ceiling(_cardHeight * scale) + (gutter * 2);
         int gap = (int)Math.Ceiling(10 * scale); // window edge to pill-edge breathing room
 
         // Coordinates are the card's horizontally, the window's vertically: the card

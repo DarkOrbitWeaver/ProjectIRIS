@@ -140,6 +140,7 @@ public sealed class ReflexBank
         ["thinking"] = _persona.Reflex.Thinking,
         ["confirmed"] = _persona.Reflex.Confirmed,
         ["clarify"] = _persona.Reflex.Clarify,
+        ["permission"] = ["Needs your OK."],
         ["sleep"] = _persona.Reflex.Sleep,
         ["wake"] = _persona.Reflex.Wake,
         ["gaming"] = _persona.Reflex.Gaming,

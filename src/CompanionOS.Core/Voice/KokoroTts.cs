@@ -115,7 +115,7 @@ public sealed class KokoroTtsServerHost : IAsyncDisposable
                 _process = process;
                 process.BeginOutputReadLine();
                 process.BeginErrorReadLine();
-                ApplyCpuLimits(process);
+                ApplyCpuLimits(process, Math.Clamp(Options.KokoroMaxThreads, 1, 4));
             }
             catch (Exception exception)
             {
@@ -138,7 +138,7 @@ public sealed class KokoroTtsServerHost : IAsyncDisposable
 
                 if (await IsHealthyAsync(cancellationToken).ConfigureAwait(false))
                 {
-                    CompanionLog.Info("Voice", "Kokoro is ready on the local CPU worker.");
+                    CompanionLog.Info("Voice", "Kokoro is ready on the local worker.");
                     return true;
                 }
 
@@ -303,24 +303,23 @@ public sealed class KokoroTtsServerHost : IAsyncDisposable
         }
     }
 
-    private static void ApplyCpuLimits(Process process)
+    private static void ApplyCpuLimits(Process process, int threads)
     {
         try
         {
-            process.PriorityClass = ProcessPriorityClass.BelowNormal;
+            process.PriorityClass = ProcessPriorityClass.Normal;
             if (OperatingSystem.IsWindows())
             {
-                // Her voice may use at most two of the machine's logical processors,
-                // mirrored from the Pocket worker's cap.
-                int logicalProcessors = Math.Max(1, Environment.ProcessorCount);
-                int allowed = Math.Min(2, logicalProcessors);
-                long mask = (1L << allowed) - 1;
-                process.ProcessorAffinity = new IntPtr(mask);
+                int logicalProcessors = Math.Clamp(Environment.ProcessorCount, 1, IntPtr.Size * 8);
+                int allowed = Math.Clamp(threads, 1, Math.Min(logicalProcessors, 63));
+                int firstProcessor = logicalProcessors - allowed;
+                ulong mask = ((1UL << allowed) - 1) << firstProcessor;
+                process.ProcessorAffinity = new IntPtr(unchecked((long)mask));
             }
         }
         catch (Exception exception)
         {
-            CompanionLog.Warning("Voice", $"Could not apply the Kokoro CPU cap: {exception.Message}");
+            CompanionLog.Warning("Voice", $"Could not apply the voice CPU plan: {exception.Message}");
         }
     }
 }

@@ -167,6 +167,19 @@ public sealed class PluginManifest
                         return false;
                     }
 
+                    int? timeoutSeconds = null;
+                    if (tool.TryGetProperty("timeoutSeconds", out JsonElement timeoutElement))
+                    {
+                        if (timeoutElement.ValueKind != JsonValueKind.Number ||
+                            !timeoutElement.TryGetInt32(out int parsedTimeout) ||
+                            parsedTimeout < 5 || parsedTimeout > 600)
+                        {
+                            rejectionReason = "tool 'timeoutSeconds' must be a whole number from 5 to 600";
+                            return false;
+                        }
+                        timeoutSeconds = parsedTimeout;
+                    }
+
                     tools.Add(new PluginTool(
                         Name: tool.TryGetProperty("name", out JsonElement nameElement) ? nameElement.GetString() ?? "" : "",
                         Description: tool.TryGetProperty("description", out JsonElement descriptionElement) ? descriptionElement.GetString() ?? "" : "",
@@ -178,7 +191,8 @@ public sealed class PluginManifest
                         Label: OptionalText(tool, "label", 80),
                         DoneLabel: OptionalText(tool, "doneLabel", 80),
                         Icon: OptionalText(tool, "icon", 32),
-                        Access: access));
+                        Access: access,
+                        TimeoutSeconds: timeoutSeconds));
                 }
             }
 
@@ -773,7 +787,8 @@ public sealed record PluginTool(
     string? Label = null,
     string? DoneLabel = null,
     string? Icon = null,
-    string? Access = null);
+    string? Access = null,
+    int? TimeoutSeconds = null);
 
 public sealed record PluginSurfaceManifest(
     string Id,

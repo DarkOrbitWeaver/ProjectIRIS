@@ -19,6 +19,9 @@ namespace CompanionOS.App.Interface;
 /// </summary>
 public sealed partial class ShellModel : ObservableObject
 {
+    private string _pendingPermissionNote = string.Empty;
+    private string _pendingAnswerLabel = string.Empty;
+
     /// <summary>Takes a screenshot and asks her about it.</summary>
     public async Task AskAboutScreenAsync()
     {
@@ -159,40 +162,52 @@ public sealed partial class ShellModel : ObservableObject
                 break;
 
             case ConversationPhase.ToolStarted:
+            {
                 BeginActivity(payload.TurnId, payload.Text, payload.Detail ?? "Module", "Working", payload.IconKey);
-                Messages.Add(new ChatEntry
+                ChatEntry card = StepsCardFor(payload.TurnId);
+                card.Steps.Add(new ToolStep
                 {
-                    Role = ChatRole.Tool,
-                    Text = payload.Text,
-                    Detail = payload.Detail ?? string.Empty,
+                    Label = payload.Text,
                     IconKey = payload.IconKey,
-                    TurnId = payload.TurnId,
-                    IsToolRunning = true,
-                    ToolStatus = "Running"
+                    ModuleName = payload.Detail ?? "Module",
+                    Status = StepStatus.Running,
+                    PermissionNote = TakePendingPermissionNote()
                 });
                 break;
+            }
 
             case ConversationPhase.ToolFinished:
-                ChatEntry? activeTool = Messages.LastOrDefault(message =>
-                    message.Role == ChatRole.Tool && message.TurnId == payload.TurnId && message.IsToolRunning);
-                if (activeTool is not null)
+            {
+                ToolStep? running = FindRunningStep(payload.TurnId);
+                if (running is not null)
                 {
-                    activeTool.Detail = Trim(payload.Detail ?? string.Empty, 160);
-                    activeTool.IsToolRunning = false;
-                    activeTool.ToolStatus = payload.Succeeded == false ? "Failed" : "Done";
+                    if (_pendingAnswerLabel.Length > 0)
+                    {
+                        running.Label = _pendingAnswerLabel;
+                        running.Status = StepStatus.Answered;
+                        _pendingAnswerLabel = string.Empty;
+                    }
+                    else
+                    {
+                        if (!string.IsNullOrWhiteSpace(payload.Text))
+                        {
+                            running.Label = payload.Text;
+                        }
+                        running.Status = payload.Succeeded == false ? StepStatus.Failed : StepStatus.Done;
+                    }
+                    running.Detail = Trim(payload.Detail ?? string.Empty, 160);
                 }
                 else
                 {
-                    // Permission refusals can finish without a ToolStarted event. Keep
-                    // their result visible without accidentally rewriting an older step.
-                    Messages.Add(new ChatEntry
+                    ChatEntry card = StepsCardFor(payload.TurnId);
+                    card.Steps.Add(new ToolStep
                     {
-                        Role = ChatRole.Tool,
-                        Text = payload.Text,
+                        Label = payload.Text,
                         Detail = Trim(payload.Detail ?? string.Empty, 160),
                         IconKey = payload.IconKey,
-                        TurnId = payload.TurnId,
-                        ToolStatus = payload.Succeeded == false ? "Failed" : "Done"
+                        ModuleName = "Iris",
+                        Status = payload.Succeeded == false ? StepStatus.Denied : StepStatus.Done,
+                        PermissionNote = TakePendingPermissionNote()
                     });
                 }
 
@@ -202,6 +217,7 @@ public sealed partial class ShellModel : ObservableObject
                 }
 
                 break;
+            }
 
             case ConversationPhase.TurnFailed:
                 IsTurnInProgress = false;
@@ -226,11 +242,48 @@ public sealed partial class ShellModel : ObservableObject
     private void FinalizeToolSteps(string turnId, string outcome)
     {
         foreach (ChatEntry entry in Messages.Where(message =>
-                     message.Role == ChatRole.Tool && message.TurnId == turnId && message.IsToolRunning))
+                     message.Role == ChatRole.Tool && message.TurnId == turnId))
         {
-            entry.IsToolRunning = false;
-            entry.ToolStatus = outcome;
+            foreach (ToolStep step in entry.Steps.Where(step => step.Status == StepStatus.Running))
+            {
+                step.Status = StepStatus.Stopped;
+                step.Detail = outcome;
+            }
         }
+    }
+
+    private ChatEntry StepsCardFor(string turnId)
+    {
+        ChatEntry? last = Messages.LastOrDefault();
+        if (last is { Role: ChatRole.Tool } && last.TurnId == turnId)
+        {
+            return last;
+        }
+
+        ChatEntry card = new() { Role = ChatRole.Tool, TurnId = turnId };
+        Messages.Add(card);
+        return card;
+    }
+
+    private ToolStep? FindRunningStep(string turnId)
+    {
+        for (int index = Messages.Count - 1; index >= 0; index--)
+        {
+            ChatEntry entry = Messages[index];
+            if (entry.Role == ChatRole.Tool && entry.TurnId == turnId &&
+                entry.RunningStep is { } step)
+            {
+                return step;
+            }
+        }
+        return null;
+    }
+
+    private string TakePendingPermissionNote()
+    {
+        string note = _pendingPermissionNote;
+        _pendingPermissionNote = string.Empty;
+        return note;
     }
 
     private void FinalizeStreamingTurn(string turnId)
@@ -397,13 +450,46 @@ public sealed partial class ShellModel : ObservableObject
 
         PromptNotice notice = DescribePromptAnswer(done, answer);
         LastPromptNotice = notice;
-        Messages.Add(new ChatEntry
+
+        string how = answer.Source switch
         {
-            Role = ChatRole.Tool,
-            Text = notice.Headline,
+            PromptSource.Voice => "by voice",
+            PromptSource.Typed => "typed",
+            PromptSource.Button => "button",
+            _ => string.Empty
+        };
+        string stamp = how.Length == 0 ? notice.At.ToString("HH:mm") : $"{how} · {notice.At:HH:mm}";
+        string turnId = string.IsNullOrEmpty(ActiveConversationTurnId)
+            ? ActivityTurnId
+            : ActiveConversationTurnId;
+        ToolStep? running = FindRunningStep(turnId);
+        string answerNote = $"{notice.Headline} · {stamp}";
+
+        if (done.Kind == PromptKind.Confirm && (done.IconKey == "shield" || running is null))
+        {
+            _pendingPermissionNote = answerNote;
+            return;
+        }
+
+        if (running is not null && done.OwnerId == "core")
+        {
+            _pendingAnswerLabel = notice.Headline;
+            return;
+        }
+        if (running is not null)
+        {
+            running.PermissionNote = answerNote;
+            return;
+        }
+
+        ChatEntry card = StepsCardFor(turnId);
+        card.Steps.Add(new ToolStep
+        {
+            Label = notice.Headline,
             Detail = Trim(notice.Detail, 160),
-            IconKey = done.IconKey,
-            ToolStatus = notice.Status
+            IconKey = "question",
+            ModuleName = done.OwnerName,
+            Status = answer.IsDeliberate ? StepStatus.Answered : StepStatus.Stopped
         });
     }
 

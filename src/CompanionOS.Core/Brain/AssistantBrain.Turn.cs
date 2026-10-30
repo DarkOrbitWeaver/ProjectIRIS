@@ -582,7 +582,7 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
     private void OnPromptChanged(PromptChangedEvent payload)
     {
         IrisPrompt? prompt = payload.Active;
-        if (prompt is null || payload.Resolved is not null || !prompt.SpeakAloud ||
+        if (prompt is null || payload.Resolved is not null ||
             !_modules.Prompts.Policy.SpeakPrompts || _mind.CurrentMode != OperatingMode.Awake)
         {
             return;
@@ -590,6 +590,16 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
 
         _lastActivity = DateTimeOffset.Now;
         _voice.OpenConversationWindow((int)Math.Ceiling(prompt.Timeout.TotalSeconds) + 10);
+        if (prompt.IconKey == "shield")
+        {
+            ForgetWithReceipt(_voice.SpeakReflexAsync("permission"), "permission reflex");
+            return;
+        }
+        if (!prompt.SpeakAloud)
+        {
+            return;
+        }
+
         ForgetWithReceipt(_voice.SpeakAsync(prompt.DescribeForSpeech(), CancellationToken.None), "prompt readout");
     }
 

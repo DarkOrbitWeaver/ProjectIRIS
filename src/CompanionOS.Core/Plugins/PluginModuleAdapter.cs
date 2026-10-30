@@ -38,6 +38,7 @@ public sealed class PluginModuleAdapter : IAssistantModule, IModuleSurfaceProvid
                 BackgroundCapable = tool.Background,
                 AlwaysConfirm = tool.AlwaysConfirm,
                 SessionTrust = tool.SessionTrust,
+                TimeoutSeconds = tool.TimeoutSeconds,
                 LocalName = tool.Name,
                 Access = tool.Access switch
                 {

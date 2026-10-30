@@ -13,12 +13,12 @@
   "asksPermission": ["account.read", "contacts.read", "contacts.write", "messages.send", "messages.cancel"],
   "secrets": ["api_id", "api_hash"],
   "tools": [
-    { "name": "telegram_status", "permission": "account.read", "label": "Checking your Telegram connection", "doneLabel": "Checked your Telegram connection", "icon": "telegram", "access": "read" },
+    { "name": "telegram_status", "permission": "account.read", "label": "Checking your Telegram connection", "doneLabel": "Checked your Telegram connection", "icon": "telegram", "access": "read", "timeoutSeconds": 60 },
     { "name": "telegram_list_contacts", "permission": "contacts.read", "label": "Looking up your saved Telegram contacts", "doneLabel": "Listed your saved Telegram contacts", "icon": "telegram", "access": "read" },
     { "name": "telegram_add_contact", "permission": "contacts.write", "label": "Saving a Telegram contact", "doneLabel": "Saved a Telegram contact", "icon": "telegram", "access": "act" },
     { "name": "telegram_remove_contact", "permission": "contacts.write", "label": "Removing a Telegram contact", "doneLabel": "Removed a Telegram contact", "icon": "telegram", "access": "act" },
-    { "name": "telegram_send_message", "permission": "messages.send", "alwaysConfirm": true, "label": "Preparing a Telegram message", "doneLabel": "Prepared a Telegram message", "icon": "telegram", "access": "act" },
-    { "name": "telegram_send_media", "permission": "messages.send", "alwaysConfirm": true, "label": "Preparing Telegram media", "doneLabel": "Prepared Telegram media", "icon": "telegram", "access": "act" },
+    { "name": "telegram_send_message", "permission": "messages.send", "alwaysConfirm": true, "label": "Preparing a Telegram message", "doneLabel": "Prepared a Telegram message", "icon": "telegram", "access": "act", "timeoutSeconds": 90 },
+    { "name": "telegram_send_media", "permission": "messages.send", "alwaysConfirm": true, "label": "Preparing Telegram media", "doneLabel": "Prepared Telegram media", "icon": "telegram", "access": "act", "timeoutSeconds": 120 },
     { "name": "telegram_cancel_send", "permission": "messages.cancel", "label": "Canceling a Telegram send", "doneLabel": "Canceled the Telegram send", "icon": "telegram", "access": "act" },
     { "name": "telegram_skip_send", "permission": "messages.send", "label": "Sending the reviewed Telegram message", "doneLabel": "Sent the Telegram message", "icon": "telegram", "access": "act" },
     { "name": "telegram_pending_send", "permission": "messages.cancel", "label": "Checking the pending Telegram send", "doneLabel": "Checked the pending Telegram send", "icon": "telegram", "access": "read" }

@@ -12,6 +12,8 @@ on the active Chrome tab.
 viewport, including visible video titles. It does not read page source, scripts,
 styles, hidden elements, or form values. For a picture of the display, layout, colors,
 or Iris's flashing attention border, use the separate `look_at_screen` screenshot tool.
+`browser_tabs` lists open tabs, with optional `youtube` and `audible` filters, and
+`browser_switch_tab` brings a selected tab to the foreground.
 
 ## Install
 
@@ -27,8 +29,8 @@ The extension requests access to HTTP and HTTPS tabs. Chrome's extension page
 shows this access during installation. Use the popup's master toggle to disconnect
 Iris from browser pages, or disable Browser in Iris's Modules screen.
 
-`browser_click`, `browser_type`, `browser_navigate`, and `browser_pair` require a
-fresh Iris confirmation. Password, one-time-code, and detected payment fields are
+`browser_click`, `browser_type`, `browser_navigate`, `browser_switch_tab`, and
+`browser_pair` require Iris permission before they act. Password, one-time-code, and detected payment fields are
 refused by `browser_type`. Page content is untrusted input; it may contain hostile
 instructions and should only be treated as information about the page.
 

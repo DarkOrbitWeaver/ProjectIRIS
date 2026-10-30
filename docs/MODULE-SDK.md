@@ -65,6 +65,8 @@ permission, activity, and shell contracts so each integration feels like part of
 - MCP tools may send `notifications/progress` after Iris supplies `_meta.progressToken` with
   `tools/call`. Iris correlates those messages to the plugin, tool, and turn or background task and
   publishes `ModuleProgressEvent`. Intermediate updates are throttled to avoid UI event floods.
+  MCP servers may also send `ping` (answered) and `elicitation/create` (see below); other
+  server-to-client requests receive JSON-RPC `-32601`.
 - The activity card shows the current conversation/tool step without taking focus. The compact
   call pill remains a separate surface. Progress bars appear only when the module reports both
   a finite progress value and a finite positive total; otherwise the card shows the step only.
@@ -274,9 +276,14 @@ Every approval and every module question goes through one service (`ModuleHost.P
 - **From the model:** the built-in `ask_user` tool takes a question and two to twelve options, shows
   them, and returns the option the user picked. Plugins that need a choice should say so in their tool
   description; the model then asks with `ask_user` and calls the plugin again with the answer.
-- **Not yet:** a command or MCP plugin cannot open a prompt by itself in the middle of a call.
-  The planned route is an MCP `elicitation/create` request and a `prompt` JSONL envelope for command
-  modules; both would land in `PromptService.AskAsync` unchanged.
+- **From an MCP plugin, mid-call:** send the standard `elicitation/create` request (MCP 2025-06-18).
+  Iris advertises `capabilities.elicitation`, renders it as a Confirm / Choice / Numbered prompt, and
+  answers with `{"action":"accept","content":{"<property>":"<id>"}}`, `{"action":"decline"}`, or
+  `{"action":"cancel"}` on timeout. Give the requested property an `enum` and `enumNames`; a boolean
+  property becomes Yes / No. Optional `_meta.iris` can provide `kind`, `risk` (`sensitive` requires
+  clear spoken approval), `title`, and per-option `detail`, `aliases`, and `voiceAllowed:false`. The
+  tool timeout pauses while the question is open. Command (JSONL) modules still cannot ask questions;
+  use MCP for interactive module flows.
 
 ## Plain-language labels and permission behaviour
 
@@ -294,4 +301,6 @@ listed in `ToolPresentationCatalog`. A plugin can override any of it per tool in
   and is gone when Iris closes. Ignored when `alwaysConfirm` is set.
 - `alwaysConfirm`: asks every single time and offers no remembered choice. Keep it for things like typing
   into a page or sending a message.
+- `timeoutSeconds` (5–600): how long Iris waits for this tool. MCP calls default to 30 seconds;
+  background tools receive five minutes. Set a longer timeout for network requests or long-running work.
 - `label` / `doneLabel` / `icon`: the words and glyph shown while and after the tool runs.

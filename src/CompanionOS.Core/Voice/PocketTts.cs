@@ -100,7 +100,7 @@ public sealed class PocketTtsServerHost : IAsyncDisposable
             startInfo.ArgumentList.Add(string.IsNullOrWhiteSpace(Options.VoiceId) ? "vera" : Options.VoiceId);
             startInfo.Environment["HF_HOME"] = cacheDirectory;
             startInfo.Environment["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "1";
-            startInfo.Environment["RAYON_NUM_THREADS"] = Math.Clamp(Options.PocketMaxThreads, 1, 2).ToString();
+            startInfo.Environment["RAYON_NUM_THREADS"] = Math.Clamp(Options.PocketMaxThreads, 1, 4).ToString();
 
             Process process = new() { StartInfo = startInfo, EnableRaisingEvents = true };
             process.OutputDataReceived += (_, eventArgs) =>
@@ -133,7 +133,7 @@ public sealed class PocketTtsServerHost : IAsyncDisposable
                 _process = process;
                 process.BeginOutputReadLine();
                 process.BeginErrorReadLine();
-                ApplyCpuLimits(process);
+                ApplyCpuLimits(process, Math.Clamp(Options.PocketMaxThreads, 1, 4));
             }
             catch (Exception exception)
             {
@@ -272,24 +272,23 @@ public sealed class PocketTtsServerHost : IAsyncDisposable
         }
     }
 
-    private static void ApplyCpuLimits(Process process)
+    private static void ApplyCpuLimits(Process process, int threads)
     {
         try
         {
-            process.PriorityClass = ProcessPriorityClass.BelowNormal;
+            process.PriorityClass = ProcessPriorityClass.Normal;
             if (OperatingSystem.IsWindows())
             {
-                // The sidecar can occupy at most two of the machine's logical processors,
-                // even if a library creates an unexpected worker thread.
-                int logicalProcessors = Math.Max(1, Environment.ProcessorCount);
-                int allowed = Math.Min(2, logicalProcessors);
-                long mask = (1L << allowed) - 1;
-                process.ProcessorAffinity = new IntPtr(mask);
+                int logicalProcessors = Math.Clamp(Environment.ProcessorCount, 1, IntPtr.Size * 8);
+                int allowed = Math.Clamp(threads, 1, Math.Min(logicalProcessors, 63));
+                int firstProcessor = logicalProcessors - allowed;
+                ulong mask = ((1UL << allowed) - 1) << firstProcessor;
+                process.ProcessorAffinity = new IntPtr(unchecked((long)mask));
             }
         }
         catch (Exception exception)
         {
-            CompanionLog.Warning("Voice", $"Could not apply the Pocket TTS CPU cap: {exception.Message}");
+            CompanionLog.Warning("Voice", $"Could not apply the voice CPU plan: {exception.Message}");
         }
     }
 }

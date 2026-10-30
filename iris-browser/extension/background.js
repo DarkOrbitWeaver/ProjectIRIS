@@ -77,6 +77,30 @@ async function toTab(tabId, cmd, args) {
 }
 
 async function run(cmd, args) {
+  if (cmd === 'tabs') {
+    const tabs = await chrome.tabs.query({});
+    const [active] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    return tabs
+      .filter((t) => t.id && t.url && !/^(chrome|edge|about|chrome-extension|devtools):/.test(t.url))
+      .slice(0, 60)
+      .map((t) => ({
+        id: t.id,
+        title: String(t.title || '').slice(0, 160),
+        url: String(t.url).slice(0, 500),
+        active: !!(active && active.id === t.id),
+        audible: !!t.audible,
+        muted: !!(t.mutedInfo && t.mutedInfo.muted),
+        windowId: t.windowId,
+      }));
+  }
+  if (cmd === 'switch') {
+    const target = await chrome.tabs.get(Number(args.id));
+    if (!target) throw new Error('That tab is gone.');
+    await chrome.windows.update(target.windowId, { focused: true });
+    await chrome.tabs.update(target.id, { active: true });
+    return { title: target.title, url: target.url };
+  }
+
   const tab = await activeTab();
   if (cmd === 'status') return { title: tab.title, url: tab.url };
   if (cmd === 'navigate') {

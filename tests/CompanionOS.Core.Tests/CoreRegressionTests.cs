@@ -9,11 +9,13 @@ using CompanionOS.Core.Voice;
 using CompanionOS.Core.Modules.BuiltIn;
 using CompanionOS.Core.Perception;
 using CompanionOS.Core.Plugins;
+using CompanionOS.Core.Prompts;
 using CompanionOS.Core.Recovery;
 using CompanionOS.Modules;
 using System.Net;
 using System.Net.Sockets;
 using System.Diagnostics;
+using System.Text;
 using System.Text.Json;
 using Xunit;
 
@@ -516,6 +518,83 @@ public sealed class CoreRegressionTests
         {
             Directory.Delete(folder, recursive: true);
         }
+    }
+
+    [Theory]
+    [InlineData("5", true)]
+    [InlineData("600", true)]
+    [InlineData("4", false)]
+    [InlineData("601", false)]
+    [InlineData("5.5", false)]
+    [InlineData("\"30\"", false)]
+    public void ExternalModuleManifestValidatesToolTimeouts(string timeout, bool expectedLoaded)
+    {
+        string folder = Path.Combine(Path.GetTempPath(), $"iris-plugin-timeout-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(folder);
+        try
+        {
+            File.WriteAllText(Path.Combine(folder, "plugin.json"),
+                $"{{\"schema\":1,\"id\":\"sample\",\"name\":\"Sample\",\"transport\":\"builtin\"," +
+                $"\"tools\":[{{\"name\":\"lookup\",\"description\":\"Lookup.\",\"timeoutSeconds\":{timeout}}}]}}");
+
+            bool loaded = PluginManifest.TryLoad(folder, out PluginManifest? manifest, out string reason);
+
+            Assert.Equal(expectedLoaded, loaded);
+            if (expectedLoaded)
+            {
+                Assert.NotNull(manifest);
+                Assert.Equal(timeout == "5" ? 5 : 600, manifest.Tools.Single().TimeoutSeconds);
+            }
+            else
+            {
+                Assert.Contains("timeoutSeconds", reason, StringComparison.Ordinal);
+            }
+        }
+        finally
+        {
+            Directory.Delete(folder, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void McpElicitationMapsChoicesAndSensitiveRiskToIrisPrompts()
+    {
+        using JsonDocument document = JsonDocument.Parse("""
+            {
+              "message": "Which item?",
+              "requestedSchema": {
+                "type": "object",
+                "properties": {
+                  "item": { "type": "string", "enum": ["first", "second"], "enumNames": ["First item", "Second item"] }
+                },
+                "required": ["item"]
+              },
+              "_meta": { "iris": { "kind": "numbered", "risk": "sensitive", "title": "Pick an item" } }
+            }
+            """);
+
+        McpElicitation.Parsed? parsed = McpElicitation.TryParse(document.RootElement);
+
+        Assert.NotNull(parsed);
+        Assert.Equal(PromptKind.Numbered, parsed.Request.Kind);
+        Assert.Equal(PromptRisk.Sensitive, parsed.Request.Risk);
+        Assert.Equal("Pick an item", parsed.Request.Title);
+        Assert.Equal(new[] { "First item", "Second item" }, parsed.Request.Options.Select(option => option.Label));
+        Dictionary<string, object?> result = McpElicitation.BuildResult(parsed,
+            new PromptAnswer("second", PromptSource.Button));
+        Assert.Equal("accept", result["action"]);
+        Assert.Equal("second", Assert.IsType<Dictionary<string, object?>>(result["content"])["item"]);
+    }
+
+    [Fact]
+    public void FirstStreamedSpeechClauseCanStartBeforeTheRestOfTheSentence()
+    {
+        StringBuilder buffer = new("I can take care of that, then finish the download.");
+
+        IReadOnlyList<string> chunks = AssistantBrain.TakeCompleteSpeechSentences(buffer, 8, allowFirstClause: true);
+
+        Assert.Equal(new[] { "I can take care of that,", "then finish the download." }, chunks);
+        Assert.Empty(buffer.ToString());
     }
 
     [Fact]

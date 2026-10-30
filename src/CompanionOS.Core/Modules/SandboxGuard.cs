@@ -89,7 +89,7 @@ public sealed class PermissionRequest
                 : $"Access: {permissionScope}";
 
         Prompt = new IrisPrompt(PromptKind.Confirm, "Needs your OK", question, options, risk,
-            timeout ?? TimeSpan.FromSeconds(30), PromptIds.Deny, speakAloud: true, moduleId, moduleName, "shield")
+            timeout ?? TimeSpan.FromSeconds(30), PromptIds.Deny, speakAloud: false, moduleId, moduleName, "shield")
         {
             Detail = detail
         };

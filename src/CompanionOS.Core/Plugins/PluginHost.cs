@@ -12,6 +12,7 @@ using CompanionOS.Core.Configuration;
 using CompanionOS.Core.Diagnostics;
 using CompanionOS.Core.Events;
 using CompanionOS.Core.Modules;
+using CompanionOS.Core.Prompts;
 
 namespace CompanionOS.Core.Plugins;
 
@@ -46,12 +47,15 @@ public sealed class PluginHost : IDisposable
     private readonly SemaphoreSlim _mcpConnectionGate = new(1, 1);
     private readonly string _pluginsRoot;
     private readonly ModuleSecretStore _secrets;
+    private readonly PromptService? _prompts;
 
-    public PluginHost(EventBus events, string? pluginsRoot = null, ModuleSecretStore? secrets = null)
+    public PluginHost(EventBus events, string? pluginsRoot = null, ModuleSecretStore? secrets = null,
+        PromptService? prompts = null)
     {
         _events = events;
         _pluginsRoot = pluginsRoot ?? CompanionPaths.ModulesDirectory;
         _secrets = secrets ?? ModuleSecretStore.CreateDefault();
+        _prompts = prompts;
     }
 
     /// <summary>Every plugin that loaded cleanly, in folder order.</summary>
@@ -175,7 +179,13 @@ public sealed class PluginHost : IDisposable
                 Schema = RedactJsonStrings(tool.Schema, secrets),
                 Permission = policy?.Permission,
                 Background = policy?.Background ?? false,
-                AlwaysConfirm = policy?.AlwaysConfirm ?? false
+                AlwaysConfirm = policy?.AlwaysConfirm ?? false,
+                SessionTrust = policy?.SessionTrust ?? false,
+                Label = policy?.Label,
+                DoneLabel = policy?.DoneLabel,
+                Icon = policy?.Icon,
+                Access = policy?.Access,
+                TimeoutSeconds = policy?.TimeoutSeconds
             };
         }).ToList();
 
@@ -964,7 +974,10 @@ public sealed class PluginHost : IDisposable
         }
 
         int surfaceUpdateCount = 0;
-        JsonElement lat = await connection.CallToolAsync(tool.Name, arguments,
+        TimeSpan budget = tool.Background
+            ? TimeSpan.FromMinutes(5)
+            : TimeSpan.FromSeconds(tool.TimeoutSeconds ?? 30);
+        JsonElement lat = await connection.CallToolAsync(tool.Name, arguments, budget,
             progress => _events.Publish(new ModuleProgressEvent
             {
                 ModuleId = $"plugin:{plugin.Id}",
@@ -995,12 +1008,24 @@ public sealed class PluginHost : IDisposable
         {
             if (_mcpServers.TryGetValue(plugin.Id, out McpConnection? existing))
             {
-                return existing;
+                if (!existing.HasExited)
+                {
+                    return existing;
+                }
+
+                CompanionLog.Info("Plugins", $"'{plugin.Name}' MCP server had exited; starting it again.");
+                existing.Dispose();
+                _mcpServers.Remove(plugin.Id);
             }
 
             Dictionary<string, string> secretValues = LoadModuleSecrets(plugin);
             McpConnection connection = new(plugin, ResolveWorkingDirectory(plugin),
-                SecretEnvironmentValues(plugin, secretValues), secretValues);
+                SecretEnvironmentValues(plugin, secretValues), secretValues)
+            {
+                ElicitationHandler = _prompts is null
+                    ? null
+                    : (parameters, token) => AskForPluginAsync(plugin, parameters, token)
+            };
             _mcpServers[plugin.Id] = connection;
             await connection.StartAndInitializeAsync(cancellationToken).ConfigureAwait(false);
             return connection;
@@ -1009,6 +1034,28 @@ public sealed class PluginHost : IDisposable
         {
             _mcpConnectionGate.Release();
         }
+    }
+
+    private async Task<Dictionary<string, object?>> AskForPluginAsync(PluginManifest plugin,
+        JsonElement parameters, CancellationToken cancellationToken)
+    {
+        if (_prompts is null)
+        {
+            return new Dictionary<string, object?> { ["action"] = "decline" };
+        }
+
+        string safeJson = RedactJsonStrings(parameters.GetRawText(), LoadModuleSecrets(plugin).Values);
+        using JsonDocument safeDocument = JsonDocument.Parse(safeJson);
+        McpElicitation.Parsed? parsed = McpElicitation.TryParse(safeDocument.RootElement);
+        if (parsed is null)
+        {
+            CompanionLog.Warning("Plugins", $"'{plugin.Name}' asked a question Iris could not read.");
+            return new Dictionary<string, object?> { ["action"] = "decline" };
+        }
+
+        PromptAnswer answer = await _prompts.AskAsync(parsed.Request, $"plugin:{plugin.Id}", plugin.Name,
+            plugin.ResolveIcon(plugin.Icon), cancellationToken).ConfigureAwait(false);
+        return McpElicitation.BuildResult(parsed, answer);
     }
 
     private static string ResolveWorkingDirectory(PluginManifest plugin)
@@ -1091,6 +1138,9 @@ internal sealed class McpConnection : IDisposable
     private readonly Dictionary<string, Action<JsonElement>> _surfaceHandlers = new(StringComparer.Ordinal);
     private readonly Dictionary<string, long> _lastProgressTicks = new(StringComparer.Ordinal);
     private int _nextId;
+    private int _openQuestions;
+
+    public Func<JsonElement, CancellationToken, Task<Dictionary<string, object?>>>? ElicitationHandler { get; init; }
 
     public McpConnection(PluginManifest plugin, string workingDirectory,
         IReadOnlyDictionary<string, string> secretEnvironment, Dictionary<string, string> secretValues)
@@ -1105,6 +1155,25 @@ internal sealed class McpConnection : IDisposable
     public IReadOnlyDictionary<string, string> SecretValues => _secretValues;
     private IReadOnlyDictionary<string, string> SecretEnvironment { get; }
     public string? Failed { get; private set; }
+    public bool HasExited
+    {
+        get
+        {
+            if (Failed is not null || _process is null)
+            {
+                return true;
+            }
+
+            try
+            {
+                return _process.HasExited;
+            }
+            catch (InvalidOperationException)
+            {
+                return true;
+            }
+        }
+    }
 
     public async Task StartAndInitializeAsync(CancellationToken cancellationToken)
     {
@@ -1157,8 +1226,8 @@ internal sealed class McpConnection : IDisposable
 
             JsonElement capabilities = await RequestAsync("initialize", new Dictionary<string, object?>
             {
-                ["protocolVersion"] = "2024-11-05",
-                ["capabilities"] = JsonSerializer.SerializeToElement(new { }),
+                ["protocolVersion"] = "2025-06-18",
+                ["capabilities"] = JsonSerializer.SerializeToElement(new { elicitation = new { } }),
                 ["clientInfo"] = JsonSerializer.SerializeToElement(new { name = "CompanionOS", version = "1.0" })
             }, cancellationToken).ConfigureAwait(false);
 
@@ -1190,6 +1259,10 @@ internal sealed class McpConnection : IDisposable
                 return;
             }
             if (TryHandleSurfaceUpdate(document.RootElement))
+            {
+                return;
+            }
+            if (TryHandleServerRequest(document.RootElement))
             {
                 return;
             }
@@ -1337,7 +1410,94 @@ internal sealed class McpConnection : IDisposable
         return true;
     }
 
-    public async Task<JsonElement> CallToolAsync(string toolName, JsonElement arguments,
+    private bool TryHandleServerRequest(JsonElement message)
+    {
+        if (!message.TryGetProperty("method", out JsonElement methodElement) ||
+            methodElement.ValueKind != JsonValueKind.String ||
+            !message.TryGetProperty("id", out JsonElement idElement) ||
+            idElement.ValueKind is not (JsonValueKind.Number or JsonValueKind.String))
+        {
+            return false;
+        }
+
+        string method = methodElement.GetString() ?? string.Empty;
+        object requestId = idElement.ValueKind == JsonValueKind.Number
+            ? idElement.Clone()
+            : idElement.GetString()!;
+        JsonElement parameters = message.TryGetProperty("params", out JsonElement parametersElement)
+            ? parametersElement.Clone()
+            : default;
+
+        switch (method)
+        {
+            case "ping":
+                _ = RespondAsync(requestId, new Dictionary<string, object?>(), null);
+                return true;
+            case "elicitation/create":
+                if (ElicitationHandler is null)
+                {
+                    _ = RespondAsync(requestId, null, (-32601, "This host cannot show questions."));
+                }
+                else
+                {
+                    _ = AnswerQuestionAsync(requestId, parameters);
+                }
+                return true;
+            default:
+                _ = RespondAsync(requestId, null, (-32601, $"Method not found: {method}"));
+                return true;
+        }
+    }
+
+    private async Task AnswerQuestionAsync(object requestId, JsonElement parameters)
+    {
+        Interlocked.Increment(ref _openQuestions);
+        try
+        {
+            Dictionary<string, object?> result =
+                await ElicitationHandler!(parameters, CancellationToken.None).ConfigureAwait(false);
+            await RespondAsync(requestId, result, null).ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            CompanionLog.Warning("Plugins", $"'{_plugin.Name}' question failed: {exception.Message}");
+            await RespondAsync(requestId, new Dictionary<string, object?> { ["action"] = "decline" }, null)
+                .ConfigureAwait(false);
+        }
+        finally
+        {
+            Interlocked.Decrement(ref _openQuestions);
+        }
+    }
+
+    private async Task RespondAsync(object requestId, Dictionary<string, object?>? result,
+        (int Code, string Message)? error)
+    {
+        Dictionary<string, object?> envelope = new() { ["jsonrpc"] = "2.0", ["id"] = requestId };
+        if (error is { } fault)
+        {
+            envelope["error"] = new Dictionary<string, object?>
+            {
+                ["code"] = fault.Code,
+                ["message"] = fault.Message
+            };
+        }
+        else
+        {
+            envelope["result"] = result ?? new Dictionary<string, object?>();
+        }
+
+        try
+        {
+            await WriteLineAsync(JsonSerializer.Serialize(envelope), CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is IOException or ObjectDisposedException or InvalidOperationException)
+        {
+            CompanionLog.Trace("Plugins", $"Could not answer '{_plugin.Name}': {exception.Message}");
+        }
+    }
+
+    public async Task<JsonElement> CallToolAsync(string toolName, JsonElement arguments, TimeSpan timeout,
         Action<McpProgressUpdate> progressHandler, Action<JsonElement> surfaceHandler,
         CancellationToken cancellationToken)
     {
@@ -1355,7 +1515,7 @@ internal sealed class McpConnection : IDisposable
                 ["name"] = toolName,
                 ["arguments"] = JsonSerializer.SerializeToElement(arguments),
                 ["_meta"] = new Dictionary<string, object?> { ["progressToken"] = progressToken }
-            }, cancellationToken).ConfigureAwait(false);
+            }, cancellationToken, timeout).ConfigureAwait(false);
         }
         finally
         {
@@ -1479,11 +1639,57 @@ internal sealed class McpConnection : IDisposable
             ["params"] = JsonSerializer.SerializeToElement(parameters)
         });
 
-        await WriteLineAsync(request, cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await WriteLineAsync(request, cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            lock (_pendingLock)
+            {
+                _pending.Remove(id);
+            }
+            throw;
+        }
 
-        // A stuck plugin can jam its tool; 30 s is already generous before it loses the slot.
-        Task finished = await Task.WhenAny(waiter.Task, Task.Delay(timeout ?? TimeSpan.FromSeconds(30), cancellationToken))
-            .ConfigureAwait(false);
+        TimeSpan effectiveTimeout = timeout ?? TimeSpan.FromSeconds(30);
+        Task finished;
+        while (true)
+        {
+            Task timeoutTask = Task.Delay(effectiveTimeout, cancellationToken);
+            finished = await Task.WhenAny(waiter.Task, timeoutTask).ConfigureAwait(false);
+            if (finished == waiter.Task || cancellationToken.IsCancellationRequested ||
+                Volatile.Read(ref _openQuestions) == 0)
+            {
+                break;
+            }
+
+            while (Volatile.Read(ref _openQuestions) > 0 && !waiter.Task.IsCompleted &&
+                   !cancellationToken.IsCancellationRequested)
+            {
+                try
+                {
+                    await Task.Delay(250, cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    finished = timeoutTask;
+                    break;
+                }
+            }
+
+            if (waiter.Task.IsCompleted)
+            {
+                finished = waiter.Task;
+                break;
+            }
+
+            if (cancellationToken.IsCancellationRequested)
+            {
+                break;
+            }
+        }
+
         if (finished != waiter.Task)
         {
             lock (_pendingLock)
@@ -1506,7 +1712,6 @@ internal sealed class McpConnection : IDisposable
                 }
             }
             cancellationToken.ThrowIfCancellationRequested();
-            TimeSpan effectiveTimeout = timeout ?? TimeSpan.FromSeconds(30);
             throw new TimeoutException($"'{_plugin.Name}'.{method} timed out after {effectiveTimeout.TotalSeconds:0} s");
         }
         return await waiter.Task.ConfigureAwait(false);

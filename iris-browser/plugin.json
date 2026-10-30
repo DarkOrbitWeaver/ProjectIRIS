@@ -12,15 +12,17 @@
   "discoverTools": true,
   "asksPermission": ["browser.read", "browser.act"],
   "tools": [
-    { "name": "browser_pair", "permission": "browser.act", "access": "act", "sessionTrust": true },
-    { "name": "browser_status", "permission": "browser.read", "access": "read" },
-    { "name": "browser_search", "permission": "browser.read", "access": "read" },
-    { "name": "browser_read_page", "permission": "browser.read", "access": "read" },
-    { "name": "browser_focus", "permission": "browser.read", "access": "read" },
-    { "name": "browser_attend", "permission": "browser.read", "access": "read" },
-    { "name": "browser_scroll", "permission": "browser.read", "access": "read" },
-    { "name": "browser_navigate", "permission": "browser.act", "access": "act", "sessionTrust": true },
-    { "name": "browser_click", "permission": "browser.act", "access": "act", "sessionTrust": true },
-    { "name": "browser_type", "permission": "browser.act", "access": "act", "alwaysConfirm": true }
+    { "name": "browser_pair", "permission": "browser.act", "access": "act", "sessionTrust": true, "label": "Pairing with Chrome", "doneLabel": "Paired with Chrome", "icon": "web" },
+    { "name": "browser_status", "permission": "browser.read", "access": "read", "label": "Checking the browser", "doneLabel": "Checked the browser", "icon": "web" },
+    { "name": "browser_tabs", "permission": "browser.read", "access": "read", "label": "Looking at your open tabs", "doneLabel": "Checked your open tabs", "icon": "web" },
+    { "name": "browser_switch_tab", "permission": "browser.act", "access": "act", "sessionTrust": true, "label": "Switching tabs", "doneLabel": "Switched tabs", "icon": "web" },
+    { "name": "browser_search", "permission": "browser.read", "access": "read", "label": "Searching the web", "doneLabel": "Searched the web", "icon": "search" },
+    { "name": "browser_read_page", "permission": "browser.read", "access": "read", "label": "Reading the page", "doneLabel": "Read the page", "icon": "web" },
+    { "name": "browser_focus", "permission": "browser.read", "access": "read", "label": "Pointing at something", "doneLabel": "Pointed at it", "icon": "eye" },
+    { "name": "browser_attend", "permission": "browser.read", "access": "read", "label": "Looking over the page", "doneLabel": "Looked over the page", "icon": "eye" },
+    { "name": "browser_scroll", "permission": "browser.read", "access": "read", "label": "Scrolling", "doneLabel": "Scrolled", "icon": "web" },
+    { "name": "browser_navigate", "permission": "browser.act", "access": "act", "sessionTrust": true, "label": "Opening a page", "doneLabel": "Opened the page", "icon": "web" },
+    { "name": "browser_click", "permission": "browser.act", "access": "act", "sessionTrust": true, "label": "Clicking on the page", "doneLabel": "Clicked", "icon": "web" },
+    { "name": "browser_type", "permission": "browser.act", "access": "act", "alwaysConfirm": true, "label": "Typing into the page", "doneLabel": "Typed into the page", "icon": "web" }
   ]
 }

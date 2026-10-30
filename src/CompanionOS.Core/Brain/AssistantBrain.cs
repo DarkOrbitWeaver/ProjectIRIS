@@ -601,7 +601,8 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
                     {
                         speechBuffer.Append(delta);
                         foreach (string sentence in TakeCompleteSpeechSentences(speechBuffer,
-                                     _settings.Current.Brain.MinimumSpokenSentenceCharacters))
+                                     _settings.Current.Brain.MinimumSpokenSentenceCharacters,
+                                     allowFirstClause: !streamedAnySpeech))
                         {
                             // The speech-economy floor applies mid-stream too: a list-shaped
                             // sentence is dropped before it can cost seconds of synthesis.
@@ -945,25 +946,33 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
             await _voice.SpeakAsync(text, cancellationToken).ConfigureAwait(false);
         }, CancellationToken.None, TaskContinuationOptions.None, TaskScheduler.Default).Unwrap();
 
-    private static IReadOnlyList<string> TakeCompleteSpeechSentences(StringBuilder buffer, int minimumCharacters)
+    internal static IReadOnlyList<string> TakeCompleteSpeechSentences(StringBuilder buffer, int minimumCharacters,
+        bool allowFirstClause)
     {
         List<string> sentences = new();
         int start = 0;
+        bool firstSpeechBoundary = true;
         for (int index = 0; index < buffer.Length; index++)
         {
-            if (buffer[index] is not ('.' or '!' or '?'))
+            bool sentenceEnd = buffer[index] is '.' or '!' or '?';
+            bool clauseEnd = allowFirstClause && firstSpeechBoundary && !sentenceEnd &&
+                             buffer[index] is ',' or ';' or ':' or '—' &&
+                             index + 1 < buffer.Length && char.IsWhiteSpace(buffer[index + 1]);
+            if (!sentenceEnd && !clauseEnd)
             {
                 continue;
             }
 
             string candidate = SpeechTextSanitizer.CleanForSpeech(buffer.ToString(start, index - start + 1));
-            if (candidate.Length < Math.Max(1, minimumCharacters))
+            if (candidate.Length < Math.Max(1, minimumCharacters) ||
+                clauseEnd && candidate.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length < 3)
             {
                 continue;
             }
 
             sentences.Add(candidate);
             start = index + 1;
+            firstSpeechBoundary = false;
         }
 
         if (start > 0)

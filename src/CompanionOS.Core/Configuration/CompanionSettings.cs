@@ -207,8 +207,8 @@ public sealed class VoiceSettings
     /// <summary>Optional override; otherwise the bundled runtime under the data root is used.</summary>
     public string PocketExecutablePath { get; set; } = string.Empty;
 
-    /// <summary>Hard thread ceiling for the local speech worker; kept low for games and foreground work.</summary>
-    public int PocketMaxThreads { get; set; } = 2;
+    /// <summary>Thread ceiling for the local speech worker, pinned to the last available processors.</summary>
+    public int PocketMaxThreads { get; set; } = 4;
 
     /// <summary>CPU model. English 18M is selected for measured latency and bounded footprint.</summary>
     public string PocketLanguage { get; set; } = "english_18m_2026-10";
@@ -219,8 +219,8 @@ public sealed class VoiceSettings
     /// </summary>
     public string KokoroEndpoint { get; set; } = "http://127.0.0.1:18766";
 
-    /// <summary>Hard thread ceiling for the Kokoro worker's ORT session.</summary>
-    public int KokoroMaxThreads { get; set; } = 2;
+    /// <summary>Thread ceiling for the Kokoro worker's ORT session.</summary>
+    public int KokoroMaxThreads { get; set; } = 4;
 
     /// <summary>
     /// Kokoro voice to fall back to when her profile does not name one. af_heart is

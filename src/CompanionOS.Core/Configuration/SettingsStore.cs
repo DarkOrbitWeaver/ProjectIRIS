@@ -159,7 +159,8 @@ public sealed class SettingsStore
                 $"Settings migrated from schema version {previousVersion} to {CompanionSettings.CurrentSchemaVersion}.");
         }
 
-        voice.PocketMaxThreads = Math.Clamp(voice.PocketMaxThreads, 1, 2);
+        voice.PocketMaxThreads = Math.Clamp(voice.PocketMaxThreads, 1, 4);
+        voice.KokoroMaxThreads = Math.Clamp(voice.KokoroMaxThreads, 1, 4);
         if (Current.Ears.MaxRecognitionThreads <= 0)
         {
             Current.Ears.MaxRecognitionThreads = 2;

@@ -20,6 +20,53 @@ public enum ChatRole
     Tool
 }
 
+public enum StepStatus
+{
+    Waiting,
+    Running,
+    Done,
+    Failed,
+    Denied,
+    Stopped,
+    Answered
+}
+
+public sealed class ToolStep : ObservableObject
+{
+    private string _label = string.Empty;
+    private string _detail = string.Empty;
+    private string _permissionNote = string.Empty;
+    private StepStatus _status;
+
+    public string Label
+    {
+        get => _label;
+        set => SetProperty(ref _label, value);
+    }
+
+    public string Detail
+    {
+        get => _detail;
+        set => SetProperty(ref _detail, value);
+    }
+
+    public StepStatus Status
+    {
+        get => _status;
+        set => SetProperty(ref _status, value);
+    }
+
+    public string PermissionNote
+    {
+        get => _permissionNote;
+        set => SetProperty(ref _permissionNote, value);
+    }
+
+    public string IconKey { get; init; } = "body";
+    public string ModuleName { get; init; } = string.Empty;
+    public DateTimeOffset Time { get; init; } = DateTimeOffset.Now;
+}
+
 /// <summary>One bubble in the chat. Mutable because answers stream in.</summary>
 public sealed class ChatEntry : ObservableObject
 {
@@ -77,6 +124,10 @@ public sealed class ChatEntry : ObservableObject
     }
 
     public string TimeText => Time.ToString("HH:mm");
+
+    public ObservableCollection<ToolStep> Steps { get; } = new();
+
+    public ToolStep? RunningStep => Steps.LastOrDefault(step => step.Status == StepStatus.Running);
 }
 
 /// <summary>A short toast in the bottom-right corner.</summary>

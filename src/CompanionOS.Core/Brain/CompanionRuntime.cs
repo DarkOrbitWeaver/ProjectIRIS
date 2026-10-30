@@ -138,7 +138,7 @@ public sealed class CompanionRuntime : IAsyncDisposable
         // The plugin spine: her tools live in the user's folder, so they can be developed
         // and updated without touching her code. Scanning is cheap; MCP connections are
         // made lazily on first call.
-        PluginHost plugins = new(events);
+        PluginHost plugins = new(events, prompts: sandbox.Prompts);
         plugins.Load();
 
         AssistantBrain brain = new(settings, events, persona, memory, modules, serverHost, modelClient,
