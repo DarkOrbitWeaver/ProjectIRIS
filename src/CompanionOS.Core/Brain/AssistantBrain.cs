@@ -32,13 +32,10 @@ namespace CompanionOS.Core.Brain;
 /// </summary>
 public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDisposable
 {
-    /// <summary>
-    /// Eight agentic rounds. Four once cut real chains (scan → filter → act → verify)
-    /// mid-work and fell back to a permission-asking canned line. Eight keeps the
-    /// common chains inside one turn; the loop still ends the moment she stops calling
-    /// tools, so chatty models pay no tax.
-    /// </summary>
-    private const int MaximumToolRounds = 8;
+    // The round budget lives in ToolLoopGuard now: eight base rounds (the old flat
+    // limit), extended one round per round that actually succeeded, hard-capped at
+    // sixteen. The flat constant cut productive chains mid-work while letting a
+    // stuck model burn all eight rounds re-emitting the same broken call.
 
     private readonly SettingsStore _settings;
     private readonly EventBus _events;
@@ -585,8 +582,16 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
         bool honestyRetryUsed = false;
         bool lengthContinued = false;
 
-        for (int round = 0; round < MaximumToolRounds; round++)
+        // The loop's progress ledger. Progress earns rounds (up to a hard cap), the
+        // same call failing twice is refused a third run, and two hand rounds with
+        // zero successes end the turn with a named reason instead of burning the
+        // rest of the budget on a plan that is demonstrably not working.
+        ToolLoopGuard loopGuard = new();
+        int roundsRun = 0;
+
+        for (int round = 0; loopGuard.MayStartRound(round); round++)
         {
+            roundsRun = round + 1;
             cancellationToken.ThrowIfCancellationRequested();
 
             // The request receipt: the exact conversation she was handed this round —
@@ -824,6 +829,7 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
                     _journal.RecordToolResult(turnId, operationId, JournalToolStatus.Failed);
                     messages.Add(ChatMessage.ToolResult(call.Id, call.Name, invalidArguments.ModelText));
                     toolLedger.Add($"{label}: not run (invalid arguments)");
+                    loopGuard.RecordCall(call.Name, call.ArgumentsJson, succeeded: false);
                     continue;
                 }
 
@@ -834,6 +840,21 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
                     _journal.RecordToolResult(turnId, operationId, JournalToolStatus.Failed);
                     messages.Add(ChatMessage.ToolResult(call.Id, call.Name, notRepeated.ModelText));
                     toolLedger.Add($"{label}: not repeated");
+                    loopGuard.RecordCall(call.Name, call.ArgumentsJson, succeeded: false);
+                    continue;
+                }
+
+                if (loopGuard.IsBlockedRepeat(call.Name, call.ArgumentsJson))
+                {
+                    // Deterministic failure does not change on the third try, and a
+                    // side-effecting call that failed unclearly must never be re-fired
+                    // on hope — that is how duplicate downloads and sends happen.
+                    ToolResult blocked = ToolResult.Fail(
+                        $"I did not run {label} again: the identical call already failed twice this turn. " +
+                        "Change the arguments, check the current state, or report honestly what is blocked.");
+                    _journal.RecordToolResult(turnId, operationId, JournalToolStatus.Failed);
+                    messages.Add(ChatMessage.ToolResult(call.Id, call.Name, blocked.ModelText));
+                    toolLedger.Add($"{label}: refused (failed twice identically)");
                     continue;
                 }
 
@@ -867,6 +888,12 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
                     : result.IsOutcomeUncertain ? "unconfirmed"
                     : result.Succeeded ? "done" : "failed"));
 
+                // Background starts count as progress; uncertain outcomes do not —
+                // "may or may not have happened" is exactly the state the guard must
+                // never reward with more budget or allow to be blindly retried.
+                loopGuard.RecordCall(call.Name, call.ArgumentsJson,
+                    succeeded: result.Succeeded || result.BackgroundTaskId is not null);
+
                 if (!result.Succeeded && result.BackgroundTaskId is null && !result.IsOutcomeUncertain)
                 {
                     // The refusal text is the honest "why" — the receipt answer quotes it
@@ -891,14 +918,19 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
             }
 
             _journal.RecordAnswerProgress(turnId, finalAnswer.ToString());
+            loopGuard.CompleteRound();
             _mind.MoveTo(MindState.Thinking, "resuming after tool");
         }
 
+        ToolLoopStopReason stopReason = loopGuard.StopReasonAfter(reachedFinalAnswer, roundsRun);
         if (!reachedFinalAnswer && toolLedger.Count > 0)
         {
+            // The stop is named, the receipts are listed, and the next safe action is
+            // offered. "I stopped without finishing" with no reason taught nobody
+            // anything — least of all the next turn.
             answerText = (finalAnswer.ToString().Trim() + "\n\n" +
-                          $"I stopped after {toolLedger.Count} step(s) without finishing: {string.Join("; ", toolLedger)}. " +
-                          "The receipts are on record for next time.").Trim();
+                          loopGuard.DescribeStop(stopReason) +
+                          $"Done so far: {string.Join("; ", toolLedger)}.").Trim();
         }
         else if (string.IsNullOrWhiteSpace(answerText) && toolLedger.Count > 0)
         {
@@ -929,7 +961,10 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
                 ["image_attached"] = hasAttachedImage.ToString(),
                 ["memories_activated"] = activation.Activated.Count().ToString(System.Globalization.CultureInfo.InvariantCulture),
                 ["tools"] = string.Join(" | ", toolLedger),
-                ["round_limit_hit"] = (!reachedFinalAnswer && toolLedger.Count > 0).ToString()
+                ["round_limit_hit"] = (!reachedFinalAnswer && toolLedger.Count > 0).ToString(),
+                ["stop_reason"] = stopReason.ToString(),
+                ["rounds_run"] = roundsRun.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                ["rounds_granted"] = loopGuard.GrantedRounds.ToString(System.Globalization.CultureInfo.InvariantCulture)
             });
 
         // 6. Speak, unless the user interrupted or the voice is muted.

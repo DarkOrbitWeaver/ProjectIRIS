@@ -438,6 +438,7 @@ public sealed class PluginHost : IDisposable
         Dictionary<string, string> secretValues = action == "call"
             ? LoadModuleSecrets(plugin)
             : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        ApplyUtf8Io(startInfo);
         ApplySecretEnvironment(startInfo, SecretEnvironmentValues(plugin, secretValues));
         foreach (string argument in plugin.Command.Skip(1))
         {
@@ -536,6 +537,28 @@ public sealed class PluginHost : IDisposable
             }
         }
         return environment;
+    }
+
+    /// <summary>
+    /// Forces UTF-8 on both sides of every module process pipe.
+    ///
+    /// The 2026 charmap autopsy: a YouTube download SUCCEEDED, then the module
+    /// crashed formatting a title containing a full-width colon ("：") because
+    /// Python's stdout on Windows defaulted to the legacy code page — and the whole
+    /// operation was reported as a failure. The fix lives here, in the one launch
+    /// path every command and MCP module shares, so it survives module updates and
+    /// does not depend on hand-patching an AppData copy:
+    ///  - the .NET side decodes stdout/stderr and encodes stdin as UTF-8;
+    ///  - PYTHONIOENCODING / PYTHONUTF8 make the Python side emit UTF-8 regardless
+    ///    of the console code page. Non-Python modules simply ignore them.
+    /// </summary>
+    internal static void ApplyUtf8Io(ProcessStartInfo startInfo)
+    {
+        startInfo.StandardOutputEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
+        startInfo.StandardErrorEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
+        startInfo.StandardInputEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
+        startInfo.Environment["PYTHONIOENCODING"] = "utf-8";
+        startInfo.Environment["PYTHONUTF8"] = "1";
     }
 
     internal static void ApplySecretEnvironment(ProcessStartInfo startInfo,
@@ -1206,6 +1229,7 @@ internal sealed class McpConnection : IDisposable
             {
                 startInfo.ArgumentList.Add(argument);
             }
+            PluginHost.ApplyUtf8Io(startInfo);
             PluginHost.ApplySecretEnvironment(startInfo, SecretEnvironment);
 
             _process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };

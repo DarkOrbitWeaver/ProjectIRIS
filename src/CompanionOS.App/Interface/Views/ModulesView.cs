@@ -404,12 +404,17 @@ public sealed class ModulesView : UserControl
             return;
         }
 
+        // A session file on disk is NOT proof of current authorization: Telegram can
+        // revoke it from any other device. The card therefore never says "linked"
+        // from File.Exists alone — the pure mapper owns the truthful wording, and a
+        // live check only happens through the telegram_status tool on request, so
+        // this 2-second UI timer never blocks on the network.
         string sessionFile = Path.Combine(CompanionPaths.DataRoot, "telegram", "session.dpapi");
-        bool accountLinked = File.Exists(sessionFile);
-        _telegramAccountStatus.Text = accountLinked
-            ? "Telegram account linked. Ask Iris to verify access if needed."
-            : "Telegram account not linked.";
-        _telegramAccountButton.Content = accountLinked ? "Manage account" : "Connect account";
+        TelegramLinkState state = TelegramSessionStatus.Resolve(
+            File.Exists(sessionFile), lastVerifiedAt: null, lastVerificationSucceeded: null,
+            DateTimeOffset.Now);
+        _telegramAccountStatus.Text = TelegramSessionStatus.DescribeForCard(state);
+        _telegramAccountButton.Content = TelegramSessionStatus.ButtonLabel(state);
     }
 
     private static void CopyDirectory(string source, string destination)

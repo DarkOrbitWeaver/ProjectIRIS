@@ -17,6 +17,8 @@ public static class AppModules
         new CoreToolsModule(),
         new BackgroundTasksModule(),
         new MusicPlayerModule(),
-        new SystemControlModule()
+        new SystemControlModule(),
+        new WorkspaceModule(),
+        new ProfileModule()
     };
 }
