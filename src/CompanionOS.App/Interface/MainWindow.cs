@@ -206,10 +206,30 @@ public sealed partial class MainWindow : Window
         if (!telegramInstalled)
             return;
 
-        string sessionFile = IOPath.Combine(
-            CompanionOS.Core.Configuration.CompanionPaths.DataRoot, "telegram", "session.dpapi");
+        string telegramDirectory = IOPath.Combine(
+            CompanionOS.Core.Configuration.CompanionPaths.DataRoot, "telegram");
+        string sessionFile = IOPath.Combine(telegramDirectory, "session.dpapi");
+        string previouslyConnected = IOPath.Combine(telegramDirectory, "connected-before");
         if (File.Exists(sessionFile))
+        {
+            try
+            {
+                File.WriteAllText(previouslyConnected, DateTimeOffset.UtcNow.ToString("O"));
+            }
+            catch (Exception exception)
+            {
+                _runtime.Events.PublishNotice(
+                    $"Could not record Telegram connection status: {exception.Message}",
+                    NoticeSeverity.Warning);
+            }
+
             return;
+        }
+
+        if (!File.Exists(previouslyConnected))
+        {
+            return;
+        }
 
         Dispatcher.UIThread.Post(() =>
         {

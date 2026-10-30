@@ -20,9 +20,10 @@ The QR sign-in session and contact nickname list are DPAPI protected for the cur
 Windows user. The login code or password is never a model tool argument. The module
 binds its setup page to `127.0.0.1` only.
 
-If the account is not connected when Iris starts, Iris shows a dismissible setup
-window. Close it to continue; open the Telegram card in **Modules** whenever you want
-to connect later.
+Iris does not interrupt startup when Telegram has not been configured. Open the
+Telegram card in **Modules** whenever you want to connect. If an account that was
+previously connected loses its saved session, Iris offers a dismissible recovery
+window on startup; close it to continue without Telegram.
 
 ## Tools
 

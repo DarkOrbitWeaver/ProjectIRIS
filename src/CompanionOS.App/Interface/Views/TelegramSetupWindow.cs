@@ -6,7 +6,7 @@ using CompanionOS.App.Interface.Theme;
 
 namespace CompanionOS.App.Interface.Views;
 
-/// <summary>Dismissible first-run prompt for connecting a personal Telegram account.</summary>
+/// <summary>Dismissible recovery prompt for a previously connected Telegram account.</summary>
 public sealed class TelegramSetupWindow : Window
 {
     public TelegramSetupWindow(Action openModules, Action openSetupPage)
@@ -19,11 +19,11 @@ public sealed class TelegramSetupWindow : Window
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         Background = Palette.BackgroundBrush;
 
-        TextBlock title = Ui.Text("Connect your Telegram account", Palette.FontPage,
+        TextBlock title = Ui.Text("Reconnect your Telegram account", Palette.FontPage,
             Palette.TextPrimaryBrush, FontWeight.SemiBold);
         title.TextWrapping = TextWrapping.Wrap;
         TextBlock details = Ui.Text(
-            "Telegram Personal is not connected yet. Set up the module and add your Telegram API credentials in Modules. You can close this window and finish later.",
+            "A Telegram account connected to Iris before, but its saved session is no longer available. Reconnect from Modules, or close this window and continue without Telegram.",
             Palette.FontBody, Palette.TextSecondaryBrush);
         details.LineHeight = 22;
         details.TextWrapping = TextWrapping.Wrap;
