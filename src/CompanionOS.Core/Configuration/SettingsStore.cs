@@ -161,6 +161,20 @@ public sealed class SettingsStore
 
         voice.PocketMaxThreads = Math.Clamp(voice.PocketMaxThreads, 1, 4);
         voice.KokoroMaxThreads = Math.Clamp(voice.KokoroMaxThreads, 1, 4);
+        voice.KokoroProvider = string.Equals(voice.KokoroProvider, "dml", StringComparison.OrdinalIgnoreCase)
+            ? "dml"
+            : "cpu";
+        Current.RememberedPromptChoices ??= new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (KeyValuePair<string, string> pair in Current.RememberedPromptChoices
+                     .Where(pair => pair.Key.Length > 80 || string.IsNullOrWhiteSpace(pair.Value) ||
+                                    pair.Value.Length > 100).ToArray())
+        {
+            Current.RememberedPromptChoices.Remove(pair.Key);
+        }
+        while (Current.RememberedPromptChoices.Count > 100)
+        {
+            Current.RememberedPromptChoices.Remove(Current.RememberedPromptChoices.Keys.First());
+        }
         if (Current.Ears.MaxRecognitionThreads <= 0)
         {
             Current.Ears.MaxRecognitionThreads = 2;

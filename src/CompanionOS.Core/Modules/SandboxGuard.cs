@@ -40,7 +40,10 @@ public enum PermissionDecision
     AllowAlways,
 
     /// <summary>Allowed until Iris closes. Never written to disk.</summary>
-    AllowSession
+    AllowSession,
+
+    /// <summary>Allowed for repeated calls in the current turn only.</summary>
+    AllowTurn
 }
 
 /// <summary>
@@ -70,6 +73,10 @@ public sealed class PermissionRequest
                 Aliases: new[] { "deny", "no" }),
             new PromptOption(PromptIds.AllowOnce, "Allow once", Role: PromptOptionRole.Approve)
         };
+        if (!alwaysConfirm)
+        {
+            options.Add(new PromptOption(PromptIds.AllowTurn, "This turn", VoiceAllowed: false));
+        }
         if (CanTrustSession)
         {
             // Pressed, never spoken: a misheard word must not trust a whole session.
@@ -125,6 +132,7 @@ public sealed class PermissionRequest
     {
         PermissionDecision.AllowOnce => PromptIds.AllowOnce,
         PermissionDecision.AllowSession => PromptIds.AllowSession,
+        PermissionDecision.AllowTurn => PromptIds.AllowTurn,
         PermissionDecision.AllowAlways => PromptIds.AllowAlways,
         _ => PromptIds.Deny
     };
@@ -133,6 +141,7 @@ public sealed class PermissionRequest
     {
         PromptIds.AllowOnce => PermissionDecision.AllowOnce,
         PromptIds.AllowSession => PermissionDecision.AllowSession,
+        PromptIds.AllowTurn => PermissionDecision.AllowTurn,
         PromptIds.AllowAlways => PermissionDecision.AllowAlways,
         _ => PermissionDecision.Deny
     };
@@ -156,15 +165,16 @@ public sealed class SandboxGuard
     private readonly PermissionGrantStore _grants;
     private readonly PromptService _prompts;
     private readonly HashSet<string> _sessionGrants = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, HashSet<string>> _turnGrants = new(StringComparer.Ordinal);
     private readonly object _sessionLock = new();
 
     public SandboxGuard(EventBus events, IAuditTrail audit, PermissionGrantStore grants,
-        PromptService? prompts = null)
+        PromptService? prompts = null, SettingsStore? settingsStore = null)
     {
         _events = events;
         _audit = audit;
         _grants = grants;
-        _prompts = prompts ?? new PromptService(events);
+        _prompts = prompts ?? new PromptService(events, settingsStore: settingsStore);
     }
 
     public PermissionGrantStore Grants => _grants;
@@ -193,6 +203,14 @@ public sealed class SandboxGuard
         }
     }
 
+    public void ClearTurnGrants(string turnId)
+    {
+        lock (_sessionLock)
+        {
+            _turnGrants.Remove(turnId);
+        }
+    }
+
     private static string SessionKey(string moduleId, ModuleTool tool) =>
         string.IsNullOrWhiteSpace(tool.PermissionScope)
             ? $"{moduleId}|tool:{tool.Name}"
@@ -206,6 +224,14 @@ public sealed class SandboxGuard
         }
     }
 
+    private bool IsTurnGranted(string turnId, string key)
+    {
+        lock (_sessionLock)
+        {
+            return _turnGrants.TryGetValue(turnId, out HashSet<string>? grants) && grants.Contains(key);
+        }
+    }
+
     /// <summary>Look-only access can be answered with a plain "yes". Anything that acts needs "approve".</summary>
     private static PromptRisk RiskOf(ModuleTool tool) =>
         tool.Tier == ToolTier.Reflex ||
@@ -214,8 +240,13 @@ public sealed class SandboxGuard
             : PromptRisk.Sensitive;
 
     /// <summary>Asks for permission according to the tool's tier and the user's saved grants.</summary>
+    public Task<AuthorizationOutcome> AuthorizeAsync(string moduleId, string moduleName, ModuleTool tool,
+        string plainEnglishAction, CancellationToken cancellationToken) =>
+        AuthorizeAsync(moduleId, moduleName, tool, plainEnglishAction, Guid.NewGuid().ToString("N"),
+            cancellationToken);
+
     public async Task<AuthorizationOutcome> AuthorizeAsync(string moduleId, string moduleName, ModuleTool tool,
-        string plainEnglishAction, CancellationToken cancellationToken)
+        string plainEnglishAction, string turnId, CancellationToken cancellationToken)
     {
         string auditAction = string.IsNullOrWhiteSpace(tool.PermissionScope)
             ? plainEnglishAction
@@ -230,7 +261,15 @@ public sealed class SandboxGuard
             return AuthorizationOutcome.Allowed();
         }
 
-        if (!tool.AlwaysConfirm && tool.SessionTrust && IsSessionGranted(SessionKey(moduleId, tool)))
+        string grantKey = SessionKey(moduleId, tool);
+        if (!tool.AlwaysConfirm && IsTurnGranted(turnId, grantKey))
+        {
+            await _audit.RecordAsync(moduleId, tool.Name, tool.Tier, "turn", auditAction, cancellationToken)
+                .ConfigureAwait(false);
+            return AuthorizationOutcome.Allowed();
+        }
+
+        if (!tool.AlwaysConfirm && tool.SessionTrust && IsSessionGranted(grantKey))
         {
             IrisEvent.Log("Sandbox", "permission.session_granted", LogLevel.Trace,
                 data: new Dictionary<string, string?> { ["tool"] = tool.Name, ["module"] = moduleId });
@@ -337,6 +376,19 @@ public sealed class SandboxGuard
             }
         }
 
+        if (decision == PermissionDecision.AllowTurn)
+        {
+            lock (_sessionLock)
+            {
+                if (!_turnGrants.TryGetValue(turnId, out HashSet<string>? grants))
+                {
+                    grants = new HashSet<string>(StringComparer.Ordinal);
+                    _turnGrants.Add(turnId, grants);
+                }
+                grants.Add(grantKey);
+            }
+        }
+
         if (decision == PermissionDecision.AllowAlways)
         {
             if (string.IsNullOrWhiteSpace(tool.PermissionScope))
@@ -356,6 +408,7 @@ public sealed class SandboxGuard
             _ => decision switch
             {
                 PermissionDecision.AllowOnce => "allowed-once",
+                PermissionDecision.AllowTurn => "allowed-turn",
                 PermissionDecision.AllowSession => "allowed-session",
                 PermissionDecision.AllowAlways => "allowed-always",
                 _ => "denied"

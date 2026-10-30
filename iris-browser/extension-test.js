@@ -44,6 +44,14 @@ let clicks = 0; window.document.getElementById('go').addEventListener('click', (
   assert.match(page.notice, /untrusted/);
   const idx = (kind, text) => page.elements.find((e) => e.kind === kind && e.text === text).i;
 
+  const longParagraph = window.document.createElement('p');
+  longParagraph.textContent = 'page context '.repeat(400);
+  window.document.body.appendChild(longParagraph);
+  const conciseRead = (await ask('read')).result;
+  const detailedRead = (await ask('read', { fullDetail: true })).result;
+  assert.ok(conciseRead.text.length <= 1210, 'concise page read is capped');
+  assert.ok(detailedRead.text.length > conciseRead.text.length, 'full detail is available on request');
+
   let r = await ask('focus', { index: idx('button', 'Go') });
   assert.ok(r.ok && window.document.getElementById('__iris_attention'), 'overlay drawn');
   assert.equal(window.document.getElementById('__iris_attention').style.opacity, '1');

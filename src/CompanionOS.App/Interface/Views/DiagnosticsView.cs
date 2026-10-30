@@ -37,6 +37,7 @@ public sealed class DiagnosticsView : UserControl
     private readonly StackPanel _sensingRows = new() { Spacing = Palette.SpaceSm };
     private readonly TextBlock _sensingUpdated = Ui.Text("", Palette.FontCaption, Palette.TextFaintBrush);
     private readonly ItemsControl _eventRows = new();
+    private readonly ItemsControl _turnRows = new();
     private readonly ItemsControl _diaryRows = new();
     private readonly ItemsControl _systemRows = new();
     private bool _isPaused;
@@ -44,8 +45,10 @@ public sealed class DiagnosticsView : UserControl
 
     // Truth, newest first. Plain data only; the list sorts itself out when it rebinds.
     private readonly List<DiagnosticsEntry> _eventEntries = new();
+    private readonly List<DiagnosticsEntry> _turnEntries = new();
     private readonly List<DiagnosticsEntry> _diaryEntries = new();
     private readonly List<DiagnosticsEntry> _systemEntries = new();
+    private readonly List<EventRecord> _turnRecords = new();
 
     public DiagnosticsView(PerceptionEngine perception, EventBus events)
     {
@@ -114,14 +117,16 @@ public sealed class DiagnosticsView : UserControl
         FuncDataTemplate<DiagnosticsEntry> rowTemplate = new((entry, _) =>
             entry is null ? null : RowControl(entry));
         _eventRows.ItemTemplate = rowTemplate;
+        _turnRows.ItemTemplate = rowTemplate;
         _diaryRows.ItemTemplate = rowTemplate;
         _systemRows.ItemTemplate = rowTemplate;
 
         TabItem sensingTab = new() { Header = "Sensing", Content = BuildSensingPanel() };
         TabItem eventsTab = new() { Header = "Behavior", Content = WrapList(_eventRows) };
+        TabItem turnsTab = new() { Header = "Turn receipts", Content = BuildTurnPanel() };
         TabItem logTab = new() { Header = "App diary", Content = WrapList(_diaryRows) };
         TabItem systemTab = new() { Header = "OS watch", Content = WrapList(_systemRows) };
-        TabControl tabs = new() { Items = { sensingTab, eventsTab, logTab, systemTab } };
+        TabControl tabs = new() { Items = { sensingTab, turnsTab, eventsTab, logTab, systemTab } };
 
         // Page geometry: the tab panel stretches to the window's remaining height and
         // every tab scrolls inside its own box, so long content never grows the page
@@ -141,11 +146,28 @@ public sealed class DiagnosticsView : UserControl
             Child = page
         };
 
-        foreach (EventRecord record in IrisEvent.Recent(MaximumRows).Reverse()) _eventEntries.Add(DiagnosticsEntry.ForEvent(record));
+        foreach (EventRecord record in IrisEvent.Recent(MaximumRows).Reverse())
+        {
+            _eventEntries.Add(DiagnosticsEntry.ForEvent(record));
+            if (!string.IsNullOrWhiteSpace(record.CorrelationId))
+            {
+                _turnRecords.Add(record);
+            }
+        }
+        RebuildTurnEntries();
         foreach (LogEntry entry in CompanionLog.Recent(MaximumRows).Reverse()) _diaryEntries.Add(DiagnosticsEntry.ForEntry(entry));
         foreach (string line in SystemWatch.Recent(MaximumRows).Reverse()) _systemEntries.Add(DiagnosticsEntry.ForSystemLine(line));
         RefreshSensorHealth();
         Rebind();
+    }
+
+    private Control BuildTurnPanel()
+    {
+        StackPanel content = new() { Spacing = Palette.SpaceSm };
+        content.Children.Add(Ui.Caption(
+            "Per-turn totals use correlated model, voice, prompt and tool receipts. First-token and first-audio timings appear when those events occurred."));
+        content.Children.Add(WrapList(_turnRows));
+        return content;
     }
 
     private Control BuildSensingPanel()
@@ -289,6 +311,19 @@ public sealed class DiagnosticsView : UserControl
         }
 
         Add(_eventEntries, _eventRows, DiagnosticsEntry.ForEvent(record));
+        if (!string.IsNullOrWhiteSpace(record.CorrelationId))
+        {
+            Dispatcher.UIThread.Post(() =>
+            {
+                _turnRecords.Add(record);
+                while (_turnRecords.Count > MaximumRows * 4)
+                {
+                    _turnRecords.RemoveAt(0);
+                }
+                RebuildTurnEntries();
+                Rebind(_turnRows, _turnEntries);
+            });
+        }
     }
 
     private void OnEntryWritten(LogEntry entry)
@@ -324,8 +359,29 @@ public sealed class DiagnosticsView : UserControl
     private void Rebind()
     {
         Rebind(_eventRows, _eventEntries);
+        Rebind(_turnRows, _turnEntries);
         Rebind(_diaryRows, _diaryEntries);
         Rebind(_systemRows, _systemEntries);
+    }
+
+    private void RebuildTurnEntries()
+    {
+        _turnEntries.Clear();
+        foreach (IGrouping<string, EventRecord> turn in _turnRecords
+                     .Where(record => record.CorrelationId is not null)
+                     .GroupBy(record => record.CorrelationId!, StringComparer.Ordinal)
+                     .OrderByDescending(group => group.Max(record => record.Timestamp)))
+        {
+            DiagnosticsEntry? receipt = DiagnosticsEntry.ForTurnReceipt(turn);
+            if (receipt is not null)
+            {
+                _turnEntries.Add(receipt);
+            }
+            if (_turnEntries.Count >= 100)
+            {
+                break;
+            }
+        }
     }
 
     private void Rebind(ItemsControl rows, List<DiagnosticsEntry> entries) =>
@@ -374,6 +430,73 @@ public sealed class DiagnosticsView : UserControl
             entry.Detail ?? string.Empty,
             string.Empty,
             ColorForLevel(entry.Level));
+
+        public static DiagnosticsEntry? ForTurnReceipt(IEnumerable<EventRecord> records)
+        {
+            EventRecord[] events = records.OrderBy(record => record.Timestamp).ToArray();
+            EventRecord? terminal = events.LastOrDefault(record =>
+                record.Area == "Brain" && record.Event is "turn.done" or "turn.fail" or "turn.cancelled");
+            if (terminal is null)
+            {
+                return null;
+            }
+
+            EventRecord[] toolEvents = events.Where(record =>
+                record.Area == "Modules" && record.Event is "tool.done" or "tool.refused").ToArray();
+            double toolMilliseconds = toolEvents.Sum(record => record.DurationMs ?? 0);
+            EventRecord? firstToken = events.FirstOrDefault(record =>
+                record.Area == "Model" && record.Event == "model.first_token");
+            EventRecord? firstAudio = events.FirstOrDefault(record =>
+                record.Area == "Voice" && record.Data?.ContainsKey("first_audio_ms") == true);
+
+            Queue<DateTimeOffset> promptStarts = new();
+            double promptMilliseconds = 0;
+            int promptCount = 0;
+            foreach (EventRecord record in events.Where(record =>
+                         record.Area == "Prompts" && record.Event is "prompt.shown" or "prompt.resolved"))
+            {
+                if (record.Event == "prompt.shown")
+                {
+                    promptStarts.Enqueue(record.Timestamp);
+                }
+                else if (promptStarts.TryDequeue(out DateTimeOffset shownAt))
+                {
+                    promptMilliseconds += Math.Max(0, (record.Timestamp - shownAt).TotalMilliseconds);
+                    promptCount++;
+                }
+            }
+
+            static string FormatMilliseconds(double milliseconds) => milliseconds >= 1000
+                ? $"{milliseconds / 1000:0.0}s"
+                : $"{milliseconds:0}ms";
+
+            string detail = $"tools={toolEvents.Length} ({FormatMilliseconds(toolMilliseconds)})";
+            if (firstToken?.DurationMs is { } firstTokenMs)
+            {
+                detail += $" · first token={FormatMilliseconds(firstTokenMs)}";
+            }
+            if (firstAudio?.Data?.TryGetValue("first_audio_ms", out string? firstAudioText) == true &&
+                double.TryParse(firstAudioText, System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out double firstAudioMs))
+            {
+                detail += $" · first audio={FormatMilliseconds(firstAudioMs)}";
+            }
+            if (promptCount > 0)
+            {
+                detail += $" · prompt wait={FormatMilliseconds(promptMilliseconds)}";
+            }
+
+            string state = terminal.Event switch
+            {
+                "turn.done" => "completed",
+                "turn.fail" => "failed",
+                _ => "cancelled"
+            };
+            Color tint = state == "completed" ? Palette.Success : state == "failed" ? Palette.Danger : Palette.Warning;
+            return new DiagnosticsEntry(terminal.Timestamp.ToString("HH:mm:ss.fff"), "Turn",
+                $"{state} · {terminal.CorrelationId}", detail,
+                terminal.DurationMs is { } duration ? FormatMilliseconds(duration) : string.Empty, tint);
+        }
 
         public static DiagnosticsEntry ForSystemLine(string line)
         {

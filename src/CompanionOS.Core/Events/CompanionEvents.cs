@@ -50,6 +50,7 @@ public enum ConversationPhase
     AssistantStarted,
     AssistantDelta,
     AssistantCompleted,
+    ToolPlanned,
     ToolStarted,
     ToolFinished,
     TurnFailed,
@@ -67,6 +68,7 @@ public sealed class ConversationEvent : CompanionEvent
     public string Text { get; init; } = string.Empty;
     public string? Detail { get; init; }
     public string ModuleId { get; init; } = string.Empty;
+    public string ToolName { get; init; } = string.Empty;
     public string IconKey { get; init; } = "body";
     public bool? Succeeded { get; init; }
 }

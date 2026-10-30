@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text.Json;
 using CompanionOS.Core.Configuration;
 using CompanionOS.Core.Diagnostics;
 
@@ -18,12 +19,14 @@ public sealed class KokoroTtsServerHost : IAsyncDisposable
     private readonly Func<VoiceSettings> _settings;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private Process? _process;
+    private string _activeProvider = "Unknown";
 
     public KokoroTtsServerHost(Func<VoiceSettings> settings) => _settings = settings;
 
     private VoiceSettings Options => _settings();
 
     public string Endpoint => Options.KokoroEndpoint.TrimEnd('/');
+    public string ActiveProvider => _activeProvider;
 
     public async Task<bool> StartAsync(CancellationToken cancellationToken = default)
     {
@@ -91,6 +94,8 @@ public sealed class KokoroTtsServerHost : IAsyncDisposable
             startInfo.ArgumentList.Add(modelDirectory);
             startInfo.ArgumentList.Add("--threads");
             startInfo.ArgumentList.Add(Math.Clamp(Options.KokoroMaxThreads, 1, 4).ToString());
+            startInfo.ArgumentList.Add("--provider");
+            startInfo.ArgumentList.Add(Options.KokoroProvider);
             startInfo.ArgumentList.Add("--default-voice");
             startInfo.ArgumentList.Add(string.IsNullOrWhiteSpace(Options.KokoroDefaultVoice)
                 ? "af_heart"
@@ -244,7 +249,19 @@ public sealed class KokoroTtsServerHost : IAsyncDisposable
             using HttpRequestMessage request = new(HttpMethod.Get, Endpoint + "/health");
             using HttpResponseMessage response = await SharedHealthClient.SendAsync(request, cancellationToken)
                 .ConfigureAwait(false);
-            return response.IsSuccessStatusCode;
+            if (!response.IsSuccessStatusCode)
+            {
+                return false;
+            }
+
+            using JsonDocument payload = JsonDocument.Parse(
+                await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false));
+            if (payload.RootElement.TryGetProperty("provider", out JsonElement provider) &&
+                provider.ValueKind == JsonValueKind.String)
+            {
+                _activeProvider = provider.GetString() ?? "Unknown";
+            }
+            return true;
         }
         catch
         {

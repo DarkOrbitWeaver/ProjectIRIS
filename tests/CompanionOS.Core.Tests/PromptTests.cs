@@ -475,6 +475,8 @@ public sealed class SandboxSessionTrustTests
                 asked++;
                 Assert.False(payload.Request.CanTrustSession);
                 Assert.False(payload.Request.CanAlwaysAllow);
+                Assert.DoesNotContain(payload.Request.Prompt.Options,
+                    option => option.Id == PromptIds.AllowTurn);
                 payload.Request.Answer(PermissionDecision.AllowSession);
             });
             ModuleTool type = new("browser_type", "Type.", ToolTier.SystemCritical, "{}")
@@ -520,6 +522,85 @@ public sealed class SandboxSessionTrustTests
         {
             Directory.Delete(folder, recursive: true);
         }
+    }
+}
+
+public sealed class SandboxTurnGrantTests
+{
+    [Fact]
+    public async Task TurnGrantIsLimitedToItsTurnAndCanBeCleared()
+    {
+        string folder = Path.Combine(Path.GetTempPath(), $"iris-turn-grant-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(folder);
+        EventBus events = new();
+        SandboxGuard guard = new(events, new FileAuditTrail(Path.Combine(folder, "audit.jsonl")),
+            new PermissionGrantStore(Path.Combine(folder, "permissions.json")));
+        int asked = 0;
+        using IDisposable subscription = events.Subscribe<PermissionRequestedEvent>(payload =>
+        {
+            asked++;
+            Assert.Contains(payload.Request.Prompt.Options,
+                option => option.Id == PromptIds.AllowTurn && !option.VoiceAllowed);
+            payload.Request.Answer(PermissionDecision.AllowTurn);
+        });
+        ModuleTool tool = new("browser_read_page", "Read the current page.", ToolTier.SystemCritical, "{}");
+
+        try
+        {
+            Assert.True((await guard.AuthorizeAsync("plugin:browser", "Browser", tool,
+                "Read the page.", "turn-a", CancellationToken.None)).IsAllowed);
+            Assert.True((await guard.AuthorizeAsync("plugin:browser", "Browser", tool,
+                "Read the page again.", "turn-a", CancellationToken.None)).IsAllowed);
+            Assert.True((await guard.AuthorizeAsync("plugin:browser", "Browser", tool,
+                "Read the page.", "turn-b", CancellationToken.None)).IsAllowed);
+            Assert.Equal(2, asked);
+
+            guard.ClearTurnGrants("turn-a");
+            Assert.True((await guard.AuthorizeAsync("plugin:browser", "Browser", tool,
+                "Read the page once more.", "turn-a", CancellationToken.None)).IsAllowed);
+            Assert.Equal(3, asked);
+        }
+        finally
+        {
+            Directory.Delete(folder, recursive: true);
+        }
+    }
+}
+
+public sealed class RememberedPromptChoiceTests
+{
+    [Fact]
+    public async Task OnlyAnExplicitlyRememberedChoiceIsReusedForTheSamePrompt()
+    {
+        EventBus events = new();
+        PromptService service = new(events);
+        PromptRequest request = new()
+        {
+            Question = "Which format should I use?",
+            Options = new[]
+            {
+                new PromptOption("mp3", "MP3"),
+                new PromptOption("wav", "WAV")
+            },
+            AllowRemembering = true
+        };
+        IrisPrompt first = service.Build(request, "core", "Core", "chat");
+        first.SetRememberChoice(true);
+
+        Task<PromptAnswer> pending = service.AskAsync(first, CancellationToken.None);
+        Assert.True(service.Answer(first.Id, "wav"));
+        Assert.Equal("wav", (await pending).OptionId);
+        Assert.Equal(1, service.RememberedChoiceCount);
+
+        IrisPrompt repeated = service.Build(request, "core", "Core", "chat");
+        PromptAnswer remembered = await service.AskAsync(repeated, CancellationToken.None);
+        Assert.Equal("wav", remembered.OptionId);
+        Assert.Equal(PromptSource.Remembered, remembered.Source);
+
+        IrisPrompt otherOwner = service.Build(request, "plugin:other", "Other", "body");
+        Assert.False(otherOwner.IsResolved);
+        service.ClearRememberedChoices();
+        Assert.Equal(0, service.RememberedChoiceCount);
     }
 }
 

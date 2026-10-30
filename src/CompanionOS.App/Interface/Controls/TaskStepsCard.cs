@@ -52,6 +52,36 @@ public sealed class TaskStepsCard : Border, IDisposable
         entry.Steps.CollectionChanged += OnStepsChanged;
     }
 
+    protected override void OnAttachedToVisualTree(VisualTreeAttachmentEventArgs e)
+    {
+        base.OnAttachedToVisualTree(e);
+        foreach (StepRow row in _rowByStep.Values)
+        {
+            row.UpdateAnimation();
+        }
+    }
+
+    protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
+    {
+        foreach (StepRow row in _rowByStep.Values)
+        {
+            row.UpdateAnimation();
+        }
+        base.OnDetachedFromVisualTree(e);
+    }
+
+    protected override void OnPropertyChanged(AvaloniaPropertyChangedEventArgs change)
+    {
+        base.OnPropertyChanged(change);
+        if (change.Property == IsVisibleProperty)
+        {
+            foreach (StepRow row in _rowByStep.Values)
+            {
+                row.UpdateAnimation();
+            }
+        }
+    }
+
     private void OnStepsChanged(object? sender, NotifyCollectionChangedEventArgs eventArgs)
     {
         Dispatcher.UIThread.Post(() =>
@@ -139,6 +169,7 @@ public sealed class TaskStepsCard : Border, IDisposable
         private readonly PropertyChangedEventHandler _stepChangedHandler;
         private DispatcherTimer? _timer;
         private bool _disposed;
+        private bool _isAttached;
 
         public StepRow(ToolStep step)
         {
@@ -199,6 +230,20 @@ public sealed class TaskStepsCard : Border, IDisposable
             step.PropertyChanged += _stepChangedHandler;
         }
 
+        protected override void OnAttachedToVisualTree(VisualTreeAttachmentEventArgs e)
+        {
+            base.OnAttachedToVisualTree(e);
+            _isAttached = true;
+            UpdateAnimation();
+        }
+
+        protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
+        {
+            _isAttached = false;
+            UpdateAnimation();
+            base.OnDetachedFromVisualTree(e);
+        }
+
         private void Refresh()
         {
             if (_disposed)
@@ -232,7 +277,7 @@ public sealed class TaskStepsCard : Border, IDisposable
             {
                 case StepStatus.Running:
                     _glyphHost.Children.Add(MakeSpinner());
-                    StartSpin();
+                    UpdateAnimation();
                     break;
                 case StepStatus.Done:
                     _glyphHost.Children.Add(IconGlyph.Make(IconGlyph.Check16, 16, Palette.SuccessBrush));
@@ -279,6 +324,18 @@ public sealed class TaskStepsCard : Border, IDisposable
                 RenderTransform = _spin
             };
             return arc;
+        }
+
+        public void UpdateAnimation()
+        {
+            if (_step.Status == StepStatus.Running && IsVisible && _isAttached)
+            {
+                StartSpin();
+            }
+            else
+            {
+                StopSpin();
+            }
         }
 
         private void StartSpin()

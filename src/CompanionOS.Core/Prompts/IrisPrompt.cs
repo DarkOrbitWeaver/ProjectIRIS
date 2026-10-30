@@ -35,6 +35,7 @@ public enum PromptSource
     Button,
     Voice,
     Typed,
+    Remembered,
     Timeout,
     Cancelled
 }
@@ -54,6 +55,7 @@ public static class PromptIds
     public const string Deny = "deny";
     public const string AllowOnce = "allow_once";
     public const string AllowSession = "allow_session";
+    public const string AllowTurn = "allow_turn";
     public const string AllowAlways = "allow_always";
     public const string Yes = "yes";
     public const string No = "no";
@@ -81,7 +83,7 @@ public sealed record PromptAnswer(string OptionId, PromptSource Source, string? 
     public bool WasCancelled => Source == PromptSource.Cancelled;
 
     /// <summary>True only when a real person picked something.</summary>
-    public bool IsDeliberate => Source is PromptSource.Button or PromptSource.Voice or PromptSource.Typed;
+    public bool IsDeliberate => Source is PromptSource.Button or PromptSource.Voice or PromptSource.Typed or PromptSource.Remembered;
 }
 
 /// <summary>What a module sends to ask something. Iris decides how it is shown and heard.</summary>
@@ -108,6 +110,9 @@ public sealed class PromptRequest
 
     /// <summary>Read the question and options aloud when she is awake.</summary>
     public bool SpeakAloud { get; init; } = true;
+
+    /// <summary>Show an explicit "Remember this choice" toggle for short choice prompts.</summary>
+    public bool AllowRemembering { get; init; }
 }
 
 /// <summary>
@@ -153,6 +158,9 @@ public sealed class IrisPrompt
     public string OwnerId { get; }
     public string OwnerName { get; }
     public string IconKey { get; }
+    public bool CanRememberChoice { get; init; }
+    public string? RememberChoiceKey { get; init; }
+    public bool RememberChoice { get; private set; }
 
     /// <summary>Optional small line under the question: "Access: browser.act".</summary>
     public string? Detail { get; init; }
@@ -200,6 +208,8 @@ public sealed class IrisPrompt
     public int FirstVisibleNumber => Kind == PromptKind.Numbered ? _pageIndex * NumberedPageSize + 1 : 1;
 
     public void SetHint(string hint) => Hint = hint;
+
+    public void SetRememberChoice(bool remember) => RememberChoice = remember;
 
     /// <summary>Moves a numbered list by one page. Returns false at either end.</summary>
     public bool Page(int delta)

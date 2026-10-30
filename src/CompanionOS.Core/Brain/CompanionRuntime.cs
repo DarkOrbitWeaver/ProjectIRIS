@@ -126,7 +126,7 @@ public sealed class CompanionRuntime : IAsyncDisposable
         SynapticMemoryEngine memory = new(graph, settings, events);
         FileAuditTrail auditTrail = FileAuditTrail.CreateDefault();
         PermissionGrantStore grants = PermissionGrantStore.CreateDefault();
-        SandboxGuard sandbox = new(events, auditTrail, grants);
+        SandboxGuard sandbox = new(events, auditTrail, grants, settingsStore: settings);
         ModuleHost modules = new(settings, events, sandbox, memory);
 
         PerceptionEngine perception = new(settings, events);

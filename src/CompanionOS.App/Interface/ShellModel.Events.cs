@@ -161,24 +161,52 @@ public sealed partial class ShellModel : ObservableObject
                 LastUtterance = payload.Text;
                 break;
 
-            case ConversationPhase.ToolStarted:
+            case ConversationPhase.ToolPlanned:
             {
-                BeginActivity(payload.TurnId, payload.Text, payload.Detail ?? "Module", "Working", payload.IconKey);
                 ChatEntry card = StepsCardFor(payload.TurnId);
                 card.Steps.Add(new ToolStep
                 {
                     Label = payload.Text,
                     IconKey = payload.IconKey,
                     ModuleName = payload.Detail ?? "Module",
-                    Status = StepStatus.Running,
-                    PermissionNote = TakePendingPermissionNote()
+                    ModuleId = payload.ModuleId,
+                    ToolName = payload.ToolName,
+                    Status = StepStatus.Waiting
                 });
+                break;
+            }
+
+            case ConversationPhase.ToolStarted:
+            {
+                BeginActivity(payload.TurnId, payload.Text, payload.Detail ?? "Module", "Working", payload.IconKey);
+                ToolStep? planned = FindStep(payload.TurnId, payload.ToolName, StepStatus.Waiting);
+                if (planned is not null)
+                {
+                    planned.Status = StepStatus.Running;
+                    planned.PermissionNote = TakePendingPermissionNote();
+                }
+                else
+                {
+                    ChatEntry card = StepsCardFor(payload.TurnId);
+                    card.Steps.Add(new ToolStep
+                    {
+                        Label = payload.Text,
+                        IconKey = payload.IconKey,
+                        ModuleName = payload.Detail ?? "Module",
+                        ModuleId = payload.ModuleId,
+                        ToolName = payload.ToolName,
+                        Status = StepStatus.Running,
+                        PermissionNote = TakePendingPermissionNote()
+                    });
+                }
                 break;
             }
 
             case ConversationPhase.ToolFinished:
             {
-                ToolStep? running = FindRunningStep(payload.TurnId);
+                ToolStep? running = FindStep(payload.TurnId, payload.ToolName, StepStatus.Running) ??
+                                    FindStep(payload.TurnId, payload.ToolName, StepStatus.Waiting) ??
+                                    FindRunningStep(payload.TurnId);
                 if (running is not null)
                 {
                     if (_pendingAnswerLabel.Length > 0)
@@ -186,6 +214,11 @@ public sealed partial class ShellModel : ObservableObject
                         running.Label = _pendingAnswerLabel;
                         running.Status = StepStatus.Answered;
                         _pendingAnswerLabel = string.Empty;
+                    }
+                    else if (payload.Succeeded == false && _pendingPermissionNote.Length > 0)
+                    {
+                        running.Status = StepStatus.Denied;
+                        running.PermissionNote = TakePendingPermissionNote();
                     }
                     else
                     {
@@ -244,7 +277,8 @@ public sealed partial class ShellModel : ObservableObject
         foreach (ChatEntry entry in Messages.Where(message =>
                      message.Role == ChatRole.Tool && message.TurnId == turnId))
         {
-            foreach (ToolStep step in entry.Steps.Where(step => step.Status == StepStatus.Running))
+            foreach (ToolStep step in entry.Steps.Where(step =>
+                         step.Status is StepStatus.Running or StepStatus.Waiting))
             {
                 step.Status = StepStatus.Stopped;
                 step.Detail = outcome;
@@ -272,6 +306,32 @@ public sealed partial class ShellModel : ObservableObject
             ChatEntry entry = Messages[index];
             if (entry.Role == ChatRole.Tool && entry.TurnId == turnId &&
                 entry.RunningStep is { } step)
+            {
+                return step;
+            }
+        }
+        return null;
+    }
+
+    private ToolStep? FindStep(string turnId, string toolName, StepStatus status)
+    {
+        if (string.IsNullOrWhiteSpace(toolName))
+        {
+            return null;
+        }
+
+        for (int index = Messages.Count - 1; index >= 0; index--)
+        {
+            ChatEntry entry = Messages[index];
+            if (entry.Role != ChatRole.Tool || entry.TurnId != turnId)
+            {
+                continue;
+            }
+
+            ToolStep? step = entry.Steps.LastOrDefault(candidate =>
+                candidate.Status == status &&
+                candidate.ToolName.Equals(toolName, StringComparison.OrdinalIgnoreCase));
+            if (step is not null)
             {
                 return step;
             }
@@ -456,6 +516,7 @@ public sealed partial class ShellModel : ObservableObject
             PromptSource.Voice => "by voice",
             PromptSource.Typed => "typed",
             PromptSource.Button => "button",
+            PromptSource.Remembered => "remembered",
             _ => string.Empty
         };
         string stamp = how.Length == 0 ? notice.At.ToString("HH:mm") : $"{how} · {notice.At:HH:mm}";
@@ -500,6 +561,7 @@ public sealed partial class ShellModel : ObservableObject
             PromptSource.Voice => "by voice",
             PromptSource.Typed => "typed",
             PromptSource.Button => "button",
+            PromptSource.Remembered => "remembered",
             _ => string.Empty
         };
         string question = prompt.Question;

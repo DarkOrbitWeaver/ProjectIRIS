@@ -441,6 +441,7 @@ public sealed class LlamaServerHost : IAsyncDisposable
         // the history (window trimming) instead of reusing only the strict common
         // token prefix that the trim just shortened.
         arguments.AddRange(new[] { "--cache-reuse", "256" });
+        arguments.AddRange(new[] { "--ubatch-size", "512" });
 
         // The server otherwise keeps a small web UI alive; she serves nothing at this
         // endpoint but her own completions.

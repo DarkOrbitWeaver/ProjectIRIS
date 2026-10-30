@@ -112,6 +112,7 @@ public sealed class ModelClient : IDisposable
         IReadOnlyList<int>? historySpanLengths = null,
         int currentTurnStartIndex = 1)
     {
+        long requestStarted = System.Diagnostics.Stopwatch.GetTimestamp();
         FittedPrompt fitted = FitPrompt(profile, messages, tools, historySpanLengths, currentTurnStartIndex);
         HttpResponseMessage response = await SendRequestAsync(profile, fitted, cancellationToken).ConfigureAwait(false);
 
@@ -158,6 +159,7 @@ public sealed class ModelClient : IDisposable
         int promptTokens = 0;
         int completionTokens = 0;
         bool toolCallSignalled = false;
+        bool firstTokenLogged = false;
 
         while (!reader.EndOfStream)
         {
@@ -228,6 +230,13 @@ public sealed class ModelClient : IDisposable
             string? contentPiece = delta["content"]?.GetValue<string>();
             if (!string.IsNullOrEmpty(contentPiece))
             {
+                if (!firstTokenLogged)
+                {
+                    firstTokenLogged = true;
+                    IrisEvent.Log("Model", "model.first_token", LogLevel.Debug,
+                        durationMs: System.Diagnostics.Stopwatch.GetElapsedTime(requestStarted).TotalMilliseconds,
+                        data: new Dictionary<string, string?> { ["kind"] = "text" });
+                }
                 textBuilder.Append(contentPiece);
                 if (onTextDelta is not null)
                 {
@@ -243,6 +252,13 @@ public sealed class ModelClient : IDisposable
                 if (toolCallArray.Count > 0 && !toolCallSignalled)
                 {
                     toolCallSignalled = true;
+                    if (!firstTokenLogged)
+                    {
+                        firstTokenLogged = true;
+                        IrisEvent.Log("Model", "model.first_token", LogLevel.Debug,
+                            durationMs: System.Diagnostics.Stopwatch.GetElapsedTime(requestStarted).TotalMilliseconds,
+                            data: new Dictionary<string, string?> { ["kind"] = "tool_call" });
+                    }
                     onToolCallStarted?.Invoke();
                 }
 

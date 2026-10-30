@@ -31,8 +31,7 @@ public sealed class PluginModuleAdapter : IAssistantModule, IModuleSurfaceProvid
                     tool.Background ? tool.Description + " This runs in the background and returns a task id; use background-task status or cancel tools to follow it." : tool.Description,
                 ToolTier.SystemCritical,
                 string.IsNullOrWhiteSpace(tool.Schema) ? "{\"type\":\"object\"}" : tool.Schema,
-                tool.Name,
-                tool.Description)
+                new[] { tool.Name }.Concat(tool.RoutingKeywords ?? new List<string>()).ToArray())
             {
                 PermissionScope = tool.Permission,
                 BackgroundCapable = tool.Background,
@@ -133,7 +132,7 @@ public sealed class PluginModuleAdapter : IAssistantModule, IModuleSurfaceProvid
 
         return result.Ok
             ? ToolResult.Ok(string.IsNullOrWhiteSpace(result.Text) ? "The plugin completed." : result.Text,
-                displayText: result.Text)
+                spokenText: result.SpokenText, displayText: result.Text)
             : ToolResult.Fail(ComposePluginFailure(result));
     }
 

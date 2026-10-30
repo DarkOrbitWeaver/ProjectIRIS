@@ -290,8 +290,6 @@ public sealed class ModuleHost : IAsyncDisposable
     /// </summary>
     public IReadOnlyList<ModuleTool> RouteTools(string userMessage, out IReadOnlyList<IAssistantModule> selectedModules)
     {
-        _ = userMessage; // The router no longer judges the sentence; the model decides.
-
         List<IAssistantModule> enabled;
         lock (_registryLock)
         {
@@ -304,6 +302,9 @@ public sealed class ModuleHost : IAsyncDisposable
         // can never cut her permanent reflexes before an optional module's tools.
         List<IAssistantModule> ordered = enabled
             .OrderByDescending(module => module.AlwaysAvailable)
+            .ThenByDescending(module => module.Tools.Any(tool =>
+                tool.RoutingKeywords.Any(keyword =>
+                    userMessage.Contains(keyword, StringComparison.OrdinalIgnoreCase))))
             .ToList();
 
         List<ModuleTool> routedTools = new();
@@ -333,6 +334,36 @@ public sealed class ModuleHost : IAsyncDisposable
 
         selectedModules = ordered;
         return routedTools;
+    }
+
+    /// <summary>Shows validated tool calls as waiting rows before any action or permission prompt begins.</summary>
+    public void PlanTool(string turnId, string toolName, JsonElement arguments)
+    {
+        IAssistantModule? owner;
+        ModuleTool? tool;
+        lock (_registryLock)
+        {
+            owner = _toolOwners.GetValueOrDefault(toolName);
+            tool = owner?.Tools.FirstOrDefault(candidate =>
+                candidate.Name.Equals(toolName, StringComparison.OrdinalIgnoreCase));
+        }
+
+        if (owner is null || tool is null || !IsEnabled(owner.Id) ||
+            !ToolSchemaValidator.TryValidate(arguments, tool.ParametersJson, out _))
+        {
+            return;
+        }
+
+        _events.Publish(new ConversationEvent
+        {
+            Phase = ConversationPhase.ToolPlanned,
+            TurnId = turnId,
+            Text = ToolPresentationCatalog.Resolve(tool, arguments).Doing,
+            Detail = owner.DisplayName,
+            ModuleId = owner.Id,
+            ToolName = tool.Name,
+            IconKey = ToolIconKey(owner, tool, arguments)
+        });
     }
 
     /// <summary>
@@ -460,7 +491,8 @@ public sealed class ModuleHost : IAsyncDisposable
         }
 
         AuthorizationOutcome authorization = await _sandbox
-            .AuthorizeAsync(owner.Id, owner.DisplayName, tool, DescribeAction(owner, tool, arguments), cancellationToken)
+            .AuthorizeAsync(owner.Id, owner.DisplayName, tool, DescribeAction(owner, tool, arguments), turnId,
+                cancellationToken)
             .ConfigureAwait(false);
 
         if (!authorization.IsAllowed)
@@ -479,6 +511,7 @@ public sealed class ModuleHost : IAsyncDisposable
                 Text = ToolPresentationCatalog.Resolve(tool, arguments).Doing,
                 Detail = owner.DisplayName,
                 ModuleId = owner.Id,
+                ToolName = tool.Name,
                 IconKey = ToolIconKey(owner, tool, arguments)
             });
             try
@@ -508,6 +541,9 @@ public sealed class ModuleHost : IAsyncDisposable
             publishConversationEvents: true, isBackground: false).ConfigureAwait(false);
     }
 
+    /// <summary>Discards short-lived permission grants when the originating turn ends.</summary>
+    public void CompleteTurn(string turnId) => _sandbox.ClearTurnGrants(turnId);
+
     private async Task<ToolResult> ExecuteAuthorizedToolAsync(IAssistantModule owner, ModuleTool tool,
         JsonElement arguments, string turnId, CancellationToken cancellationToken, bool publishConversationEvents,
         bool isBackground)
@@ -524,6 +560,7 @@ public sealed class ModuleHost : IAsyncDisposable
                 Text = ToolPresentationCatalog.Resolve(tool, arguments).Doing,
                 Detail = owner.DisplayName,
                 ModuleId = owner.Id,
+                ToolName = tool.Name,
                 IconKey = ToolIconKey(owner, tool, arguments)
             });
         }
@@ -587,6 +624,17 @@ public sealed class ModuleHost : IAsyncDisposable
             result = ToolResult.Fail($"That failed: {exception.Message}");
         }
 
+        if (!isBackground && !result.Succeeded && !result.IsOutcomeUncertain &&
+            ToolPresentationCatalog.AccessOf(tool) == ToolAccess.Reads &&
+            !cancellationToken.IsCancellationRequested)
+        {
+            IrisEvent.Log("Modules", "tool.read_retry", LogLevel.Info,
+                message: $"Retrying the failed read-only tool '{tool.Name}' once.",
+                data: new Dictionary<string, string?> { ["tool"] = tool.Name, ["turn"] = turnId });
+            result = await RetryReadOnlyToolAsync(owner, invocation, tool, cancellationToken)
+                .ConfigureAwait(false);
+        }
+
         double elapsed = System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds;
         if (publishConversationEvents)
         {
@@ -607,6 +655,48 @@ public sealed class ModuleHost : IAsyncDisposable
             });
 
         return result;
+    }
+
+    private static async Task<ToolResult> RetryReadOnlyToolAsync(IAssistantModule owner, ToolInvocation invocation,
+        ModuleTool tool, CancellationToken cancellationToken)
+    {
+        using CancellationTokenSource timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutSource.CancelAfter(TimeSpan.FromSeconds(tool.TimeoutSeconds ?? ToolTimeoutSeconds));
+
+        try
+        {
+            Task<ToolResult> execution = owner.ExecuteAsync(invocation, timeoutSource.Token);
+            Task finished = await Task.WhenAny(execution, Task.Delay(Timeout.Infinite, timeoutSource.Token))
+                .ConfigureAwait(false);
+            if (finished == execution)
+            {
+                return await execution.ConfigureAwait(false);
+            }
+
+            _ = execution.ContinueWith(task =>
+            {
+                Exception fault = task.Exception!.GetBaseException();
+                CompanionLog.Warning("Modules",
+                    $"Late result from retried read-only tool '{tool.Name}': {fault.Message}.");
+            }, CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+            cancellationToken.ThrowIfCancellationRequested();
+            return ToolResult.Uncertain($"The read-only retry for {tool.Name} also timed out.");
+        }
+        catch (OperationCanceledException)
+        {
+            if (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            return ToolResult.Uncertain($"The read-only retry for {tool.Name} was stopped part-way through.");
+        }
+        catch (Exception exception)
+        {
+            CompanionLog.Warning("Modules", $"Read-only retry for '{tool.Name}' failed: {exception.Message}");
+            return ToolResult.Fail($"The read-only retry also failed: {exception.Message}");
+        }
     }
 
     /// <summary>
@@ -761,6 +851,7 @@ public sealed class ModuleHost : IAsyncDisposable
             Text = result.Succeeded ? words.Done : words.Failed,
             Detail = result.Succeeded ? result.DisplayText ?? result.ModelText : result.ModelText,
             ModuleId = owner.Id,
+            ToolName = tool.Name,
             IconKey = ToolIconKey(owner, tool, arguments),
             Succeeded = result.Succeeded
         });
@@ -783,6 +874,7 @@ public sealed class ModuleHost : IAsyncDisposable
             Text = ToolPresentationCatalog.Resolve(tool, arguments).Doing,
             Detail = owner.DisplayName,
             ModuleId = owner.Id,
+            ToolName = tool.Name,
             IconKey = ToolIconKey(owner, tool, arguments)
         });
     }

@@ -25,7 +25,8 @@ public sealed record BackgroundTaskSnapshot(
     double? Total,
     string? Result,
     DateTimeOffset StartedAt,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt,
+    string? SpokenText = null);
 
 /// <summary>The narrow task controls made available to Iris's own task tools.</summary>
 public interface IBackgroundTaskAccess
@@ -143,6 +144,7 @@ public sealed class BackgroundTaskManager : IBackgroundTaskAccess, IAsyncDisposa
     private async Task RunAsync(Entry entry,
         Func<string, CancellationToken, Task<ToolResult>> execute)
     {
+        using IDisposable correlationScope = IrisEvent.BeginCorrelationScope(entry.Id);
         bool acquired = false;
         try
         {
@@ -155,7 +157,8 @@ public sealed class BackgroundTaskManager : IBackgroundTaskAccess, IAsyncDisposa
                 cancelled ? BackgroundTaskState.Cancelled :
                     result.Succeeded ? BackgroundTaskState.Completed : BackgroundTaskState.Failed,
                 cancelled ? "Stopped" : result.Succeeded ? "Done" : "Failed",
-                cancelled ? "Cancelled by the user." : Clip(result.DisplayText ?? result.ModelText));
+                cancelled ? "Cancelled by the user." : Clip(result.DisplayText ?? result.ModelText),
+                cancelled ? null : Clip(result.SpokenText));
         }
         catch (OperationCanceledException)
         {
@@ -199,7 +202,8 @@ public sealed class BackgroundTaskManager : IBackgroundTaskAccess, IAsyncDisposa
         Publish(updated);
     }
 
-    private void SetState(Entry entry, BackgroundTaskState state, string step, string? result)
+    private void SetState(Entry entry, BackgroundTaskState state, string step, string? result,
+        string? spokenText = null)
     {
         BackgroundTaskSnapshot updated;
         lock (_gate)
@@ -209,6 +213,7 @@ public sealed class BackgroundTaskManager : IBackgroundTaskAccess, IAsyncDisposa
                 State = state,
                 CurrentStep = step,
                 Result = result,
+                SpokenText = spokenText,
                 UpdatedAt = DateTimeOffset.Now
             };
             entry.Snapshot = updated;

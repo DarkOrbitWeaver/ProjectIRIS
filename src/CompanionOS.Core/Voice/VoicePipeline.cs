@@ -2,6 +2,7 @@ using CompanionOS.Core.Brain;
 using CompanionOS.Core.Configuration;
 using CompanionOS.Core.Diagnostics;
 using CompanionOS.Core.Events;
+using CompanionOS.Core.Prompts;
 
 namespace CompanionOS.Core.Voice;
 
@@ -51,6 +52,7 @@ public sealed class VoicePipeline : IAsyncDisposable
     private readonly PocketTtsServerHost _pocketHost;
     private readonly KokoroTtsServerHost _kokoroHost;
     private readonly IDisposable _settingsChangedSubscription;
+    private readonly IDisposable _promptChangedSubscription;
     private readonly SpeechOutputArbiter _speechOutputArbiter = new();
     private readonly object _wakeSampleLock = new();
     private TaskCompletionSource<string>? _wakeSampleCapture;
@@ -62,6 +64,7 @@ public sealed class VoicePipeline : IAsyncDisposable
     private List<float> _speechSegment = new();
     private bool _isSegmentOpen;
     private int _silenceMilliseconds;
+    private int _promptActive;
     private double _noiseFloor = 0.004;
     private int _microphoneDiagnosticActive;
     private long _microphoneDiagnosticRmsBits;
@@ -157,6 +160,8 @@ public sealed class VoicePipeline : IAsyncDisposable
         // without a restart: what the picker wrote is what plays next.
         _settingsChangedSubscription = events.Subscribe<SettingsChangedEvent>(_ => _player.DeviceNumber =
             _settings.Current.Voice.OutputDeviceNumber);
+        _promptChangedSubscription = events.Subscribe<PromptChangedEvent>(change =>
+            Interlocked.Exchange(ref _promptActive, change.Active is null ? 0 : 1));
     }
 
     /// <summary>Her locked voice identity.</summary>
@@ -186,6 +191,9 @@ public sealed class VoicePipeline : IAsyncDisposable
 
     /// <summary>True while audio is playing.</summary>
     public bool IsSpeaking => _player.IsPlaying;
+
+    /// <summary>The provider Kokoro actually initialized, or Unknown before its worker reports health.</summary>
+    public string KokoroActiveProvider => _kokoroHost.ActiveProvider;
 
     /// <summary>When true, nothing is spoken aloud but listening still works.</summary>
     public bool IsMuted { get; set; }
@@ -1256,6 +1264,7 @@ public sealed class VoicePipeline : IAsyncDisposable
         }
         await _speechOutputArbiter.DrainAsync().ConfigureAwait(false);
         _settingsChangedSubscription.Dispose();
+        _promptChangedSubscription.Dispose();
         _microphone.SamplesAvailable -= OnMicrophoneSamples;
         _microphone.LevelChanged -= OnMicrophoneLevel;
         _player.AmplitudeChanged -= OnSpokenAmplitude;
@@ -1434,7 +1443,13 @@ public sealed class VoicePipeline : IAsyncDisposable
             _speechSegment.AddRange(samples);
             _silenceMilliseconds += (int)(samples.Length / 16.0);
 
-            if (_silenceMilliseconds >= _settings.Current.Ears.SilenceMilliseconds)
+            int silenceThreshold = _settings.Current.Ears.SilenceMilliseconds;
+            if (Volatile.Read(ref _promptActive) != 0)
+            {
+                silenceThreshold = Math.Min(silenceThreshold, 350);
+            }
+
+            if (_silenceMilliseconds >= silenceThreshold)
             {
                 CloseSegmentLocked();
             }

@@ -194,7 +194,12 @@ public sealed class CoreToolsModule : IAssistantModule
                 }
 
                 PromptAnswer answer = await context.Prompts.AskAsync(
-                    new PromptRequest { Question = question, Options = options }, cancellationToken)
+                    new PromptRequest
+                    {
+                        Question = question,
+                        Options = options,
+                        AllowRemembering = options.Count <= 4
+                    }, cancellationToken)
                     .ConfigureAwait(false);
                 PromptOption? chosen = answer.IsDeliberate
                     ? options.FirstOrDefault(option => option.Id == answer.OptionId)

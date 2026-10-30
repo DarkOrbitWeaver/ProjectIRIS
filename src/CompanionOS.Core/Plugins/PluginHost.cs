@@ -185,7 +185,8 @@ public sealed class PluginHost : IDisposable
                 DoneLabel = policy?.DoneLabel,
                 Icon = policy?.Icon,
                 Access = policy?.Access,
-                TimeoutSeconds = policy?.TimeoutSeconds
+                TimeoutSeconds = policy?.TimeoutSeconds,
+                RoutingKeywords = policy?.RoutingKeywords ?? tool.RoutingKeywords
             };
         }).ToList();
 
@@ -998,7 +999,12 @@ public sealed class PluginHost : IDisposable
                                 structured.TryGetProperty("isOutcomeUncertain", out JsonElement uncertainElement) &&
                                 uncertainElement.ValueKind == JsonValueKind.True;
         string text = RedactSecrets(ExtractText(lat), connection.SecretValues.Values);
-        return new PluginResult(!isError, text, isError ? text : null, outcomeUncertain);
+        string? spokenText = structured.ValueKind == JsonValueKind.Object &&
+                             structured.TryGetProperty("spoken", out JsonElement spokenElement) &&
+                             spokenElement.ValueKind == JsonValueKind.String
+            ? RedactSecrets(spokenElement.GetString() ?? string.Empty, connection.SecretValues.Values)
+            : null;
+        return new PluginResult(!isError, text, isError ? text : null, outcomeUncertain, spokenText);
     }
 
     private async Task<McpConnection> GetMcpAsync(PluginManifest plugin, CancellationToken cancellationToken)

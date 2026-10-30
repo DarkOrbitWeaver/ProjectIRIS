@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import math
 import sys
 import threading
 import time
@@ -48,25 +49,41 @@ def receipt(event: str, **fields) -> None:
     print(f"receipt {event} {payload}", flush=True)
 
 
-def load_kokoro(model_path: str, voices_path: str, threads: int, default_voice: str) -> Kokoro:
+def load_kokoro(model_path: str, voices_path: str, threads: int, default_voice: str,
+                providers: list[object] | None = None) -> tuple[Kokoro, list[str]]:
     options = ort.SessionOptions()
     options.intra_op_num_threads = threads
     options.inter_op_num_threads = 1
     options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
     options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+    if providers and providers[0] == "DmlExecutionProvider":
+        options.enable_mem_pattern = False
     options.add_session_config_entry("session.intra_op.allow_spinning", "0")
     options.add_session_config_entry("session.inter_op.allow_spinning", "0")
     session = ort.InferenceSession(model_path, sess_options=options,
-                                   providers=["CPUExecutionProvider"])
+                                   providers=providers or ["CPUExecutionProvider"])
     kokoro = Kokoro.from_session(session, voices_path)
     kokoro.create("Ready.", voice=default_voice, speed=1.0, lang="en-us")
-    return kokoro
+    return kokoro, session.get_providers()
+
+
+def measure_rtf(kokoro: Kokoro, voice: str) -> float:
+    text = "Downloading the lofi mix as an MP3 now, I'll tell you when it's saved."
+    started = time.perf_counter()
+    audio, rate = kokoro.create(text, voice=voice, speed=1.0, lang="en-us")
+    if rate <= 0 or len(audio) == 0:
+        raise RuntimeError("The provider trial produced no audio.")
+    rtf = (time.perf_counter() - started) / (len(audio) / rate)
+    if not math.isfinite(rtf):
+        raise RuntimeError("The provider trial produced an invalid timing.")
+    return rtf
 
 
 class _State:
     kokoro: Kokoro | None = None
     voices: list[str] = []
     infer_lock = threading.Lock()
+    provider = "CPUExecutionProvider"
 
 
 def build_handler(args: argparse.Namespace, state: _State) -> type[BaseHTTPRequestHandler]:
@@ -111,6 +128,7 @@ def build_handler(args: argparse.Namespace, state: _State) -> type[BaseHTTPReque
                 self._send_json(200, {
                     "ok": state.kokoro is not None,
                     "engine": "kokoro",
+                    "provider": state.provider,
                     "voices": len(state.voices),
                 })
                 return
@@ -203,6 +221,7 @@ def main() -> int:
     parser.add_argument("--voices-file", default="voices-v1.0.bin")
     parser.add_argument("--threads", type=int, default=2)
     parser.add_argument("--default-voice", default="af_heart")
+    parser.add_argument("--provider", choices=("cpu", "dml"), default="cpu")
     args = parser.parse_args()
 
     model_dir = Path(args.model_dir)
@@ -215,8 +234,35 @@ def main() -> int:
     try:
         state = _State()
         started = time.perf_counter()
-        state.kokoro = load_kokoro(str(model_path), str(voices_path),
-                                   max(1, min(4, args.threads)), args.default_voice)
+        threads = max(1, min(4, args.threads))
+        if args.provider == "dml":
+            try:
+                candidate, providers = load_kokoro(
+                    str(model_path), str(voices_path), threads, args.default_voice, providers=[
+                                            ("DmlExecutionProvider", {"device_id": 0}),
+                                            "CPUExecutionProvider"])
+                if not providers or providers[0] != "DmlExecutionProvider":
+                    raise RuntimeError("DirectML is unavailable in this ONNX Runtime.")
+                dml_rtf = measure_rtf(candidate, args.default_voice)
+                cpu_candidate, _ = load_kokoro(str(model_path), str(voices_path), threads,
+                                               args.default_voice)
+                cpu_rtf = measure_rtf(cpu_candidate, args.default_voice)
+                receipt("provider-trial", dml_rtf=f"{dml_rtf:.2f}", cpu_rtf=f"{cpu_rtf:.2f}")
+                if dml_rtf < 0.5 and dml_rtf < cpu_rtf:
+                    state.kokoro = candidate
+                    state.provider = "DmlExecutionProvider"
+                else:
+                    state.kokoro = cpu_candidate
+                    state.provider = "CPUExecutionProvider"
+                    receipt("provider-trial", provider="cpu",
+                            reason="DirectML did not beat CPU and the real-time threshold")
+            except Exception as failure:
+                receipt("provider-trial", provider="cpu",
+                        reason=f"DirectML trial failed: {type(failure).__name__}: {failure}")
+        if state.kokoro is None:
+            state.kokoro, _ = load_kokoro(str(model_path), str(voices_path), threads,
+                                          args.default_voice)
+            state.provider = "CPUExecutionProvider"
         state.voices = [str(name) for name in state.kokoro.get_voices()]
     except (KeyError, RuntimeError, TypeError, ValueError) as failure:
         receipt("boot.failed", reason=repr(failure))
@@ -227,7 +273,8 @@ def main() -> int:
     catalogue = ", ".join(state.voices[:8]) + ("..." if len(state.voices) > 8 else "")
     receipt("boot.ready",
             model=model_path.name, voices=len(state.voices),
-            threads=args.threads, ms=f"{(time.perf_counter() - started) * 1000:.0f}")
+            threads=threads, provider=state.provider,
+            ms=f"{(time.perf_counter() - started) * 1000:.0f}")
     print(f"voice catalogue: {catalogue}", flush=True)
 
     server = ThreadingHTTPServer((args.host, args.port), build_handler(args, state))

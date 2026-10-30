@@ -11,6 +11,7 @@ using CompanionOS.Core.Diagnostics;
 using CompanionOS.Core.Events;
 using CompanionOS.Core.Mind;
 using CompanionOS.Core.Modules;
+using CompanionOS.Core.Prompts;
 using CompanionOS.Core.Voice;
 using NAudio.Wave;
 
@@ -126,7 +127,7 @@ public sealed class SettingsView : UserControl
 
     private Control BuildAudioCard()
     {
-        TextBlock audioHealth = Ui.Text(_runtime.Voice.GetReadiness().Summary, Palette.FontCaption,
+        TextBlock audioHealth = Ui.Text(AudioHealthSummary(), Palette.FontCaption,
             Palette.TextSecondaryBrush, FontWeight.Medium, wrap: true);
         audioHealth.MaxWidth = 220;
         audioHealth.TextAlignment = TextAlignment.Right;
@@ -134,7 +135,7 @@ public sealed class SettingsView : UserControl
         {
             // This only re-reads device/configuration truth. It does not record,
             // synthesize speech or start a model, so it is safe during Gaming Mode.
-            audioHealth.Text = _runtime.Voice.GetReadiness().Summary;
+            audioHealth.Text = AudioHealthSummary();
         });
         Button testMicrophone = Ui.GhostButton("Test mic", () =>
             _ = RunAudioDiagnosticAsync(audioHealth, microphone: true));
@@ -196,6 +197,29 @@ public sealed class SettingsView : UserControl
             PublishChanged($"Her voice now plays through {LabelOf(speakerItems, value)}.");
         };
 
+        List<(string Label, string Value)> kokoroProviders = new()
+        {
+            ("CPU (default)", "cpu"),
+            ("DirectML trial", "dml")
+        };
+        BoardSelect kokoroProvider = new();
+        kokoroProvider.SetItems(kokoroProviders, _runtime.Settings.Current.Voice.KokoroProvider);
+        ToolTip.SetTip(kokoroProvider,
+            "DirectML is optional and is only kept if a real synthesis trial beats CPU and reaches real-time factor below 0.5. Install it with scripts\\setup.ps1 -Component voice -KokoroDirectML, then restart Iris.");
+        kokoroProvider.Changed += value =>
+        {
+            if (value == _runtime.Settings.Current.Voice.KokoroProvider)
+            {
+                return;
+            }
+
+            _runtime.Settings.Current.Voice.KokoroProvider = value;
+            _runtime.Settings.Save();
+            PublishChanged(value == "dml"
+                ? "DirectML will be trialed the next time Kokoro starts; CPU remains the fallback."
+                : "Kokoro will use CPU the next time its worker starts.");
+        };
+
         BoardSwitch pauseForVoice = new() { IsOn = _runtime.Settings.Current.Voice.PauseMediaWhenListening };
         ToolTip.SetTip(pauseForVoice,
             "When you call Iris, she asks Windows to pause the current video or song before listening. She never pauses anything in the background until you address her.");
@@ -225,6 +249,9 @@ public sealed class SettingsView : UserControl
             Row("Microphone", microphone, "Ctrl+M toggles her ears; the device here is what she listens on."),
             null,
             Row("Speakers", speakers, "-1 lets Windows choose. Naming yours pins her voice and music to it."),
+            null,
+            Row("Kokoro provider", kokoroProvider,
+                "CPU is the default. DirectML is optional; setup installs it, and a measured startup trial keeps it only when faster and below real-time factor 0.5."),
             null,
             Row("Audio health", healthControls,
                 "Checks whether the configured microphone, recognizer and speaker route are presently available. It does not start recording or play sound."),
@@ -257,12 +284,23 @@ public sealed class SettingsView : UserControl
             _runtime.Events.PublishNotice(result.Detail,
                 result.Succeeded ? NoticeSeverity.Success : NoticeSeverity.Warning);
         }
+
         catch (Exception exception)
         {
             health.Text = $"Audio diagnostic failed: {exception.Message}";
             health.Foreground = Palette.DangerBrush;
             _runtime.Events.PublishNotice(health.Text, NoticeSeverity.Danger);
         }
+    }
+
+    private string AudioHealthSummary()
+    {
+        string summary = _runtime.Voice.GetReadiness().Summary;
+        if (_runtime.Settings.Current.Voice.Engine.Equals("kokoro", StringComparison.OrdinalIgnoreCase))
+        {
+            summary += $" · Kokoro provider: {_runtime.Voice.KokoroActiveProvider}";
+        }
+        return summary;
     }
 
     private void RebindMicrophone()
@@ -778,11 +816,19 @@ public sealed class SettingsView : UserControl
             MaxHeight = 280,
             Content = grants
         };
-        return Card("Remembered permissions", new Control?[]
+        PromptService prompts = _runtime.Modules.Prompts;
+        Button forgetChoices = Ui.GhostButton("Forget remembered choices", () =>
         {
-            Ui.Text("Saved access is tied to a module and capability or legacy tool. Revoke it here at any time.",
+            prompts.ClearRememberedChoices();
+            PublishChanged("Forgot the saved choices. Iris will ask again next time.");
+        });
+        forgetChoices.IsEnabled = prompts.RememberedChoiceCount > 0;
+        return Card("Remembered permissions and choices", new Control?[]
+        {
+            Ui.Text("Saved access is tied to a module and capability or legacy tool. Choices are remembered only when you check the box on a choice prompt, and only for the same question and options.",
                 Palette.FontBody, Palette.TextSecondaryBrush, wrap: true),
-            grantList
+            grantList,
+            forgetChoices
         });
     }
 

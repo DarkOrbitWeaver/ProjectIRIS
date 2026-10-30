@@ -23,6 +23,9 @@
 .PARAMETER VerifyOnly
     Only report what is present; download nothing.
 
+.PARAMETER KokoroDirectML
+    Replace Kokoro's CPU ONNX Runtime with the optional DirectML runtime.
+
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File scripts/setup.ps1
 #>
@@ -31,7 +34,8 @@ param(
     [ValidateSet('all', 'brain', 'runtime', 'ears', 'voice')]
     [string]$Component = 'all',
     [switch]$Force,
-    [switch]$VerifyOnly
+    [switch]$VerifyOnly,
+    [switch]$KokoroDirectML
 )
 
 $ErrorActionPreference = 'Stop'
@@ -62,7 +66,7 @@ $manifest = Get-Content $manifestPath -Raw | ConvertFrom-Json
 
 # Resolves the real file name inside a Hugging Face repository for a wildcard pattern.
 function Provision-KokoroVoice {
-    param([string]$DataRoot, [switch]$Force, [bool]$VerifyOnly)
+    param([string]$DataRoot, [switch]$Force, [bool]$VerifyOnly, [bool]$KokoroDirectML)
 
     $kokoroRuntimeDir = Join-Path $DataRoot 'runtimes\kokoro-tts'
     $kokoroModelDir = Join-Path $DataRoot 'models\kokoro-cache'
@@ -74,6 +78,10 @@ function Provision-KokoroVoice {
     if ($VerifyOnly) {
         $script:results += [pscustomobject]@{ Artifact = 'kokoro-runtime'; Status = if ((Test-Path $kokoroPython) -and (Test-Path $kokoroScript)) { 'present' } else { 'missing' } }
         $script:results += [pscustomobject]@{ Artifact = 'kokoro-model'; Status = if ($modelPresent) { 'present' } else { 'missing' } }
+        if ($KokoroDirectML -and (Test-Path $kokoroPython)) {
+            $provider = & $kokoroPython -c "import onnxruntime as ort; print('DmlExecutionProvider' in ort.get_available_providers())"
+            $script:results += [pscustomobject]@{ Artifact = 'kokoro-directml'; Status = if ($provider -eq 'True') { 'present' } else { 'missing' } }
+        }
         return
     }
 
@@ -90,9 +98,22 @@ function Provision-KokoroVoice {
             if ($LASTEXITCODE -ne 0) { throw 'Could not create the Kokoro python environment.' }
             & $kokoroPython -m pip install --quiet kokoro-onnx==0.6.1 misaki soundfile
             if ($LASTEXITCODE -ne 0) { throw 'kokoro-onnx installation failed.' }
-            Copy-Item (Join-Path $PSScriptRoot 'kokoro-server.py') $kokoroScript -Force
         } else {
             Write-Host '  present: Kokoro runtime; keeping the existing environment' -ForegroundColor DarkGray
+        }
+
+        Copy-Item (Join-Path $PSScriptRoot 'kokoro-server.py') $kokoroScript -Force
+
+        if ($KokoroDirectML) {
+            $provider = & $kokoroPython -c "import onnxruntime as ort; print('DmlExecutionProvider' in ort.get_available_providers())"
+            if ($provider -ne 'True') {
+                Write-Host '  installing optional ONNX Runtime DirectML provider' -ForegroundColor Cyan
+                & $kokoroPython -m pip uninstall --quiet --yes onnxruntime onnxruntime-directml
+                & $kokoroPython -m pip install --quiet --no-deps onnxruntime-directml==1.22.0
+                if ($LASTEXITCODE -ne 0) { throw 'ONNX Runtime DirectML installation failed.' }
+            }
+            $provider = & $kokoroPython -c "import onnxruntime as ort; print('DmlExecutionProvider' in ort.get_available_providers())"
+            if ($provider -ne 'True') { throw 'DirectML installed, but ONNX Runtime does not expose DmlExecutionProvider.' }
         }
 
         Write-Host '  verifying Kokoro artifacts (pinned, SHA-256 checked)' -ForegroundColor Cyan
@@ -344,7 +365,7 @@ if ($voiceRequested) {
 # Kokoro shares the voice component: her second local engine, provisioned the
 # same honest way (pinned runtime, pinned artifacts, hash-verified downloads).
 if ($voiceRequested) {
-    Provision-KokoroVoice -DataRoot $dataRoot -Force:$Force -VerifyOnly:([bool]$VerifyOnly.IsPresent)
+    Provision-KokoroVoice -DataRoot $dataRoot -Force:$Force -VerifyOnly:([bool]$VerifyOnly.IsPresent) -KokoroDirectML:([bool]$KokoroDirectML.IsPresent)
 }
 
 Write-Host ''

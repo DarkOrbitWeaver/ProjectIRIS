@@ -252,6 +252,7 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
         }
         finally
         {
+            _modules.CompleteTurn(turnId);
             _currentTurnId = null;
             _turnGate.Release();
         }
@@ -414,6 +415,37 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
         }
 
         _journal.RecordBackgroundTaskState(task.Id, task.ModuleId, task.ToolName, state);
+        if (task.State is BackgroundTaskState.Completed or BackgroundTaskState.Failed or BackgroundTaskState.Cancelled)
+        {
+            string taskDetail = task.Result?.Trim() ?? string.Empty;
+            if (taskDetail.Length > 180)
+            {
+                taskDetail = taskDetail[..180] + "…";
+            }
+            string detail = taskDetail.Length == 0 ? string.Empty : $" {taskDetail}";
+            NoticeSeverity severity = task.State == BackgroundTaskState.Completed
+                ? NoticeSeverity.Success
+                : NoticeSeverity.Warning;
+            _events.PublishNotice($"{task.ModuleName} {task.State.ToString().ToLowerInvariant()}: {task.ToolName}.{detail}",
+                severity);
+            if (task.State == BackgroundTaskState.Completed && !string.IsNullOrWhiteSpace(task.SpokenText))
+            {
+                string spoken = task.SpokenText.Trim();
+                _ = SpeakBackgroundResultAsync(spoken.Length > 240 ? spoken[..240] : spoken);
+            }
+        }
+    }
+
+    private async Task SpeakBackgroundResultAsync(string text)
+    {
+        try
+        {
+            await _voice.SpeakAsync(text, CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            CompanionLog.Warning("Brain", $"Background result speech failed: {exception.Message}");
+        }
     }
 
     /// <summary>The actual turn, in the order documented at the top of the file.</summary>
@@ -758,6 +790,16 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
             if (turn.Text.Length > 0)
             {
                 finalAnswer.AppendLine(turn.Text.Trim());
+            }
+
+            foreach (ToolCallRequest plannedCall in turn.ToolCalls)
+            {
+                if (ToolArgumentsParser.TryParse(plannedCall.ArgumentsJson, out JsonElement plannedArguments) &&
+                    !uncertainTools.Contains($"{plannedCall.Name}|{plannedCall.ArgumentsJson}",
+                        StringComparer.OrdinalIgnoreCase))
+                {
+                    _modules.PlanTool(turnId, plannedCall.Name, plannedArguments);
+                }
             }
 
             foreach (ToolCallRequest call in turn.ToolCalls)

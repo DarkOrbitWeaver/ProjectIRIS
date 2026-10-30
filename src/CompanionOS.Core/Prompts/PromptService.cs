@@ -1,3 +1,6 @@
+using System.Security.Cryptography;
+using System.Text;
+using CompanionOS.Core.Configuration;
 using CompanionOS.Core.Diagnostics;
 using CompanionOS.Core.Events;
 
@@ -60,16 +63,23 @@ public sealed class PromptService
 {
     private readonly EventBus _events;
     private readonly Func<PromptPolicy> _policy;
+    private readonly SettingsStore? _settingsStore;
     private readonly object _gate = new();
+    private readonly object _rememberedChoiceGate = new();
     private readonly List<IrisPrompt> _queue = new();
     private readonly Dictionary<Guid, Timer> _timers = new();
+    private readonly Dictionary<string, string> _rememberedChoices;
     private int _unheardAttempts;
 
-    public PromptService(EventBus events, Func<PromptPolicy>? policy = null)
+    public PromptService(EventBus events, Func<PromptPolicy>? policy = null, SettingsStore? settingsStore = null)
     {
         _events = events;
+        _settingsStore = settingsStore;
         PromptPolicy fallback = new();
         _policy = policy ?? (() => fallback);
+        _rememberedChoices = settingsStore is null
+            ? new Dictionary<string, string>(StringComparer.Ordinal)
+            : new Dictionary<string, string>(settingsStore.Current.RememberedPromptChoices, StringComparer.Ordinal);
     }
 
     public PromptPolicy Policy => _policy();
@@ -94,6 +104,30 @@ public sealed class PromptService
             {
                 return _queue.Count;
             }
+        }
+    }
+
+    public int RememberedChoiceCount
+    {
+        get
+        {
+            lock (_rememberedChoiceGate)
+            {
+                return _rememberedChoices.Count;
+            }
+        }
+    }
+
+    public void ClearRememberedChoices()
+    {
+        lock (_rememberedChoiceGate)
+        {
+            _rememberedChoices.Clear();
+            _settingsStore?.Mutate(settings =>
+            {
+                settings.RememberedPromptChoices.Clear();
+                return true;
+            });
         }
     }
 
@@ -124,8 +158,14 @@ public sealed class PromptService
                                     ? options.FirstOrDefault(option => option.Role == PromptOptionRole.Deny)?.Id
                                     : null);
 
+        bool canRemember = request.AllowRemembering && kind == PromptKind.Choice;
+        string? rememberKey = canRemember ? RememberKey(ownerId, request.Question, options) : null;
         return new IrisPrompt(kind, title, request.Question, options, request.Risk, timeout, timeoutOption,
-            request.SpeakAloud, ownerId, ownerName, iconKey);
+            request.SpeakAloud, ownerId, ownerName, iconKey)
+        {
+            CanRememberChoice = canRemember,
+            RememberChoiceKey = rememberKey
+        };
     }
 
     /// <summary>Queues a prompt and waits for the first answer, a timeout, or cancellation.</summary>
@@ -134,6 +174,25 @@ public sealed class PromptService
         if (prompt.IsResolved)
         {
             return await prompt.Completion.ConfigureAwait(false);
+        }
+
+        if (prompt.CanRememberChoice && prompt.RememberChoiceKey is { } rememberKey &&
+            TryGetRememberedChoice(rememberKey, out string? rememberedOption) &&
+            rememberedOption is not null && prompt.FindOption(rememberedOption) is not null)
+        {
+            PromptAnswer remembered = new(rememberedOption, PromptSource.Remembered);
+            if (!prompt.TryAnswer(remembered))
+            {
+                return await prompt.Completion.ConfigureAwait(false);
+            }
+            IrisEvent.Log("Prompts", "prompt.remembered", LogLevel.Info,
+                data: new Dictionary<string, string?>
+                {
+                    ["owner"] = prompt.OwnerId,
+                    ["kind"] = prompt.Kind.ToString()
+                });
+            _events.Publish(new PromptChangedEvent { Active = Active, Resolved = prompt, Answer = remembered });
+            return remembered;
         }
 
         bool accepted;
@@ -300,6 +359,12 @@ public sealed class PromptService
             return false;
         }
 
+        if (prompt.CanRememberChoice && prompt.RememberChoice && answer.IsDeliberate &&
+            prompt.RememberChoiceKey is { } key && prompt.FindOption(answer.OptionId) is not null)
+        {
+            RememberChoice(key, answer.OptionId);
+        }
+
         lock (_gate)
         {
             _queue.Remove(prompt);
@@ -322,6 +387,42 @@ public sealed class PromptService
         _events.Publish(new PromptChangedEvent { Active = Active, Resolved = prompt, Answer = answer });
         ActivateFront();
         return true;
+    }
+
+    private bool TryGetRememberedChoice(string key, out string? optionId)
+    {
+        lock (_rememberedChoiceGate)
+        {
+            return _rememberedChoices.TryGetValue(key, out optionId);
+        }
+    }
+
+    private void RememberChoice(string key, string optionId)
+    {
+        lock (_rememberedChoiceGate)
+        {
+            _rememberedChoices[key] = optionId;
+            while (_rememberedChoices.Count > 100)
+            {
+                _rememberedChoices.Remove(_rememberedChoices.Keys.First());
+            }
+            _settingsStore?.Mutate(settings =>
+            {
+                settings.RememberedPromptChoices[key] = optionId;
+                while (settings.RememberedPromptChoices.Count > 100)
+                {
+                    settings.RememberedPromptChoices.Remove(settings.RememberedPromptChoices.Keys.First());
+                }
+                return true;
+            });
+        }
+    }
+
+    private static string RememberKey(string ownerId, string question, IReadOnlyList<PromptOption> options)
+    {
+        string input = $"choice-v1\n{ownerId}\n{question}\n" +
+                       string.Join('\n', options.Select(option => $"{option.Id}\0{option.Label}"));
+        return "choice-v1:" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(input)));
     }
 
     private void ActivateFront()

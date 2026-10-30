@@ -62,6 +62,8 @@ public sealed class ToolStep : ObservableObject
         set => SetProperty(ref _permissionNote, value);
     }
 
+    public string ModuleId { get; init; } = string.Empty;
+    public string ToolName { get; init; } = string.Empty;
     public string IconKey { get; init; } = "body";
     public string ModuleName { get; init; } = string.Empty;
     public DateTimeOffset Time { get; init; } = DateTimeOffset.Now;

@@ -35,6 +35,7 @@ public sealed class CompanionSettings
 
     public BrainSettings Brain { get; set; } = new();
     public VoiceSettings Voice { get; set; } = new();
+    public Dictionary<string, string> RememberedPromptChoices { get; set; } = new(StringComparer.Ordinal);
     public EarsSettings Ears { get; set; } = new();
     public SenseSettings Senses { get; set; } = new();
     public MemorySettings Memory { get; set; } = new();
@@ -221,6 +222,9 @@ public sealed class VoiceSettings
 
     /// <summary>Thread ceiling for the Kokoro worker's ORT session.</summary>
     public int KokoroMaxThreads { get; set; } = 4;
+
+    /// <summary>CPU is the default. "dml" opts into a measured DirectML trial with CPU fallback.</summary>
+    public string KokoroProvider { get; set; } = "cpu";
 
     /// <summary>
     /// Kokoro voice to fall back to when her profile does not name one. af_heart is

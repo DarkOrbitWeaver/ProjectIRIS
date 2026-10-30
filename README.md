@@ -31,6 +31,13 @@ The 18M English model and selected voice profiles live under `%LOCALAPPDATA%\Com
 speech synthesis uses no VRAM. A user-configured OpenAI-compatible server remains available by
 setting `Voice.Engine` to `http` in `settings.json`.
 
+Kokoro's optional DirectML trial is off by default. To install its Windows runtime, run
+`powershell -ExecutionPolicy Bypass -File scripts/setup.ps1 -Component voice -KokoroDirectML`,
+select `Voice.KokoroProvider` as `dml` in Settings, and restart Iris. At startup, Iris measures
+real syntheses on DirectML and CPU. DirectML is kept only if it beats CPU and reaches a real-time
+factor below 0.5; otherwise, the worker reports and uses CPU. The active provider appears in the
+Audio health row.
+
 ---
 
 ## What is implemented today

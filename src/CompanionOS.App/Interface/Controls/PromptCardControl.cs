@@ -59,6 +59,10 @@ internal sealed class PromptCardControl : Border
         {
             height += 18;
         }
+        if (prompt.CanRememberChoice)
+        {
+            height += 28;
+        }
 
         return height + prompt.Kind switch
         {
@@ -193,6 +197,18 @@ internal sealed class PromptCardControl : Border
             default:
                 _body.Children.Add(BuildNumberedList(prompt));
                 break;
+        }
+
+        if (prompt.CanRememberChoice)
+        {
+            CheckBox remember = new()
+            {
+                Content = Ui.Text("Remember this choice for the same question", Palette.FontCaption,
+                    Palette.TextSecondaryBrush, FontWeight.Medium, wrap: false),
+                IsChecked = prompt.RememberChoice
+            };
+            remember.IsCheckedChanged += (_, _) => prompt.SetRememberChoice(remember.IsChecked == true);
+            _body.Children.Add(remember);
         }
 
         // The voice hint: what to say right now, or why the last try did not count.

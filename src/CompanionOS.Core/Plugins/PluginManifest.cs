@@ -36,7 +36,8 @@ namespace CompanionOS.Core.Plugins;
 ///   "disabled": true,
 ///   "tools": [
 ///     { "name": "search", "description": "Search videos.",
-///       "permission": null, "schema": { ...JSON schema... } }
+///       "permission": null, "routingKeywords": ["search videos"],
+///       "schema": { ...JSON schema... } }
 ///   ]
 /// }
 /// </summary>
@@ -180,6 +181,35 @@ public sealed class PluginManifest
                         timeoutSeconds = parsedTimeout;
                     }
 
+                    List<string> routingKeywords = [];
+                    if (tool.TryGetProperty("routingKeywords", out JsonElement routingElement))
+                    {
+                        if (routingElement.ValueKind != JsonValueKind.Array ||
+                            routingElement.GetArrayLength() > 16)
+                        {
+                            rejectionReason = "tool 'routingKeywords' must be an array with at most 16 entries";
+                            return false;
+                        }
+                        foreach (JsonElement keywordElement in routingElement.EnumerateArray())
+                        {
+                            if (keywordElement.ValueKind != JsonValueKind.String)
+                            {
+                                rejectionReason = "each 'routingKeywords' entry must be a string";
+                                return false;
+                            }
+                            string keyword = (keywordElement.GetString() ?? string.Empty).Trim();
+                            if (keyword.Length is < 3 or > 64)
+                            {
+                                rejectionReason = "routing keywords must contain 3 to 64 characters";
+                                return false;
+                            }
+                            if (!routingKeywords.Contains(keyword, StringComparer.OrdinalIgnoreCase))
+                            {
+                                routingKeywords.Add(keyword);
+                            }
+                        }
+                    }
+
                     tools.Add(new PluginTool(
                         Name: tool.TryGetProperty("name", out JsonElement nameElement) ? nameElement.GetString() ?? "" : "",
                         Description: tool.TryGetProperty("description", out JsonElement descriptionElement) ? descriptionElement.GetString() ?? "" : "",
@@ -192,7 +222,8 @@ public sealed class PluginManifest
                         DoneLabel: OptionalText(tool, "doneLabel", 80),
                         Icon: OptionalText(tool, "icon", 32),
                         Access: access,
-                        TimeoutSeconds: timeoutSeconds));
+                        TimeoutSeconds: timeoutSeconds,
+                        RoutingKeywords: routingKeywords));
                 }
             }
 
@@ -788,7 +819,8 @@ public sealed record PluginTool(
     string? DoneLabel = null,
     string? Icon = null,
     string? Access = null,
-    int? TimeoutSeconds = null);
+    int? TimeoutSeconds = null,
+    List<string>? RoutingKeywords = null);
 
 public sealed record PluginSurfaceManifest(
     string Id,
@@ -810,4 +842,5 @@ public sealed record PluginSurfaceElementManifest(
 public sealed record PluginSurfaceOptionManifest(string Value, string Label);
 
 /// <summary>What a plugin run returns; failure carries the plugin's own words.</summary>
-public record PluginResult(bool Ok, string Text, string? Error = null, bool IsOutcomeUncertain = false);
+public record PluginResult(bool Ok, string Text, string? Error = null, bool IsOutcomeUncertain = false,
+    string? SpokenText = null);
