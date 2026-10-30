@@ -2606,6 +2606,51 @@ public sealed class CoreRegressionTests
         Assert.Equal(LogLevel.Warning, level);
     }
 
+    [Theory]
+    [InlineData(350, 1500)]
+    [InlineData(900, 1500)]
+    [InlineData(1500, 1500)]
+    [InlineData(2200, 2200)]
+    public void VoiceSegmentationKeepsAFullPauseBeforeSubmittingAnUtterance(
+        int configuredMilliseconds, int expectedMilliseconds)
+    {
+        Assert.Equal(expectedMilliseconds,
+            VoicePipeline.ResolveUtteranceSilenceThreshold(configuredMilliseconds));
+    }
+
+    [Fact]
+    public void SettingsMigrationExpandsOnlyTheDefaultConversationWindow()
+    {
+        string previousRoot = CompanionPaths.Root;
+        string testRoot = Path.Combine(Path.GetTempPath(), $"iris-settings-{Guid.NewGuid():N}");
+        try
+        {
+            CompanionPaths.OverrideRoot(testRoot);
+            Directory.CreateDirectory(CompanionPaths.ConfigDirectory);
+            File.WriteAllText(CompanionPaths.SettingsFile,
+                "{\"SchemaVersion\":4,\"Memory\":{\"ConversationWindowMessages\":16}}");
+
+            CompanionSettings loaded = new SettingsStore().Load();
+
+            Assert.Equal(5, loaded.SchemaVersion);
+            Assert.Equal(32, loaded.Memory.ConversationWindowMessages);
+
+            File.WriteAllText(CompanionPaths.SettingsFile,
+                "{\"SchemaVersion\":4,\"Memory\":{\"ConversationWindowMessages\":8}}");
+            loaded = new SettingsStore().Load();
+
+            Assert.Equal(8, loaded.Memory.ConversationWindowMessages);
+        }
+        finally
+        {
+            CompanionPaths.OverrideRoot(previousRoot);
+            if (Directory.Exists(testRoot))
+            {
+                Directory.Delete(testRoot, recursive: true);
+            }
+        }
+    }
+
     private sealed class TestAssistantModule(string id, string name, string purpose,
         IReadOnlyList<ModuleTool> tools, bool alwaysAvailable = false) : IAssistantModule
     {

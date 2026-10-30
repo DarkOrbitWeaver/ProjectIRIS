@@ -52,7 +52,6 @@ public sealed class VoicePipeline : IAsyncDisposable
     private readonly PocketTtsServerHost _pocketHost;
     private readonly KokoroTtsServerHost _kokoroHost;
     private readonly IDisposable _settingsChangedSubscription;
-    private readonly IDisposable _promptChangedSubscription;
     private readonly SpeechOutputArbiter _speechOutputArbiter = new();
     private readonly object _wakeSampleLock = new();
     private TaskCompletionSource<string>? _wakeSampleCapture;
@@ -64,7 +63,6 @@ public sealed class VoicePipeline : IAsyncDisposable
     private List<float> _speechSegment = new();
     private bool _isSegmentOpen;
     private int _silenceMilliseconds;
-    private int _promptActive;
     private double _noiseFloor = 0.004;
     private int _microphoneDiagnosticActive;
     private long _microphoneDiagnosticRmsBits;
@@ -83,6 +81,13 @@ public sealed class VoicePipeline : IAsyncDisposable
     /// next burst instead of batching the whole room into one transcript.
     /// </summary>
     private const int MaximumUtteranceMilliseconds = 20000;
+
+    /// <summary>
+    /// A short mid-sentence pause is not a reliable turn boundary. Keep at least this
+    /// much trailing silence even when an older saved setting asks for less; unlike a
+    /// streaming recognizer, this pipeline only submits audio after the segment closes.
+    /// </summary>
+    private const int MinimumUtteranceSilenceMilliseconds = 1500;
 
     /// <summary>The pipeline's fixed capture format: 16 kHz mono.</summary>
     private const int CaptureSampleRate = 16000;
@@ -160,8 +165,6 @@ public sealed class VoicePipeline : IAsyncDisposable
         // without a restart: what the picker wrote is what plays next.
         _settingsChangedSubscription = events.Subscribe<SettingsChangedEvent>(_ => _player.DeviceNumber =
             _settings.Current.Voice.OutputDeviceNumber);
-        _promptChangedSubscription = events.Subscribe<PromptChangedEvent>(change =>
-            Interlocked.Exchange(ref _promptActive, change.Active is null ? 0 : 1));
     }
 
     /// <summary>Her locked voice identity.</summary>
@@ -1264,7 +1267,6 @@ public sealed class VoicePipeline : IAsyncDisposable
         }
         await _speechOutputArbiter.DrainAsync().ConfigureAwait(false);
         _settingsChangedSubscription.Dispose();
-        _promptChangedSubscription.Dispose();
         _microphone.SamplesAvailable -= OnMicrophoneSamples;
         _microphone.LevelChanged -= OnMicrophoneLevel;
         _player.AmplitudeChanged -= OnSpokenAmplitude;
@@ -1443,11 +1445,7 @@ public sealed class VoicePipeline : IAsyncDisposable
             _speechSegment.AddRange(samples);
             _silenceMilliseconds += (int)(samples.Length / 16.0);
 
-            int silenceThreshold = _settings.Current.Ears.SilenceMilliseconds;
-            if (Volatile.Read(ref _promptActive) != 0)
-            {
-                silenceThreshold = Math.Min(silenceThreshold, 350);
-            }
+            int silenceThreshold = ResolveUtteranceSilenceThreshold(_settings.Current.Ears.SilenceMilliseconds);
 
             if (_silenceMilliseconds >= silenceThreshold)
             {
@@ -1474,6 +1472,9 @@ public sealed class VoicePipeline : IAsyncDisposable
             SubmitSegment(finishedSegment);
         }
     }
+
+    internal static int ResolveUtteranceSilenceThreshold(int configuredMilliseconds) =>
+        Math.Max(MinimumUtteranceSilenceMilliseconds, configuredMilliseconds);
 
     /// <summary>
     /// Queues one finished utterance for transcription instead of dropping it the

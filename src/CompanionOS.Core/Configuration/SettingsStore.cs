@@ -153,6 +153,10 @@ public sealed class SettingsStore
             {
                 MigrateOverlayPosition();
             }
+            if (previousVersion < 5)
+            {
+                MigrateConversationWindow();
+            }
 
             Current.SchemaVersion = CompanionSettings.CurrentSchemaVersion;
             CompanionLog.Info("Settings",
@@ -222,6 +226,19 @@ public sealed class SettingsStore
     {
         Current.Interface.OverlayPosition = "top right";
         Current.Interface.OverlayPositionPx = string.Empty;
+    }
+
+    /// <summary>
+    /// Schema 4 to 5: keep the untouched 16-message default, which tool-call-heavy
+    /// exchanges could exhaust in only a few turns, for twice as much recent context.
+    /// A deliberately customized window keeps its chosen size.
+    /// </summary>
+    private void MigrateConversationWindow()
+    {
+        if (Current.Memory.ConversationWindowMessages == 16)
+        {
+            Current.Memory.ConversationWindowMessages = 32;
+        }
     }
 
     /// <summary>

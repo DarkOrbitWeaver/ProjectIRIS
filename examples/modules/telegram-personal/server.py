@@ -94,7 +94,7 @@ class TelegramModule:
         self.setup_client: TelegramClient | None = None
         self.qr = None
         self.setup_task: asyncio.Task | None = None
-        self.setup_state = "not_started"
+        self.setup_state = "linked" if SESSION_FILE.is_file() else "not_started"
         self.setup_error = ""
         self.contacts: dict[str, dict[str, Any]] = {}
         self.pending: dict[str, Any] | None = None
@@ -203,7 +203,7 @@ class TelegramModule:
 <main><h1>Connect Telegram to Iris</h1><p>This page only listens on this computer. Scan the QR in Telegram → Settings → Devices → Link Desktop Device.</p>
 <button id="start">Show login QR</button><div id="qr"></div><div id="password" hidden><p>Telegram requires your two-step verification password.</p><input id="pw" type="password" autocomplete="current-password"><button id="submit">Continue</button></div><p id="state">Checking setup…</p></main>
 <style>body{{font:16px system-ui;background:#11131a;color:#eee;max-width:620px;margin:10vh auto;padding:24px}}button,input{{font:inherit;padding:10px;margin:8px 4px}}button{{background:#7957ff;color:white;border:0;border-radius:7px}}#qr img{{width:260px;background:white;padding:10px;margin-top:12px}}p{{line-height:1.5}}</style>
-<script>const token='{token}', state=document.querySelector('#state'); async function call(path,data={{}}){{let r=await fetch(path,{{method:'POST',headers:{{'Content-Type':'application/json','X-Iris-Token':token}},body:JSON.stringify(data)}});let j=await r.json();if(!r.ok)throw Error(j.error||'Setup failed');return j}} async function poll(){{try{{let r=await fetch('/api/status'),j=await r.json();state.textContent=j.error||({{not_started:'Ready to connect.',waiting_qr:'Scan the QR code with Telegram.',waiting_password:'Enter your Telegram two-step password here.',connected:'Telegram is connected to Iris.',failed:'Setup failed.'}}[j.state]||j.state);document.querySelector('#password').hidden=j.state!=='waiting_password';document.querySelector('#qr').innerHTML=j.qr&&j.state==='waiting_qr'?'<img src="/qr.svg">':''}}catch(e){{state.textContent=e}}}} document.querySelector('#start').onclick=async()=>{{try{{await call('/api/start');poll()}}catch(e){{state.textContent=e.message}}}};document.querySelector('#submit').onclick=async()=>{{try{{await call('/api/password',{{password:document.querySelector('#pw').value}});document.querySelector('#pw').value='';poll()}}catch(e){{state.textContent=e.message}}}};poll();setInterval(poll,2000);</script>'''
+<script>const token='{token}', state=document.querySelector('#state'); async function call(path,data={{}}){{let r=await fetch(path,{{method:'POST',headers:{{'Content-Type':'application/json','X-Iris-Token':token}},body:JSON.stringify(data)}});let j=await r.json();if(!r.ok)throw Error(j.error||'Setup failed');return j}} async function poll(){{try{{let r=await fetch('/api/status'),j=await r.json();state.textContent=j.error||({{not_started:'Ready to connect.',linked:'Telegram account linked to Iris. Ask Iris to verify access if needed.',waiting_qr:'Scan the QR code with Telegram.',waiting_password:'Enter your Telegram two-step password here.',connected:'Telegram is connected to Iris.',failed:'Setup failed.'}}[j.state]||j.state);document.querySelector('#password').hidden=j.state!=='waiting_password';document.querySelector('#qr').innerHTML=j.qr&&j.state==='waiting_qr'?'<img src="/qr.svg">':''}}catch(e){{state.textContent=e}}}} document.querySelector('#start').onclick=async()=>{{try{{await call('/api/start');poll()}}catch(e){{state.textContent=e.message}}}};document.querySelector('#submit').onclick=async()=>{{try{{await call('/api/password',{{password:document.querySelector('#pw').value}});document.querySelector('#pw').value='';poll()}}catch(e){{state.textContent=e.message}}}};poll();setInterval(poll,2000);</script>'''
 
     async def begin_login(self) -> None:
         api_id, api_hash = self._require_credentials()
@@ -238,7 +238,7 @@ class TelegramModule:
         if self.setup_client is None:
             raise RuntimeError("Telegram setup client is unavailable.")
         save_protected(SESSION_FILE, self.setup_client.session.save())
-        self.setup_state, self.setup_error = "connected", ""
+        self.setup_state, self.setup_error = "linked", ""
         self.qr = None
         try:
             await self.setup_client.disconnect()

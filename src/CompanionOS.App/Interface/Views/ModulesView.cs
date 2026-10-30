@@ -2,9 +2,11 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Layout;
 using Avalonia.Media;
+using Avalonia.Threading;
 using CompanionOS.App.Interface.Controls;
 using CompanionOS.App.Interface.Theme;
 using CompanionOS.Core.Brain;
+using CompanionOS.Core.Configuration;
 using CompanionOS.Core.Diagnostics;
 using CompanionOS.Core.Events;
 using CompanionOS.Core.Modules;
@@ -40,6 +42,9 @@ public sealed class ModulesView : UserControl
     private readonly Button _moreOptions;
     private readonly ContentControl _pluginsHost = new();
     private readonly List<ModuleCardControl> _cards = new();
+    private readonly DispatcherTimer _telegramStatusTimer = new() { Interval = TimeSpan.FromSeconds(2) };
+    private TextBlock? _telegramAccountStatus;
+    private Button? _telegramAccountButton;
     private bool _toolsExpanded;
 
     public ModulesView(CompanionRuntime runtime)
@@ -74,12 +79,21 @@ public sealed class ModulesView : UserControl
 
         Content = BuildLayout();
         Refresh();
+        _telegramStatusTimer.Tick += (_, _) => UpdateTelegramAccountState();
+        AttachedToVisualTree += (_, _) =>
+        {
+            UpdateTelegramAccountState();
+            _telegramStatusTimer.Start();
+        };
+        DetachedFromVisualTree += (_, _) => _telegramStatusTimer.Stop();
     }
 
     /// <summary>Rebuilds every card from the live registry. Called on entry and on changes.</summary>
     public void Refresh()
     {
         _cards.Clear();
+        _telegramAccountStatus = null;
+        _telegramAccountButton = null;
         _cardGrid.Children.Clear();
         _cardGrid.RowDefinitions.Clear();
 
@@ -139,6 +153,7 @@ public sealed class ModulesView : UserControl
         }
 
         _pluginsHost.Content = BuildPluginsSection();
+        UpdateTelegramAccountState();
     }
 
     private static Control LegendItem(string glyph, IBrush brush, string text) => new StackPanel
@@ -368,15 +383,33 @@ public sealed class ModulesView : UserControl
             {
                 Button runtime = null!;
                 runtime = Ui.GhostButton("Set up Telegram", async () => await SetupTelegramRuntimeAsync(runtime, script));
-                Button connect = Ui.GhostButton("Connect account", async () => await OpenTelegramSetupPageAsync());
-                ToolTip.SetTip(connect,
-                    "Open the local Telegram QR setup page. First set up the runtime and API credentials.");
+                _telegramAccountStatus = Ui.Caption(string.Empty);
+                _telegramAccountButton = Ui.GhostButton("Connect account",
+                    async () => await OpenTelegramSetupPageAsync());
+                ToolTip.SetTip(_telegramAccountButton,
+                    "Open the local Telegram setup page to connect or manage the linked account.");
                 actions.Children.Add(runtime);
-                actions.Children.Add(connect);
+                actions.Children.Add(_telegramAccountButton);
+                actions.Children.Add(_telegramAccountStatus);
             }
         }
 
         return actions.Children.Count == 0 ? null : actions;
+    }
+
+    private void UpdateTelegramAccountState()
+    {
+        if (_telegramAccountStatus is null || _telegramAccountButton is null)
+        {
+            return;
+        }
+
+        string sessionFile = Path.Combine(CompanionPaths.DataRoot, "telegram", "session.dpapi");
+        bool accountLinked = File.Exists(sessionFile);
+        _telegramAccountStatus.Text = accountLinked
+            ? "Telegram account linked. Ask Iris to verify access if needed."
+            : "Telegram account not linked.";
+        _telegramAccountButton.Content = accountLinked ? "Manage account" : "Connect account";
     }
 
     private static void CopyDirectory(string source, string destination)

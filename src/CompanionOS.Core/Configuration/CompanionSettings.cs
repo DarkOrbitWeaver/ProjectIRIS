@@ -17,10 +17,10 @@ public sealed class CompanionSettings
     /// the legacy heuristics forever — instead of every boot re-deciding what a user's
     /// saved voices meant (audit: this property existed but nothing ever consumed it).
     /// Version 4 (2026-10-27): the floating pill and overlay stack now start at the
-    /// top-right. Legacy saved drag coordinates are cleared once so the new layout
-    /// takes effect on upgrade.
+    /// top-right. Version 5 doubles the default recent-conversation window so
+    /// tool-heavy exchanges remain available for follow-up requests.
     /// </summary>
-    public const int CurrentSchemaVersion = 4;
+    public const int CurrentSchemaVersion = 5;
 
     /// <summary>
     /// The schema generation of files that predate version stamping. A file whose
@@ -337,7 +337,7 @@ public sealed class EarsSettings
     public int InputDeviceNumber { get; set; } = -1;
 
     /// <summary>Silence needed before a sentence is considered finished.</summary>
-    public int SilenceMilliseconds { get; set; } = 650;
+    public int SilenceMilliseconds { get; set; } = 1500;
 
     /// <summary>Ignore blips shorter than this.</summary>
     public int MinimumSpeechMilliseconds { get; set; } = 250;
@@ -400,7 +400,7 @@ public sealed class MemorySettings
     public int IntuitionCharacterBudget { get; set; } = 1400;
 
     /// <summary>Keep this many recent messages in the sliding conversation window.</summary>
-    public int ConversationWindowMessages { get; set; } = 16;
+    public int ConversationWindowMessages { get; set; } = 32;
 }
 
 public sealed class MusicSettings

@@ -20,6 +20,10 @@ The QR sign-in session and contact nickname list are DPAPI protected for the cur
 Windows user. The login code or password is never a model tool argument. The module
 binds its setup page to `127.0.0.1` only.
 
+The Modules card shows when a Telegram session is saved and changes **Connect account**
+to **Manage account** after QR sign-in. This confirms the session is linked locally;
+ask Iris to check Telegram status when you need to verify that Telegram still authorizes it.
+
 Iris does not interrupt startup when Telegram has not been configured. Open the
 Telegram card in **Modules** whenever you want to connect. If an account that was
 previously connected loses its saved session, Iris offers a dismissible recovery
