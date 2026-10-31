@@ -121,6 +121,12 @@ public sealed class VoicePipeline : IAsyncDisposable
     private Task _reflexPreparationTask = Task.CompletedTask;
     private bool _isDisposed;
 
+    /// <summary>
+    /// True while a prompt card is waiting for the user. Wired by the runtime so a short
+    /// spoken answer ("approve", "deny") reaches the card without the wake phrase.
+    /// </summary>
+    public Func<bool>? HasOpenPrompt { get; set; }
+
     public VoicePipeline(SettingsStore settings, EventBus events, PersonaStore personaStore)
     {
         _settings = settings;
@@ -1794,7 +1800,8 @@ public sealed class VoicePipeline : IAsyncDisposable
 
             stage = "addressing";
             VoiceAddressingDecision addressing = VoiceAddressingPolicy.Decide(
-                transcript, ears.RequireWakePhrase, conversationWasOpen, _wakeMatcher);
+                transcript, ears.RequireWakePhrase, conversationWasOpen, _wakeMatcher,
+                promptOpen: HasOpenPrompt?.Invoke() == true);
             if (addressing.Outcome != VoiceAddressingOutcome.WakeMiss)
             {
                 _events.Publish(new TranscriptEvent

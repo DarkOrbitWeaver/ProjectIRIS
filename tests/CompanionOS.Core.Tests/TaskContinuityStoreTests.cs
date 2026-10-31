@@ -271,6 +271,36 @@ public sealed class TaskContinuityStoreTests : IDisposable
         Assert.NotEqual(first.Id, second!.Id);
     }
 
+    [Theory]
+    [InlineData("heyyyy")]
+    [InlineData("hiii")]
+    [InlineData("yo")]
+    [InlineData("hello Boss")]
+    public void GreetingsDoNotBindToAnOpenQuestion(string greeting)
+    {
+        PendingTaskRecord task = new()
+        {
+            State = PendingTaskState.AwaitingUser,
+            LastQuestion = "Which folder should I search?"
+        };
+
+        Assert.False(TaskContinuityStore.IsLikelyFollowUp(greeting, task));
+    }
+
+    [Fact]
+    public void ArbitraryReplyDoesNotBindToAQuestionOlderThanTenMinutes()
+    {
+        PendingTaskRecord task = new()
+        {
+            State = PendingTaskState.AwaitingUser,
+            UpdatedAt = DateTimeOffset.Now.AddMinutes(-11)
+        };
+
+        Assert.False(TaskContinuityStore.IsLikelyFollowUp("loser22", task));
+        Assert.True(TaskContinuityStore.IsLikelyFollowUp("did that finish?", task));
+        Assert.True(TaskContinuityStore.IsLikelyFollowUp("do it", task));
+    }
+
     [Fact]
     public void AStatusQuestionReadsTheTaskWithoutResettingIt()
     {

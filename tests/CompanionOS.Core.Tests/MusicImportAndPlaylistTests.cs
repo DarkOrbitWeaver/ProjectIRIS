@@ -204,9 +204,10 @@ public sealed class MusicImportAndPlaylistTests : IDisposable
         // Reading and indexing files outside her own folder must always ask.
         Assert.Equal(ToolTier.SystemCritical, import.Tier);
         Assert.True(import.AlwaysConfirm);
-        Assert.Equal(ToolTier.SystemCritical, find.Tier);
+        Assert.Equal(ToolTier.Scoped, find.Tier);
         Assert.False(find.AlwaysConfirm);
         Assert.Equal("music.downloads.read", find.PermissionScope);
+        Assert.True(find.SessionTrust);
     }
 
     [Fact]

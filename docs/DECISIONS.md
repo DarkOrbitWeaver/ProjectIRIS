@@ -112,7 +112,9 @@ for exactly that reason.
 Tiers are declared with the tool, enforced centrally in `SandboxGuard`, and every decision
 lands in an audit file.
 The bounded read-only `music_find_download` search uses its own `music.downloads.read`
-scope and can be granted persistently; indexing/importing an external file still always asks.
+scope, is classified as `Scoped`, and supports session or persistent grants; indexing/importing
+an external file still always asks. Short spoken answers to an open approval prompt do not need
+the wake phrase, but the prompt matcher remains the approval safety gate.
 **Cost:** red tools interrupt flow — that is the point.
 
 ### 12. External modules are process-isolated and permission-gated

@@ -70,10 +70,35 @@ public sealed class MutationVerificationLedger
             return string.Empty;
         }
 
-        string names = string.Join(", ", unverified.Take(3));
+        string names = string.Join(", ", unverified.Take(3).Select(FriendlyName));
         return unverified.Count == 1
-            ? $"The change made by {names} was not read back, so it is unconfirmed."
-            : $"The changes made by {names} were not read back, so they are unconfirmed.";
+            ? $"Heads up: \"{names}\" went through, but I could not read the result back to confirm it."
+            : $"Heads up: {names} went through, but I could not read the results back to confirm them.";
+    }
+
+    /// <summary>
+    /// Internal tool identifiers are protocol, not conversation. A user once read
+    /// "plugin_telegram_personal_telegram_send_messag_1a7d79a2ed" in chat (2026-10-31
+    /// screenshot) — strip the call-id suffix and plugin prefix, and speak in words.
+    /// </summary>
+    internal static string FriendlyName(string toolName)
+    {
+        string name = toolName.Trim();
+
+        int lastUnderscore = name.LastIndexOf('_');
+        if (lastUnderscore > 0 && name.Length - lastUnderscore - 1 >= 6 &&
+            name[(lastUnderscore + 1)..].All(Uri.IsHexDigit))
+        {
+            name = name[..lastUnderscore];
+        }
+
+        const string pluginPrefix = "plugin_";
+        if (name.StartsWith(pluginPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            name = name[pluginPrefix.Length..];
+        }
+
+        return name.Replace('_', ' ');
     }
 
     private static string ModuleOf(string toolName)

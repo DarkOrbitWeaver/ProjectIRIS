@@ -291,7 +291,24 @@ internal static class ToolSchemaValidator
                 if (requiredName.ValueKind != JsonValueKind.String ||
                     !value.TryGetProperty(requiredName.GetString()!, out _))
                 {
-                    reason = $"{path} is missing a required argument";
+                    // Name the missing key and its allowed values. "$ is missing a required
+                    // argument" taught the model nothing, so it retried the same empty call
+                    // until the loop guard killed the turn (2026-10-31 music_library audit).
+                    string missing = requiredName.ValueKind == JsonValueKind.String
+                        ? requiredName.GetString()!
+                        : "(unnamed)";
+                    string allowedHint = string.Empty;
+                    if (schema.TryGetProperty("properties", out JsonElement declaredForHint) &&
+                        declaredForHint.ValueKind == JsonValueKind.Object &&
+                        declaredForHint.TryGetProperty(missing, out JsonElement missingSchema) &&
+                        missingSchema.ValueKind == JsonValueKind.Object &&
+                        missingSchema.TryGetProperty("enum", out JsonElement allowedValues) &&
+                        allowedValues.ValueKind == JsonValueKind.Array)
+                    {
+                        allowedHint = $" (allowed values: {string.Join(", ", allowedValues.EnumerateArray().Select(item => item.ToString()))})";
+                    }
+
+                    reason = $"the required argument '{missing}'{allowedHint} is missing at {path}";
                     return false;
                 }
             }

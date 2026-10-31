@@ -56,6 +56,12 @@ it never changes the saved active profile. Each request and round records the mo
 and `model.fallback` records the switch. If the fallback is text-only, image payloads are
 removed and the user is told that image understanding is unavailable for that reply.
 
+Open prompts may receive short spoken answers such as "approve" or "deny" without the
+wake phrase; the prompt's own conservative matcher still decides whether the utterance is
+a valid answer. Unanswered free-text questions only bind arbitrary short replies for ten
+minutes, and greeting-only messages are treated as new conversation rather than task
+continuations. Tool-schema failures identify missing required fields and enum choices.
+
 ---
 
 ## 3. The event bus

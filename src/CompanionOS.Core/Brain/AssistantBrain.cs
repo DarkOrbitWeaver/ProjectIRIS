@@ -1296,17 +1296,19 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
         // we sanctioned, not words she chose. Chat, history and voice all take this text
         // from here, so every surface keeps the same clean words and the junk that used
         // to print ("[ mood:calm ]", "[ list_music ]") survives nowhere visible.
-        answerText = SpeechTextSanitizer.StripProtocolNoise(
-            answerText, routedTools.Select(tool => tool.Name));
-
         // The one fact she cannot know: a change nobody read back. Her words are left
         // exactly as written — the OS appends the missing receipt, it does not score
-        // her sentence or rewrite a true one.
+        // her sentence or rewrite a true one. Appended BEFORE the sanitizer pass so the
+        // receipt is cleaned like every other sentence (the old order let raw tool ids
+        // reach chat, 2026-10-31 screenshot).
         if (verificationLedger.HasUnverifiedMutations)
         {
             answerText = answerText.TrimEnd() + "\n\n" + verificationLedger.DescribeUnverified();
             toolLedger.Add("verification: not read back");
         }
+
+        answerText = SpeechTextSanitizer.StripProtocolNoise(
+            answerText, routedTools.Select(tool => tool.Name));
 
         _taskContinuity.FinishTurn(continuityTaskId, turnId, answerText,
             SpeechPlanner.IsActionRequest(userText));

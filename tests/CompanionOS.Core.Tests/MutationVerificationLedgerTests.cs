@@ -18,7 +18,9 @@ public sealed class MutationVerificationLedgerTests
 
         Assert.True(ledger.HasUnverifiedMutations);
         Assert.Contains("music_playlists", ledger.UnverifiedTools);
-        Assert.Contains("not read back", ledger.DescribeUnverified(), StringComparison.Ordinal);
+        Assert.Contains("could not read the result back", ledger.DescribeUnverified(), StringComparison.Ordinal);
+        Assert.Contains("music playlists", ledger.DescribeUnverified(), StringComparison.Ordinal);
+        Assert.DoesNotContain("music_playlists", ledger.DescribeUnverified(), StringComparison.Ordinal);
     }
 
     [Fact]
@@ -70,8 +72,17 @@ public sealed class MutationVerificationLedgerTests
         ledger.RecordMutation("telegram_send_message", false);
 
         string described = ledger.DescribeUnverified();
-        Assert.Contains("music_playlists", described, StringComparison.Ordinal);
-        Assert.Contains("telegram_send_message", described, StringComparison.Ordinal);
-        Assert.Contains("were not read back", described, StringComparison.Ordinal);
+        Assert.Contains("music playlists", described, StringComparison.Ordinal);
+        Assert.Contains("telegram send message", described, StringComparison.Ordinal);
+        Assert.Contains("could not read the results back", described, StringComparison.Ordinal);
+        Assert.DoesNotContain("plugin_", described, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void PluginToolIdsAreRenderedWithoutPrefixOrGeneratedSuffix()
+    {
+        const string toolName = "plugin_telegram_personal_telegram_send_messag_1a7d79a2ed";
+
+        Assert.Equal("telegram personal telegram send messag", MutationVerificationLedger.FriendlyName(toolName));
     }
 }

@@ -221,6 +221,19 @@ public sealed class CoreRegressionTests
         using JsonDocument absent = JsonDocument.Parse("{}");
         Assert.False(ToolSchemaValidator.TryValidate(absent.RootElement, schema, out reason));
         Assert.Contains("required", reason);
+        Assert.Contains("minutes", reason);
+    }
+
+    [Fact]
+    public void MissingRequiredEnumArgumentNamesTheFieldAndAllowedValues()
+    {
+        using JsonDocument arguments = JsonDocument.Parse("{}");
+        const string schema = """{"type":"object","properties":{"action":{"type":"string","enum":["list","refresh"]}},"required":["action"]}""";
+
+        Assert.False(ToolSchemaValidator.TryValidate(arguments.RootElement, schema, out string reason));
+        Assert.Contains("action", reason);
+        Assert.Contains("list", reason);
+        Assert.Contains("refresh", reason);
     }
 
     [Fact]
@@ -1587,7 +1600,7 @@ public sealed class CoreRegressionTests
                 "schema-turn", CancellationToken.None);
 
             Assert.False(result.Succeeded);
-            Assert.Contains("missing a required argument", result.ModelText);
+            Assert.Contains("required argument 'target'", result.ModelText);
             Assert.Equal(0, module.ExecutionCount);
             Assert.Collection(conversation.Where(item => item.TurnId == "schema-turn"),
                 item => Assert.Equal(ConversationPhase.ToolStarted, item.Phase),
@@ -1766,6 +1779,31 @@ public sealed class CoreRegressionTests
 
         Assert.Equal(VoiceAddressingOutcome.WakeMiss, decision.Outcome);
         Assert.Empty(decision.RequestText);
+    }
+
+    [Fact]
+    public void ShortPromptAnswersCanReachOpenPromptWithoutWakePhrase()
+    {
+        WakePhraseMatcher matcher = new(new Persona());
+
+        VoiceAddressingDecision decision = VoiceAddressingPolicy.Decide(
+            "approve", requiresWakePhrase: true, conversationWasOpen: false, matcher, promptOpen: true);
+
+        Assert.Equal(VoiceAddressingOutcome.OpenConversationRequest, decision.Outcome);
+        Assert.Equal("approve", decision.RequestText);
+    }
+
+    [Theory]
+    [InlineData("approve this message and include the screenshot too")]
+    [InlineData("approve it and then send another one right now please")]
+    public void LongPromptAnswersStillRequireWakePhrase(string transcript)
+    {
+        WakePhraseMatcher matcher = new(new Persona());
+
+        VoiceAddressingDecision decision = VoiceAddressingPolicy.Decide(
+            transcript, requiresWakePhrase: true, conversationWasOpen: false, matcher, promptOpen: true);
+
+        Assert.Equal(VoiceAddressingOutcome.WakeMiss, decision.Outcome);
     }
 
     [Fact]

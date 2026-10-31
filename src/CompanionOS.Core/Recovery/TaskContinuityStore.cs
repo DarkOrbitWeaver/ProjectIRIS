@@ -587,6 +587,14 @@ public sealed class TaskContinuityStore
             return false;
         }
 
+        // A greeting is a fresh hello, never an answer to a stale question. "heyyyy"
+        // once bound to an hour-old song search and got "I'm still waiting on whether
+        // you'd like me to search another folder" instead of "hey" (2026-10-31 audit).
+        if (IsGreetingOnly(words))
+        {
+            return false;
+        }
+
         string joined = " " + string.Join(' ', words) + " ";
         if (new[] { " yes ", " sure ", " okay ", " ok ", " yep ", " yeah ", " continue ", " proceed ",
                     " add it ", " add that ", " send it ", " do it ", " that one ", " this one ",
@@ -605,9 +613,60 @@ public sealed class TaskContinuityStore
 
         // An arbitrary short string can be a username, a nickname, a path fragment,
         // or the message Iris just asked the user to supply. Bind it only while a
-        // question is open; an independent command such as "play music" starts anew.
+        // question is open AND recent; an independent command such as "play music"
+        // starts anew, and a question nobody answered for ten minutes has gone cold —
+        // binding arbitrary words to it hijacks ordinary conversation.
         return task.State == PendingTaskState.AwaitingUser &&
+               DateTimeOffset.Now - task.UpdatedAt <= OpenQuestionBindingWindow &&
                !StartsWithIndependentAction(words) && words.Length <= 10;
+    }
+
+    /// <summary>How long an unanswered question may keep claiming short free-text replies.</summary>
+    private static readonly TimeSpan OpenQuestionBindingWindow = TimeSpan.FromMinutes(10);
+
+    private static readonly HashSet<string> GreetingWords = new(StringComparer.Ordinal)
+    {
+        "hey", "hi", "hello", "yo", "sup", "hiya", "heya", "howdy", "greetings",
+        "morning", "evening", "afternoon", "good", "whats", "up", "there", "again",
+        "iris", "boss"
+    };
+
+    /// <summary>
+    /// True when every word is small talk. Stretched spellings ("heyyyy", "hiii")
+    /// collapse to their base form before matching.
+    /// </summary>
+    internal static bool IsGreetingOnly(IReadOnlyList<string> words)
+    {
+        if (words.Count == 0 || words.Count > 4)
+        {
+            return false;
+        }
+
+        foreach (string word in words)
+        {
+            StringBuilder collapsed = new(word.Length);
+            char previous = '\0';
+            foreach (char letter in word)
+            {
+                if (letter != previous)
+                {
+                    collapsed.Append(letter);
+                    previous = letter;
+                }
+            }
+
+            string basic = collapsed.ToString();
+            // "heyy" collapses to "hey"; "hiii" to "hi"; "helloooo" to "helo" — accept
+            // the collapsed form or the collapsed form with its last letter doubled away.
+            if (!GreetingWords.Contains(basic) && !GreetingWords.Contains(word) &&
+                !(basic.Length > 2 && GreetingWords.Contains(basic[..^1])) &&
+                !basic.Equals("helo", StringComparison.Ordinal))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     public static bool IsStatusQuestion(string? utterance)

@@ -170,10 +170,14 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
             "This is a bounded, read-only search of Iris cache downloads, workspace Music/Downloads, and the user's standard Downloads folder; " +
             "it does not search the whole PC. If several files match, return all plausible paths and ask which one. If there is no match, " +
             "do not immediately repeat the same query; use materially different details or ask for clarification. Do not import or add anything.",
-            ToolTier.SystemCritical,
+            // Scoped, not SystemCritical: this is a bounded read-only search of known
+            // folders. Tier 3 forced a fresh "Allow once" card on every single search —
+            // pure approval fatigue for a look-only action (2026-10-31 audit). SessionTrust
+            // lets "this session" stick; the scope grant lets "Always" stick.
+            ToolTier.Scoped,
             """{"type":"object","properties":{"query":{"type":"string","description":"Song title, artist, or filename phrase."}},"required":["query"]}""",
             "find downloaded song", "search downloads", "where did the download go", "find downloaded music", "downloaded track")
-        { Access = ToolAccess.Reads, PermissionScope = "music.downloads.read", TimeoutSeconds = 45 },
+        { Access = ToolAccess.Reads, PermissionScope = "music.downloads.read", SessionTrust = true, TimeoutSeconds = 45 },
 
         new(
             "music_import_file",

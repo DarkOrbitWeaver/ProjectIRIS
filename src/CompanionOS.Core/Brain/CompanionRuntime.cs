@@ -130,7 +130,11 @@ public sealed class CompanionRuntime : IAsyncDisposable
         ModuleHost modules = new(settings, events, sandbox, memory);
 
         PerceptionEngine perception = new(settings, events);
-        VoicePipeline voice = new(settings, events, persona);
+        VoicePipeline voice = new(settings, events, persona)
+        {
+            // "Say approve, or deny" must work as printed on the card, wake phrase or not.
+            HasOpenPrompt = () => sandbox.Prompts.Active is not null
+        };
         LlamaServerHost serverHost = new();
         ModelClient modelClient = new();
         TurnJournal journal = TurnJournal.CreateDefault();
