@@ -1,4 +1,5 @@
 using CompanionOS.Core.Common;
+using CompanionOS.Core.Configuration;
 using CompanionOS.Core.Diagnostics;
 using CompanionOS.Core.Events;
 using CompanionOS.Core.Modules;
@@ -81,6 +82,7 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
     // Unsupported files are skipped rather than poisoning an otherwise good scan.
     private readonly NowPlayingModel _nowPlaying = new();
     private List<string> _library = new();
+    private MusicLibraryImportIndex? _importIndex;
     private readonly SemaphoreSlim _libraryScanGate = new(1, 1);
     private readonly CancellationTokenSource _moduleLifetime = new();
     private readonly object _playerLock = new();
@@ -135,7 +137,7 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
     public string CapabilityDescription =>
         "music song track play pause resume stop skip next previous volume playlist queue " +
         "library browse folder navigate go here find music add folder put something on play something chill " +
-        "add to playlist make a playlist";
+        "downloaded song find download import file add to library add to playlist make a playlist";
 
     public IReadOnlyList<ModuleTool> Tools { get; } = new List<ModuleTool>
     {
@@ -162,6 +164,26 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
             "what music", "library", "list tracks", "refresh music", "rescan music", "scan music", "update library"),
 
         new(
+            "music_find_download",
+            "Search only the known download/music locations for an existing audio file whose filename or nearby folder matches the query. " +
+            "This is a bounded, read-only search of Iris cache downloads, workspace Music/Downloads, and the user's standard Downloads folder; " +
+            "it does not search the whole PC. If several files match, return all plausible paths and ask which one. Do not import or add anything.",
+            ToolTier.SystemCritical,
+            """{"type":"object","properties":{"query":{"type":"string","description":"Song title, artist, or filename phrase."}},"required":["query"]}""",
+            "find downloaded song", "search downloads", "where did the download go", "find downloaded music", "downloaded track")
+        { Access = ToolAccess.Reads, AlwaysConfirm = true, PermissionScope = "music.downloads.read", TimeoutSeconds = 45 },
+
+        new(
+            "music_import_file",
+            "Index one exact existing audio file in the music library without moving, copying, renaming, or modifying it. " +
+            "The user must have selected/provided the exact absolute path; this asks before reading an external file. " +
+            "After import, the path is remembered across restarts and can be added to a playlist as a separate step.",
+            ToolTier.SystemCritical,
+            """{"type":"object","properties":{"path":{"type":"string","description":"Exact absolute path to the existing audio file."}},"required":["path"]}""",
+            "import song", "add to my library", "index this audio file", "import downloaded song", "add downloaded song to library")
+        { Access = ToolAccess.Acts, AlwaysConfirm = true, PermissionScope = "music.import", TimeoutSeconds = 30 },
+
+        new(
             "music_library_folders",
             "Music library folders: action=add indexes an existing folder and scans it (with confirmation), action=browse safely lists the folders in one location so the user can walk the tree, action=remove stops indexing a configured folder — this never deletes files. An empty path uses the folder most recently browsed.",
             ToolTier.SystemCritical,
@@ -171,16 +193,19 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
 
         new(
             "music_playlists",
-            "Her saved playlists: action=list shows them with sizes, action=create makes one (name required; an optional query adds matching tracks immediately), action=add appends tracks matching query to a named playlist, action=play starts one from the beginning. " +
-            "\"Play a song from my playlist\" is action=play: give the playlist name, or the closest real spelling — the result lists the real names to pick from.",
+            "Her saved playlists: action=list shows names and sizes; action=inspect reads back the actual tracks; " +
+            "action=create makes one (name required; optional query adds matching indexed tracks); action=add appends indexed tracks matching query; " +
+            "action=add_file appends one exact file_path already indexed in the library; action=play starts one from the beginning. " +
+            "An add is not complete until the playlist is read back and the requested path is present. A download is not a library or playlist entry.",
             ToolTier.Reflex,
-            """{"type":"object","properties":{"action":{"type":"string","enum":["list","create","add","play"],"description":"What to do with playlists"},"name":{"type":"string","description":"For create/add/play: the playlist's name."},"query":{"type":"string","description":"For create/add: part of a track name; matching tracks join the playlist."}},"required":["action"]}""",
+            """{"type":"object","properties":{"action":{"type":"string","enum":["list","inspect","create","add","add_file","play"],"description":"What to do with playlists"},"name":{"type":"string","description":"Playlist name for inspect/create/add/add_file/play."},"query":{"type":"string","description":"For create/add: part of a track name; matching indexed tracks join the playlist."},"file_path":{"type":"string","description":"For add_file: exact absolute path already imported/indexed in the music library."}},"required":["action"]}""",
             "playlist", "play my", "play playlist", "new playlist", "create playlist", "add song", "add to playlist")
     };
 
     public Task InitializeAsync(ModuleContext context, CancellationToken cancellationToken)
     {
         _context = context;
+        _importIndex = new MusicLibraryImportIndex(context.WorkspaceDirectory);
 
         // The drop-in folder is one of her library roots; create it so there is
         // always somewhere obvious to hand her files.
@@ -202,6 +227,11 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
                 return await InvokePlayerActionAsync(invocation, cancellationToken).ConfigureAwait(false);
             case "music_library":
                 return await InvokeLibraryActionAsync(invocation, cancellationToken).ConfigureAwait(false);
+            case "music_find_download":
+                return await Task.Run(() => FindDownloadFiles(invocation.GetString("query"), cancellationToken),
+                    cancellationToken).ConfigureAwait(false);
+            case "music_import_file":
+                return ImportExistingFile(invocation.GetString("path"));
             case "music_library_folders":
                 return await InvokeFolderActionAsync(invocation, cancellationToken).ConfigureAwait(false);
             case "music_playlists":
@@ -384,6 +414,8 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
         {
             case "list":
                 return ListPlaylists();
+            case "inspect":
+                return InspectPlaylist(name);
             case "create":
                 if (!string.IsNullOrWhiteSpace(query))
                     await RefreshLibraryAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
@@ -391,11 +423,13 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
             case "add":
                 await RefreshLibraryAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
                 return AddToPlaylist(name, query);
+            case "add_file":
+                return AddExactFileToPlaylist(name, invocation.GetString("file_path"));
             case "play":
                 return PlayPlaylist(name);
             default:
                 return ToolResult.Fail(
-                    $"Unknown playlist action '{action}'. Call again with action list, create, add or play.");
+                    $"Unknown playlist action '{action}'. Use list, inspect, create, add, add_file or play.");
         }
     }
 
@@ -422,6 +456,26 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
             ? actionValue.GetString() ?? string.Empty
             : string.Empty;
 
+        if (tool.Name == "music_import_file")
+        {
+            string target = SanitizePermissionTarget(requestedPath);
+            return $"index the existing audio file '{target}' by reference; do not move, copy, rename or modify it";
+        }
+
+        if (tool.Name == "music_find_download")
+        {
+            return "read-only bounded search of Iris cache downloads, workspace Music/Downloads, and the standard user Downloads folder";
+        }
+
+        if (tool.Name == "music_playlists" && action == "add_file")
+        {
+            string target = arguments.ValueKind == JsonValueKind.Object &&
+                            arguments.TryGetProperty("file_path", out JsonElement fileValue)
+                ? SanitizePermissionTarget(fileValue.ValueKind == JsonValueKind.String ? fileValue.GetString() ?? string.Empty : fileValue.ToString())
+                : "the selected indexed audio file";
+            return $"add the already indexed file '{target}' to the named playlist and verify it by reading the playlist back";
+        }
+
         if (tool.Name == "music_library_folders")
         {
             string target = action switch
@@ -445,6 +499,93 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
         }
 
         return tool.Description.TrimEnd('.').ToLowerInvariant();
+    }
+
+    private ToolResult ImportExistingFile(string requestedPath)
+    {
+        if (_importIndex is null)
+        {
+            return ToolResult.Fail("The music library is not initialized; no file was imported.");
+        }
+
+        if (!_importIndex.Add(requestedPath, out string fullPath, out string reason))
+        {
+            return ToolResult.Fail(reason);
+        }
+
+        if (!File.Exists(fullPath))
+        {
+            return ToolResult.Fail("The file disappeared before the library could verify it; nothing was added to the in-memory library.");
+        }
+
+        if (!_library.Contains(fullPath, StringComparer.OrdinalIgnoreCase))
+        {
+            _library.Add(fullPath);
+            if (_library.Count > MaximumCachedTracks)
+            {
+                _library.RemoveAt(_library.Count - 1);
+            }
+        }
+
+        _nowPlaying.TrackCount = _library.Count;
+        string title = Path.GetFileNameWithoutExtension(fullPath);
+        return ToolResult.Ok(
+            $"Imported '{title}' into the library by path reference. Verified file exists at {fullPath}; " +
+            "the original file was not moved, copied, renamed or modified. It can now be added to a playlist as a separate step.");
+    }
+
+    private ToolResult FindDownloadFiles(string query, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(query))
+        {
+            return ToolResult.Fail("Give me a song title, artist or filename phrase to search for.");
+        }
+        if (_context is null)
+        {
+            return ToolResult.Fail("The music module is not initialized.");
+        }
+
+        string userDownloads = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
+        string[] roots =
+        {
+            Path.Combine(_context.CacheDirectory, "downloads"),
+            Path.Combine(_context.WorkspaceDirectory, "Downloads"),
+            Path.Combine(_context.WorkspaceDirectory, "Music"),
+            userDownloads
+        };
+
+        MusicLibraryScanResult scan = MusicLibraryScanner.Scan(
+            roots,
+            cancellationToken,
+            timeBudget: TimeSpan.FromSeconds(4),
+            maximumRoots: 8,
+            maximumDirectories: 600,
+            maximumEntries: 6_000,
+            maximumTracks: 1_200,
+            maximumDepth: 12);
+
+        List<string> matches = scan.Tracks
+            .Select(path => (Path: path, Score: MatchScore(query, path)))
+            .Where(match => match.Score > 0)
+            .OrderByDescending(match => match.Score)
+            .ThenBy(match => match.Path, StringComparer.OrdinalIgnoreCase)
+            .Take(12)
+            .Select(match => match.Path)
+            .ToList();
+        string scope = string.Join("; ", roots.Select(path => $"'{path}'"));
+        string partial = scan.WasLimited ? $" Search was partial: it reached the {scan.LimitReason}." : string.Empty;
+        if (matches.Count == 0)
+        {
+            return ToolResult.Ok(
+                $"No matching audio file was found. Scope checked: {scope}.{partial} " +
+                "No file was imported or changed. If it is in another folder, ask the user to name or browse that folder.");
+        }
+
+        return ToolResult.Ok(
+            $"Found {matches.Count} plausible existing audio file(s) in the checked locations (up to 12 shown): " +
+            string.Join(" | ", matches.Select(path => $"{Path.GetFileNameWithoutExtension(path)} — {path}")) +
+            $". Scope checked: {scope}.{partial} These are candidates only; do not randomly import or add one when ambiguous.");
     }
 
     private static string SanitizePermissionTarget(string path)
@@ -927,6 +1068,31 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
         return ToolResult.Ok(lines, displayText: lines);
     }
 
+    private ToolResult InspectPlaylist(string name)
+    {
+        string safeName = SafeName(name);
+        if (safeName.Length == 0)
+        {
+            return ToolResult.Fail("Name the playlist to inspect.");
+        }
+        if (!PlaylistExists(safeName))
+        {
+            return MissingPlaylistResult(name, "Inspect one of the real playlists listed above.");
+        }
+
+        List<string>? tracks = LoadPlaylist(safeName);
+        if (tracks is null)
+        {
+            return ToolResult.Fail($"Playlist '{name}' exists but could not be read; I cannot verify its contents.");
+        }
+
+        string body = tracks.Count == 0
+            ? $"Playlist '{name}' is empty (verified by reading its saved file)."
+            : $"Playlist '{name}' has {tracks.Count} track(s), read from its saved file: " +
+              string.Join("; ", tracks.Select(path => $"{Path.GetFileNameWithoutExtension(path)} — {path}"));
+        return ToolResult.Ok(body);
+    }
+
     private ToolResult ShuffleMusic()
     {
         if (_library.Count == 0)
@@ -985,7 +1151,22 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
             tracks = ResolveQuery(query).ToList();
         }
 
-        SavePlaylist(safeName, tracks);
+        try
+        {
+            SavePlaylist(safeName, tracks);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            return ToolResult.Uncertain($"Playlist '{name}' may or may not have been created: {exception.Message}");
+        }
+
+        List<string>? verified = LoadPlaylist(safeName);
+        if (verified is null || verified.Count != tracks.Count ||
+            !tracks.All(track => verified.Contains(track, StringComparer.OrdinalIgnoreCase)))
+        {
+            return ToolResult.Uncertain($"Playlist '{name}' was written, but reading it back did not verify the requested contents. Check it before retrying.");
+        }
+
         bool partialLibrary = !string.IsNullOrWhiteSpace(query) && _lastScan?.WasLimited == true;
         return ToolResult.Ok(tracks.Count == 0
                 ? partialLibrary
@@ -999,22 +1180,56 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
 
     private ToolResult AddToPlaylist(string name, string query)
     {
+        List<string> tracks = ResolveQuery(query).ToList();
+        if (tracks.Count == 0)
+        {
+            return ToolResult.Fail($"Nothing in the library matches '{query}'.");
+        }
+        return AddTracksToPlaylist(name, tracks);
+    }
+
+    private ToolResult AddExactFileToPlaylist(string name, string requestedPath)
+    {
+        if (string.IsNullOrWhiteSpace(requestedPath) || !Path.IsPathRooted(requestedPath))
+        {
+            return ToolResult.Fail("Give the exact absolute path of the imported file.");
+        }
+
+        string fullPath;
+        try
+        {
+            fullPath = Path.GetFullPath(requestedPath);
+        }
+        catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return ToolResult.Fail($"That file path is invalid: {exception.Message}");
+        }
+
+        if (!File.Exists(fullPath) || !MusicLibraryScanner.IsSupportedAudioFile(fullPath))
+        {
+            return ToolResult.Fail("That audio file is missing or unsupported. Nothing was added.");
+        }
+        if (!_library.Contains(fullPath, StringComparer.OrdinalIgnoreCase))
+        {
+            return ToolResult.Fail(
+                "That file is not indexed in the music library yet. Import the exact existing file first; " +
+                "a download alone is not a library entry.");
+        }
+
+        return AddTracksToPlaylist(name, new[] { fullPath });
+    }
+
+    private ToolResult AddTracksToPlaylist(string name, IReadOnlyList<string> requestedTracks)
+    {
         string safeName = SafeName(name);
         if (safeName.Length == 0)
         {
             return ToolResult.Fail("Which playlist should I add to? Give me its name.");
         }
-
         if (!PlaylistExists(safeName))
         {
             return MissingPlaylistResult(name,
                 "Add to the closest real spelling, or create the missing playlist first.");
-        }
-
-        List<string> added = ResolveQuery(query).ToList();
-        if (added.Count == 0)
-        {
-            return ToolResult.Fail($"Nothing in the library matches '{query}'.");
         }
 
         List<string>? storedTracks = LoadPlaylist(safeName);
@@ -1026,17 +1241,45 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
                 "Delete the playlist and create it again.");
         }
 
-        List<string> tracks = storedTracks;
-        int existing = tracks.Count;
-        tracks.AddRange(added.Where(track => !tracks.Contains(track, StringComparer.OrdinalIgnoreCase)));
-        SavePlaylist(safeName, tracks);
+        List<string> expectedTracks = storedTracks.ToList();
+        int existing = expectedTracks.Count;
+        expectedTracks.AddRange(requestedTracks.Where(track =>
+            !expectedTracks.Contains(track, StringComparer.OrdinalIgnoreCase)));
 
-        return ToolResult.Ok(
-            $"Added {tracks.Count - existing} new track(s) to '{name}' (now {tracks.Count} total)" +
-            (_lastScan?.WasLimited == true ? " from the partial library index." : "."),
-            spokenText: _lastScan?.WasLimited == true
-                ? $"I added the matching tracks I found so far to '{name}'."
-                : $"Added to '{name}'.");
+        try
+        {
+            SavePlaylist(safeName, expectedTracks);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            return ToolResult.Uncertain(
+                $"The playlist write may have happened, but its result was not confirmed: {exception.Message}");
+        }
+
+        // Read-after-write is the only success receipt. In particular, a downloaded
+        // file being present in the library never counts as playlist membership.
+        List<string>? verifiedTracks = LoadPlaylist(safeName);
+        if (verifiedTracks is null ||
+            !requestedTracks.All(track => verifiedTracks.Contains(track, StringComparer.OrdinalIgnoreCase)))
+        {
+            return ToolResult.Uncertain(
+                $"The playlist file was written, but reading it back did not confirm every requested track. " +
+                "Check the playlist before retrying; I will not claim the add succeeded.");
+        }
+
+        int newlyAdded = verifiedTracks.Count - existing;
+        string proof = string.Join("; ", requestedTracks.Select(path => Path.GetFileNameWithoutExtension(path)));
+        return new ToolResult
+        {
+            Succeeded = true,
+            // Read-after-write actually happened above, so this write is proven, not assumed.
+            SelfVerified = true,
+            ModelText = $"Playlist '{name}' read back from disk and verified {requestedTracks.Count} requested track(s): {proof}. " +
+                        $"{newlyAdded} new track(s) added; playlist now has {verifiedTracks.Count}.",
+            SpokenText = newlyAdded == 0
+                ? $"That track was already in '{name}'. I verified it."
+                : $"Added to '{name}' and verified it is there."
+        };
     }
 
     /// <summary>
@@ -1411,23 +1654,32 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
                 progress: reportProgress), cancellationToken).ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();
 
+            // The scanner covers configured folders; explicit imports are exact path
+            // references to user-selected files outside those roots. Merge them without
+            // copying/moving sources, and keep their existence/link validation separate.
+            IReadOnlyList<string> imported = _importIndex?.Load() ?? Array.Empty<string>();
+            List<string> discoveries = scan.Tracks
+                .Concat(imported)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            scan = scan with { Tracks = discoveries };
+
             // If the scan hit a bound, preserve the usable previous index and merge the
-            // discoveries. A huge new folder must not make familiar tracks disappear.
-            // Removing a root excludes its paths only after a scan succeeds; cancellation
+            // discoveries. Removing a root excludes its paths only after a scan succeeds; cancellation
             // therefore leaves the previous index untouched.
             _lastScan = scan;
             if (scan.WasLimited)
             {
                 IEnumerable<string> retained = _library.Where(track => excludedRoots is null ||
                     !excludedRoots.Any(root => IsWithinDirectory(root, track)));
-                _library = retained.Concat(scan.Tracks)
+                _library = retained.Concat(discoveries)
                     .Distinct(StringComparer.OrdinalIgnoreCase)
                     .Take(MaximumCachedTracks)
                     .ToList();
             }
             else
             {
-                _library = scan.Tracks.ToList();
+                _library = discoveries.Take(MaximumCachedTracks).ToList();
             }
             _nowPlaying.TrackCount = _library.Count;
             _lastLibraryRefresh = DateTimeOffset.UtcNow;

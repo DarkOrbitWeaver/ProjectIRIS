@@ -1,4 +1,4 @@
-﻿using System.Text.Json;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text;
 using CompanionOS.Core.Configuration;
@@ -476,7 +476,8 @@ public sealed class ModuleHost : IAsyncDisposable
         if (!ToolSchemaValidator.TryValidate(arguments, tool.ParametersJson, out string schemaFailure))
         {
             ToolResult invalidArguments = ToolResult.Fail(
-                $"I did not run {tool.Name} because its arguments did not match the action's requirements. {schemaFailure}.");
+                $"I did not run {tool.Name} because its arguments did not match the action's requirements. {schemaFailure}.",
+                ToolFailureKind.InvalidArguments);
             PublishToolStarted(turnId, owner, tool, arguments);
             PublishToolFinished(turnId, owner, tool, invalidArguments, arguments);
             IrisEvent.Log("Modules", "tool.arguments.invalid", LogLevel.Warning,
@@ -497,7 +498,13 @@ public sealed class ModuleHost : IAsyncDisposable
 
         if (!authorization.IsAllowed)
         {
-            ToolResult refusal = ToolResult.Fail(authorization.RefusalReason);
+            ToolFailureKind kind = authorization.Stop switch
+            {
+                PermissionStop.TimedOut => ToolFailureKind.PermissionTimedOut,
+                PermissionStop.Interrupted => ToolFailureKind.Cancelled,
+                _ => ToolFailureKind.PermissionDenied
+            };
+            ToolResult refusal = ToolResult.Fail(authorization.RefusalReason, kind);
             PublishToolFinished(turnId, owner, tool, refusal, arguments);
             return refusal;
         }

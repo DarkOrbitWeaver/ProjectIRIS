@@ -13,11 +13,11 @@ namespace CompanionOS.Core.Modules;
 /// so it can ask once more, plainly, or choose another path instead of treating a
 /// missed prompt as a forbidden action.
 /// </summary>
-public readonly record struct AuthorizationOutcome(bool IsAllowed, string RefusalReason)
+public readonly record struct AuthorizationOutcome(bool IsAllowed, string RefusalReason, PermissionStop Stop)
 {
-    public static AuthorizationOutcome Allowed() => new(true, string.Empty);
+    public static AuthorizationOutcome Allowed() => new(true, string.Empty, PermissionStop.Allowed);
 
-    public static AuthorizationOutcome Refused(string reason) => new(false, reason);
+    public static AuthorizationOutcome Refused(string reason, PermissionStop stop) => new(false, reason, stop);
 }
 
 /// <summary>
@@ -445,7 +445,7 @@ public sealed class SandboxGuard
                 $"The user was asked about {tool.Name} and did not allow it. That is a no: state it plainly " +
                 "and do not ask again this turn."
         };
-        return AuthorizationOutcome.Refused(refusalReason);
+        return AuthorizationOutcome.Refused(refusalReason, stop);
     }
 
     /// <summary>

@@ -47,6 +47,7 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
     private readonly PerceptionEngine _perception;
     private readonly VoicePipeline _voice;
     private readonly TurnJournal _journal;
+    private readonly TaskContinuityStore _taskContinuity;
     private readonly MindStateMachine _mind;
     private readonly IDisposable _backgroundTaskJournalSubscription;
     private readonly IDisposable _promptSubscription;
@@ -91,6 +92,7 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
         _perception = perception;
         _voice = voice;
         _journal = journal;
+        _taskContinuity = new TaskContinuityStore(CompanionPaths.WorkspaceDirectory);
         _mind = mind;
         _backgroundTaskJournalSubscription = events.Subscribe<BackgroundTaskChangedEvent>(RecordBackgroundTaskState);
         _promptSubscription = events.Subscribe<PromptChangedEvent>(OnPromptChanged);
@@ -154,6 +156,22 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
                 actionMayHaveCompleted ? NoticeSeverity.Warning : NoticeSeverity.Info);
         }
 
+        PendingTaskRecord? unfinishedTask = _taskContinuity.LatestOpen;
+        if (unfinishedTask is not null)
+        {
+            string uncertainty = string.IsNullOrWhiteSpace(unfinishedTask.Uncertainty)
+                ? string.Empty
+                : " " + unfinishedTask.Uncertainty;
+            string blocker = string.IsNullOrWhiteSpace(unfinishedTask.Blocker)
+                ? string.Empty
+                : " " + unfinishedTask.Blocker;
+            _events.PublishNotice(
+                $"Unfinished task {unfinishedTask.Id} was preserved ({unfinishedTask.State}). " +
+                "Say \"continue\" to resume from recorded receipts; I will check state before repeating any side effect." +
+                blocker + uncertainty,
+                unfinishedTask.State == PendingTaskState.Uncertain ? NoticeSeverity.Warning : NoticeSeverity.Info);
+        }
+
         _mind.MoveTo(MindState.Idle, "startup");
         _journal.RecordState(MindState.Idle, "startup");
 
@@ -215,6 +233,7 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
         catch (OperationCanceledException)
         {
             CompanionLog.Info("Brain", $"Turn {turnId} cancelled.");
+            _taskContinuity.MarkTurnCancelled(turnId);
             IrisEvent.Log("Brain", "turn.cancelled", LogLevel.Info,
                 data: new Dictionary<string, string?> { ["origin"] = origin });
             _journal.RecordAnswerCancelled(turnId);
@@ -412,6 +431,8 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
         }
 
         _journal.RecordBackgroundTaskState(task.Id, task.ModuleId, task.ToolName, state);
+        // The task ledger records only a terminal state, never background result text.
+        _taskContinuity.RecordBackgroundState(task.Id, state);
         if (task.State is BackgroundTaskState.Completed or BackgroundTaskState.Failed or BackgroundTaskState.Cancelled)
         {
             string taskDetail = task.Result?.Trim() ?? string.Empty;
@@ -450,6 +471,9 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
         CancellationToken cancellationToken)
     {
         _journal.RecordUserMessage(turnId, userText);
+        PendingTaskRecord? continuationTask = _taskContinuity.BeginTurn(
+            turnId, userText, SpeechPlanner.IsActionRequest(userText));
+        string? continuityTaskId = continuationTask?.Id;
 
         _events.Publish(new ConversationEvent
         {
@@ -555,6 +579,14 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
             intuition,
             DescribeMode(),
             DateTime.Now.ToString("dddd HH:mm"));
+        if (!string.IsNullOrWhiteSpace(continuityTaskId))
+        {
+            string taskContext = _taskContinuity.BuildContext(continuityTaskId, _journal);
+            if (!string.IsNullOrWhiteSpace(taskContext))
+            {
+                turnContext += "\n\n" + taskContext;
+            }
+        }
 
         List<ChatMessage> messages = new() { ChatMessage.System(systemPrompt) };
         IReadOnlyList<int> historySpanLengths;
@@ -588,6 +620,17 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
         // rest of the budget on a plan that is demonstrably not working.
         ToolLoopGuard loopGuard = new();
         int roundsRun = 0;
+
+        // Verb fidelity: what the user actually asked for, unioned across every turn
+        // of this task so a clarification never revokes the original verb. Permissions
+        // are unaffected; this only stops the agent doing MORE than it was asked.
+        List<string> taskUtterances = new() { userText };
+        if (continuationTask is not null)
+        {
+            taskUtterances.AddRange(_journal.ReadUserMessages(continuationTask.TurnIds).Select(message => message.Text));
+        }
+        IReadOnlySet<RequestedAction> grantedActions = IntentGuard.ParseAll(taskUtterances);
+        MutationVerificationLedger verificationLedger = new();
 
         for (int round = 0; loopGuard.MayStartRound(round); round++)
         {
@@ -813,22 +856,35 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
                 // values is the difference between replayable evidence and a black box.
                 string operationId = _journal.RecordToolCall(turnId, "router", call.Name, call.ArgumentsJson);
                 string label = call.Name.Replace('_', ' ').Replace('.', ' ');
+                ModuleTool? routedDefinition = routedTools.FirstOrDefault(candidate =>
+                    candidate.Name.Equals(call.Name, StringComparison.OrdinalIgnoreCase));
+                bool sideEffecting = routedDefinition is not null &&
+                                     ToolPresentationCatalog.AccessOf(routedDefinition) == ToolAccess.Acts;
+                if (sideEffecting)
+                {
+                    continuityTaskId = _taskContinuity.EnsureTaskForAction(turnId, userText, continuityTaskId);
+                }
 
                 if (!ToolArgumentsParser.TryParse(call.ArgumentsJson, out JsonElement arguments))
                 {
                     // The schema is the corrective evidence a small model needs: without
                     // the keys, it used to re-emit the same broken arguments and burn
                     // another round on a canned "I should ask for the missing details".
-                    ModuleTool? routedDefinition = routedTools.FirstOrDefault(candidate =>
-                        candidate.Name.Equals(call.Name, StringComparison.OrdinalIgnoreCase));
                     string argumentHelp = routedDefinition is null
                         ? string.Empty
                         : " " + DescribeRequiredArguments(routedDefinition);
                     ToolResult invalidArguments = ToolResult.Fail(
-                        $"Invalid arguments for {call.Name}.{argumentHelp} Re-call the action with exactly those keys.");
+                        $"Invalid arguments for {call.Name}.{argumentHelp} Re-call the action with exactly those keys.",
+                        ToolFailureKind.InvalidArguments);
                     _journal.RecordToolResult(turnId, operationId, JournalToolStatus.Failed);
                     messages.Add(ChatMessage.ToolResult(call.Id, call.Name, invalidArguments.ModelText));
                     toolLedger.Add($"{label}: not run (invalid arguments)");
+                    if (sideEffecting)
+                    {
+                        _taskContinuity.RecordReceipt(continuityTaskId, turnId, call.Name, call.ArgumentsJson,
+                            sideEffecting: true, PendingTaskReceiptState.InvalidArguments,
+                            TaskContinuityStore.FindMissingRequiredFields(routedDefinition?.ParametersJson, call.ArgumentsJson));
+                    }
                     loopGuard.RecordCall(call.Name, call.ArgumentsJson, succeeded: false);
                     continue;
                 }
@@ -840,6 +896,48 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
                     _journal.RecordToolResult(turnId, operationId, JournalToolStatus.Failed);
                     messages.Add(ChatMessage.ToolResult(call.Id, call.Name, notRepeated.ModelText));
                     toolLedger.Add($"{label}: not repeated");
+                    if (sideEffecting)
+                    {
+                        _taskContinuity.RecordReceipt(continuityTaskId, turnId, call.Name, call.ArgumentsJson,
+                            true, PendingTaskReceiptState.Uncertain);
+                    }
+                    loopGuard.RecordCall(call.Name, call.ArgumentsJson, succeeded: false);
+                    continue;
+                }
+
+                if (IntentGuard.IsUnrequestedEscalation(grantedActions, call.Name, sideEffecting,
+                        out string escalationRefusal))
+                {
+                    // The user said "play"; this call would download, send or rewrite a
+                    // playlist. Doing the bigger thing silently is the failure; asking is
+                    // one short question.
+                    ToolResult notRequested = ToolResult.Fail(escalationRefusal, ToolFailureKind.NotRequested);
+                    _journal.RecordToolResult(turnId, operationId, JournalToolStatus.Failed);
+                    messages.Add(ChatMessage.ToolResult(call.Id, call.Name, notRequested.ModelText));
+                    toolLedger.Add($"{label}: not run (never asked for)");
+                    loopGuard.RecordCall(call.Name, call.ArgumentsJson, succeeded: false);
+                    IrisEvent.Log("Brain", "turn.intent_blocked", LogLevel.Info,
+                        message: "A call was refused because the request never granted that action class.",
+                        data: new Dictionary<string, string?>
+                        {
+                            ["tool"] = call.Name,
+                            ["granted"] = string.Join(",", grantedActions)
+                        });
+                    continue;
+                }
+
+                if (sideEffecting && continuityTaskId is not null &&
+                    _taskContinuity.WasSideEffectAlreadyAttempted(continuityTaskId, call.Name, call.ArgumentsJson))
+                {
+                    ToolResult alreadyAttempted = ToolResult.Fail(
+                        $"I did not repeat {label}: this exact side effect already succeeded, started in the background, " +
+                        "or has an unconfirmed outcome in this task. Check current state first; do not blindly send or download again.",
+                        ToolFailureKind.DuplicatePrevented);
+                    _journal.RecordToolResult(turnId, operationId, JournalToolStatus.Failed);
+                    messages.Add(ChatMessage.ToolResult(call.Id, call.Name, alreadyAttempted.ModelText));
+                    toolLedger.Add($"{label}: not repeated (prior receipt exists)");
+                    _taskContinuity.RecordReceipt(continuityTaskId, turnId, call.Name, call.ArgumentsJson,
+                        true, PendingTaskReceiptState.DuplicatePrevented);
                     loopGuard.RecordCall(call.Name, call.ArgumentsJson, succeeded: false);
                     continue;
                 }
@@ -855,6 +953,11 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
                     _journal.RecordToolResult(turnId, operationId, JournalToolStatus.Failed);
                     messages.Add(ChatMessage.ToolResult(call.Id, call.Name, blocked.ModelText));
                     toolLedger.Add($"{label}: refused (failed twice identically)");
+                    if (sideEffecting)
+                    {
+                        _taskContinuity.RecordReceipt(continuityTaskId, turnId, call.Name, call.ArgumentsJson,
+                            true, PendingTaskReceiptState.DuplicatePrevented);
+                    }
                     continue;
                 }
 
@@ -868,6 +971,11 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
                 catch (OperationCanceledException)
                 {
                     _journal.RecordToolResult(turnId, operationId, JournalToolStatus.Unknown);
+                    if (sideEffecting)
+                    {
+                        _taskContinuity.RecordReceipt(continuityTaskId, turnId, call.Name, call.ArgumentsJson,
+                            true, PendingTaskReceiptState.Uncertain);
+                    }
                     throw;
                 }
 
@@ -878,15 +986,53 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
                         : result.Succeeded ? JournalToolStatus.Succeeded : JournalToolStatus.Failed,
                     result.BackgroundTaskId);
 
+                if (sideEffecting)
+                {
+                    PendingTaskReceiptState receiptState = result.BackgroundTaskId is not null
+                        ? PendingTaskReceiptState.BackgroundStarted
+                        : result.IsOutcomeUncertain || result.FailureKind == ToolFailureKind.Uncertain
+                            ? PendingTaskReceiptState.Uncertain
+                            : result.Succeeded ? PendingTaskReceiptState.Succeeded
+                            : result.FailureKind switch
+                            {
+                                ToolFailureKind.PermissionDenied => PendingTaskReceiptState.PermissionDenied,
+                                ToolFailureKind.PermissionTimedOut => PendingTaskReceiptState.PermissionTimedOut,
+                                ToolFailureKind.InvalidArguments => PendingTaskReceiptState.InvalidArguments,
+                                ToolFailureKind.Cancelled => PendingTaskReceiptState.Cancelled,
+                                ToolFailureKind.DuplicatePrevented => PendingTaskReceiptState.DuplicatePrevented,
+                                _ => PendingTaskReceiptState.Failed
+                            };
+                    IReadOnlyList<string> missingFields = result.FailureKind == ToolFailureKind.InvalidArguments &&
+                        routedDefinition is not null
+                        ? TaskContinuityStore.FindMissingRequiredFields(routedDefinition.ParametersJson, call.ArgumentsJson)
+                        : Array.Empty<string>();
+                    _taskContinuity.RecordReceipt(continuityTaskId, turnId, call.Name, call.ArgumentsJson,
+                        true, receiptState, missingFields, result.BackgroundTaskId);
+                }
+
                 if (result.IsOutcomeUncertain)
                 {
                     uncertainTools.Add($"{call.Name}|{call.ArgumentsJson ?? string.Empty}");
                 }
 
+                if (result.Succeeded && result.BackgroundTaskId is null)
+                {
+                    // A write is pending proof until something reads it back; a read
+                    // confirms earlier writes from the same module, never from another.
+                    if (sideEffecting)
+                    {
+                        verificationLedger.RecordMutation(call.Name, result.SelfVerified);
+                    }
+                    else
+                    {
+                        verificationLedger.RecordVerificationRead(call.Name);
+                    }
+                }
+
                 anyToolSucceeded |= result.Succeeded;
                 toolLedger.Add($"{label}: " + (result.BackgroundTaskId is not null ? "started in background"
                     : result.IsOutcomeUncertain ? "unconfirmed"
-                    : result.Succeeded ? "done" : "failed"));
+                    : result.Succeeded ? result.SelfVerified ? "done and verified" : "done" : "failed"));
 
                 // Background starts count as progress; uncertain outcomes do not —
                 // "may or may not have happened" is exactly the state the guard must
@@ -954,6 +1100,18 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
         answerText = SpeechTextSanitizer.StripProtocolNoise(
             answerText, routedTools.Select(tool => tool.Name));
 
+        // The one fact she cannot know: a change nobody read back. Her words are left
+        // exactly as written — the OS appends the missing receipt, it does not score
+        // her sentence or rewrite a true one.
+        if (verificationLedger.HasUnverifiedMutations)
+        {
+            answerText = answerText.TrimEnd() + "\n\n" + verificationLedger.DescribeUnverified();
+            toolLedger.Add("verification: not read back");
+        }
+
+        _taskContinuity.FinishTurn(continuityTaskId, turnId, answerText,
+            SpeechPlanner.IsActionRequest(userText));
+
         IrisEvent.Log("Brain", "turn.report", LogLevel.Info,
             data: new Dictionary<string, string?>
             {
@@ -964,7 +1122,10 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
                 ["round_limit_hit"] = (!reachedFinalAnswer && toolLedger.Count > 0).ToString(),
                 ["stop_reason"] = stopReason.ToString(),
                 ["rounds_run"] = roundsRun.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                ["rounds_granted"] = loopGuard.GrantedRounds.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                ["rounds_granted"] = loopGuard.GrantedRounds.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                ["granted_actions"] = string.Join(",", grantedActions),
+                ["unverified_mutations"] = string.Join(",", verificationLedger.UnverifiedTools),
+                ["task_id"] = continuityTaskId ?? string.Empty
             });
 
         // 6. Speak, unless the user interrupted or the voice is muted.

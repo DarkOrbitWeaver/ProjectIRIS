@@ -108,12 +108,16 @@ public class EvidenceChannelTests
     }
 
     [Fact]
-    public void MusicModuleIsMcpShapedWithFourOrthogonalTools()
+    public void MusicModuleIsMcpShapedWithSixOrthogonalTools()
     {
         using MusicPlayerModule module = new();
         string[] names = module.Tools.Select(tool => tool.Name).OrderBy(name => name, StringComparer.Ordinal).ToArray();
 
-        Assert.Equal(new[] { "music_library", "music_library_folders", "music_player", "music_playlists" }, names);
+        Assert.Equal(new[]
+        {
+            "music_find_download", "music_import_file", "music_library", "music_library_folders",
+            "music_player", "music_playlists"
+        }, names);
 
         ModuleTool player = module.Tools.Single(tool => tool.Name == "music_player");
         using JsonDocument playerSchema = JsonDocument.Parse(player.ParametersJson);

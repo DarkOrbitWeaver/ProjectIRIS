@@ -264,15 +264,41 @@ public sealed class ToolInvocation
 /// ModelText is what the model reasons over, DisplayText is what the chat shows,
 /// SpokenText is what she says out loud. They are often not the same sentence.
 /// </summary>
+public enum ToolFailureKind
+{
+    None,
+    Failed,
+    InvalidArguments,
+    PermissionDenied,
+    PermissionTimedOut,
+    Cancelled,
+    TimedOut,
+    Uncertain,
+    DuplicatePrevented,
+
+    /// <summary>The user never asked for this action class this task (verb fidelity).</summary>
+    NotRequested
+}
+
 public sealed class ToolResult
 {
     public bool Succeeded { get; init; }
+
+    /// <summary>Structured failure cause for honest reporting and durable task recovery.</summary>
+    public ToolFailureKind FailureKind { get; init; }
 
     /// <summary>True when the action may or may not have happened after waiting ended.</summary>
     public bool IsOutcomeUncertain { get; init; }
 
     /// <summary>Set when success means a bounded background task was started, not completed.</summary>
     public string? BackgroundTaskId { get; init; }
+
+    /// <summary>
+    /// True only when a mutating tool re-read the thing it changed and confirmed the
+    /// new state. A call that merely returned without error must leave this false:
+    /// that is exactly the difference between "written" and "verified".
+    /// </summary>
+    public bool SelfVerified { get; init; }
 
     /// <summary>Compact factual text for the model. Never markup.</summary>
     public string ModelText { get; init; } = string.Empty;
@@ -297,9 +323,10 @@ public sealed class ToolResult
         DisplayText = displayText
     };
 
-    public static ToolResult Fail(string reason) => new()
+    public static ToolResult Fail(string reason, ToolFailureKind failureKind = ToolFailureKind.Failed) => new()
     {
         Succeeded = false,
+        FailureKind = failureKind,
         ModelText = reason,
         DisplayText = reason
     };
@@ -307,6 +334,7 @@ public sealed class ToolResult
     public static ToolResult Uncertain(string reason) => new()
     {
         Succeeded = false,
+        FailureKind = ToolFailureKind.Uncertain,
         IsOutcomeUncertain = true,
         ModelText = reason + " The action may or may not have completed. Do not repeat it; check the current state or ask the user.",
         DisplayText = reason

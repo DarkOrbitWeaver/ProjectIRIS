@@ -28,6 +28,9 @@ public sealed class JournalEntry
 }
 
 /// <summary>What the journal could work out after a restart.</summary>
+/// <summary>A user utterance fetched by an unfinished task's journal reference.</summary>
+public sealed record JournalUserMessage(string TurnId, string Text, DateTimeOffset At);
+
 public sealed class JournalRecovery
 {
     public MindState LastState { get; init; } = MindState.Idle;
@@ -157,6 +160,59 @@ public sealed class TurnJournal
     /// <summary>Records an intentional cancellation so recovery does not call it a crash.</summary>
     public void RecordAnswerCancelled(string turnId) =>
         Append(new JournalEntry { Kind = "answer-cancelled", TurnId = turnId });
+
+    /// <summary>
+    /// Retrieves only user utterances for the supplied task turn references. Tool
+    /// arguments/results and unrelated turns are deliberately excluded; the task
+    /// handoff uses this to recover a username/message detail without copying raw
+    /// transcripts into a second durable store.
+    /// </summary>
+    public IReadOnlyList<JournalUserMessage> ReadUserMessages(IEnumerable<string> turnIds)
+    {
+        HashSet<string> requested = turnIds
+            .Where(turnId => !string.IsNullOrWhiteSpace(turnId))
+            .ToHashSet(StringComparer.Ordinal);
+        if (requested.Count == 0 || !File.Exists(_filePath))
+        {
+            return Array.Empty<JournalUserMessage>();
+        }
+
+        try
+        {
+            List<JournalUserMessage> messages = new();
+            foreach (string line in File.ReadLines(_filePath).TakeLast(1200))
+            {
+                if (string.IsNullOrWhiteSpace(line)) continue;
+                try
+                {
+                    JournalEntry? entry = JsonSerializer.Deserialize<JournalEntry>(line, SerializerOptions);
+                    if (entry?.Kind == "user" && requested.Contains(entry.TurnId))
+                    {
+                        messages.Add(new JournalUserMessage(entry.TurnId, entry.Text, entry.At));
+                    }
+                }
+                catch (JsonException)
+                {
+                    // A torn or malformed journal line is not a user message.
+                }
+            }
+
+            return messages
+                .OrderBy(message => message.At)
+                .Take(8)
+                .ToList();
+        }
+        catch (IOException exception)
+        {
+            CompanionLog.Warning("Journal", $"Could not read referenced task messages: {exception.Message}");
+            return Array.Empty<JournalUserMessage>();
+        }
+        catch (UnauthorizedAccessException exception)
+        {
+            CompanionLog.Warning("Journal", $"Could not read referenced task messages: {exception.Message}");
+            return Array.Empty<JournalUserMessage>();
+        }
+    }
 
     /// <summary>Records a mind state change so the next start can restore it.</summary>
     public void RecordState(MindState state, string reason) =>
