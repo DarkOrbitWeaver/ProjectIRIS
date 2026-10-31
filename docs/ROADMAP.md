@@ -18,7 +18,7 @@ metadata without storing recalled titles or content.
 
 ## M3 - Module engine: foundation shipped; platform growth continues in M8
 
-`IAssistantModule`, dynamic routing with an eight-tool cap, three-tier sandbox with a
+`IAssistantModule`, progressive tool-schema routing with on-demand discovery, three-tier sandbox with a
 15-second auto-deny and permanent audit trail, built-in modules: core tools, music player
 (library search across the user's real folders, playlists), system control (timers, notes,
 app launch, machine status, file search). Built-ins are compiled into Iris; optional external modules run as separate processes under M8.

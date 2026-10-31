@@ -494,25 +494,51 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
             }
         }
 
-        if (!await EnsureCortexReadyAsync(cancellationToken).ConfigureAwait(false))
+        BrainProfile requestedProfile = _settings.Current.ActiveBrainProfile;
+        BrainProfile turnProfile = requestedProfile;
+        BrainProfile? fallbackProfile = FindFallbackProfile(requestedProfile);
+        bool fallbackUsed = false;
+        string fallbackNotice = string.Empty;
+        if (!await EnsureCortexReadyAsync(cancellationToken, requestedProfile).ConfigureAwait(false))
         {
-            // Two different truths need two different words: a brain still loading is
-            // "give me a moment", a missing model is a settings problem. Blaming the
-            // settings for a slow load sent the owner into a perfectly healthy
-            // configuration (2026-10-27 audit).
-            bool stillLoading = _serverHost.IsRunning;
-            string noBrain = stillLoading
-                ? "My brain is still loading its weights. Give me a moment, then ask again."
-                : "My thinking model is not loaded, so I cannot reason about that yet. " +
-                  "Check the brain settings and I will try again.";
-            _events.Publish(new ConversationEvent
+            if (fallbackProfile is not null &&
+                await EnsureCortexReadyAsync(cancellationToken, fallbackProfile).ConfigureAwait(false))
             {
-                Phase = ConversationPhase.AssistantCompleted,
-                TurnId = turnId,
-                Text = noBrain
-            });
-            _mind.MoveTo(MindState.Idle, "no model");
-            return noBrain;
+                turnProfile = fallbackProfile;
+                fallbackUsed = true;
+                fallbackNotice = BuildModelFallbackNotice(requestedProfile, fallbackProfile,
+                    hasImage: !string.IsNullOrWhiteSpace(attachedImage));
+                LogModelFallback(turnId, requestedProfile, fallbackProfile, "primary_endpoint_unreachable");
+            }
+            else
+            {
+                _events.Publish(new ModelStatusEvent
+                {
+                    Status = ModelStatus.Failed,
+                    ProfileName = requestedProfile.DisplayName,
+                    Detail = fallbackProfile is null
+                        ? $"Nothing is answering at {requestedProfile.Endpoint}."
+                        : $"{requestedProfile.DisplayName} and fallback {fallbackProfile.DisplayName} are unavailable."
+                });
+
+                // Two different truths need two different words: a brain still loading is
+                // "give me a moment", a missing model is a settings problem. Blaming the
+                // settings for a slow load sent the owner into a perfectly healthy
+                // configuration (2026-10-27 audit).
+                bool stillLoading = _serverHost.IsRunning;
+                string noBrain = stillLoading
+                    ? "My brain is still loading its weights. Give me a moment, then ask again."
+                    : "My thinking model is not loaded, so I cannot reason about that yet. " +
+                      "Check the brain settings and I will try again.";
+                _events.Publish(new ConversationEvent
+                {
+                    Phase = ConversationPhase.AssistantCompleted,
+                    TurnId = turnId,
+                    Text = noBrain
+                });
+                _mind.MoveTo(MindState.Idle, "no model");
+                return noBrain;
+            }
         }
 
         _mind.MoveTo(MindState.Thinking, "turn started");
@@ -526,11 +552,13 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
         // 3. Routing: only the hands this sentence needs. The receipt is logged in the
         //    event stream, not trace: "she picked X because of Y" has to be answerable
         //    from the day's records whenever her behavior felt wrong.
-        IReadOnlyList<ModuleTool> routedTools = _modules.RouteTools(userText, out IReadOnlyList<IAssistantModule> selectedModules);
+        List<ModuleTool> routedTools = _modules.RouteTools(userText, out IReadOnlyList<IAssistantModule> selectedModules)
+            .ToList();
         IrisEvent.Log("Brain", "turn.routed", LogLevel.Info,
             data: new Dictionary<string, string?>
             {
                 ["origin"] = origin,
+                ["model_name"] = turnProfile.ModelName,
                 ["modules"] = string.Join(",", selectedModules.Select(module => module.Id)),
                 ["tools"] = string.Join(",", routedTools.Select(tool => tool.Name))
             });
@@ -602,6 +630,10 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
             Phase = ConversationPhase.AssistantStarted,
             TurnId = turnId
         });
+        if (!string.IsNullOrWhiteSpace(fallbackNotice))
+        {
+            PublishModelFallbackNotice(turnId, fallbackNotice);
+        }
 
         StringBuilder finalAnswer = new();
         bool anyToolSucceeded = false;
@@ -610,6 +642,11 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
         string answerText = string.Empty;
         List<string> toolLedger = new();
         string? lastToolFailureDetail = null;
+        string? lastFailedToolName = null;
+        bool lastFailureRecoverable = false;
+        string? lastInvalidArgumentTool = null;
+        IReadOnlyList<string> lastInvalidArgumentMissingFields = Array.Empty<string>();
+        string? lastInvalidArgumentGuidance = null;
         HashSet<string> uncertainTools = new(StringComparer.OrdinalIgnoreCase);
         bool honestyRetryUsed = false;
         bool lengthContinued = false;
@@ -645,6 +682,7 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
                 data: new Dictionary<string, string?>
                 {
                     ["round"] = round.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    ["model_name"] = turnProfile.ModelName,
                     ["messages"] = messages.Count.ToString(System.Globalization.CultureInfo.InvariantCulture),
                     ["roles"] = string.Join(",", messages.Select(message => message.Role)),
                     ["chars_total"] = messages.Sum(message => message.Content.Length)
@@ -669,47 +707,84 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
             bool speakThisRound = voiceTurn && !lengthContinued && !honestyRetryUsed;
             bool toolStartedThisRound = false;
             bool streamedAnySpeech = false;
+            bool modelProducedOutput = false;
             Task speechTail = Task.CompletedTask;
-            ModelTurn turn = await _modelClient.StreamChatAsync(
-                _settings.Current.ActiveBrainProfile,
-                messages,
-                routedTools,
-                async delta =>
+            ModelTurn turn;
+            Func<string, Task> onTextDelta = async delta =>
+            {
+                modelProducedOutput = true;
+                roundText.Append(delta);
+                if (speakThisRound && !toolStartedThisRound)
                 {
-                    roundText.Append(delta);
-                    if (speakThisRound && !toolStartedThisRound)
+                    speechBuffer.Append(delta);
+                    foreach (string sentence in TakeCompleteSpeechSentences(speechBuffer,
+                                 _settings.Current.Brain.MinimumSpokenSentenceCharacters,
+                                 allowFirstClause: !streamedAnySpeech))
                     {
-                        speechBuffer.Append(delta);
-                        foreach (string sentence in TakeCompleteSpeechSentences(speechBuffer,
-                                     _settings.Current.Brain.MinimumSpokenSentenceCharacters,
-                                     allowFirstClause: !streamedAnySpeech))
+                        // The speech-economy floor applies mid-stream too: a list-shaped
+                        // sentence is dropped before it can cost seconds of synthesis.
+                        string spoken = SpeechPlanner.TrimForSpeech(sentence,
+                            SpeechPlanner.SpeechEconomyCharacters);
+                        if (string.IsNullOrWhiteSpace(spoken))
                         {
-                            // The speech-economy floor applies mid-stream too: a list-shaped
-                            // sentence is dropped before it can cost seconds of synthesis.
-                            string spoken = SpeechPlanner.TrimForSpeech(sentence,
-                                SpeechPlanner.SpeechEconomyCharacters);
-                            if (string.IsNullOrWhiteSpace(spoken))
-                            {
-                                continue;
-                            }
-
-                            speechTail = QueueSpeechAfterAsync(speechTail, spoken, cancellationToken);
-                            streamedAnySpeech = true;
+                            continue;
                         }
-                    }
 
-                    _events.Publish(new ConversationEvent
+                        speechTail = QueueSpeechAfterAsync(speechTail, spoken, cancellationToken);
+                        streamedAnySpeech = true;
+                    }
+                }
+
+                _events.Publish(new ConversationEvent
+                {
+                    Phase = ConversationPhase.AssistantDelta,
+                    TurnId = turnId,
+                    Text = delta
+                });
+                await Task.CompletedTask.ConfigureAwait(false);
+            };
+            try
+            {
+                turn = await _modelClient.StreamChatAsync(
+                    turnProfile,
+                    MessagesForModel(turnProfile, messages),
+                    routedTools,
+                    onTextDelta,
+                    cancellationToken,
+                    onToolCallStarted: () =>
                     {
-                        Phase = ConversationPhase.AssistantDelta,
-                        TurnId = turnId,
-                        Text = delta
-                    });
-                    await Task.CompletedTask.ConfigureAwait(false);
-                },
-                cancellationToken,
-                onToolCallStarted: () => toolStartedThisRound = true,
-                historySpanLengths: historySpanLengths,
-                currentTurnStartIndex: turnStartIndex).ConfigureAwait(false);
+                        modelProducedOutput = true;
+                        toolStartedThisRound = true;
+                    },
+                    historySpanLengths: historySpanLengths,
+                    currentTurnStartIndex: turnStartIndex).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (!fallbackUsed && fallbackProfile is not null &&
+                                               !modelProducedOutput &&
+                                               IsFallbackEligible(exception, cancellationToken))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                turnProfile = fallbackProfile;
+                fallbackUsed = true;
+                fallbackNotice = BuildModelFallbackNotice(requestedProfile, fallbackProfile,
+                    hasImage: messages.Any(message => !string.IsNullOrWhiteSpace(message.ImageDataUri)));
+                LogModelFallback(turnId, requestedProfile, fallbackProfile, exception);
+                PublishModelFallbackNotice(turnId, fallbackNotice);
+                LogFallbackRequest(turnId, round, turnProfile);
+                turn = await _modelClient.StreamChatAsync(
+                    turnProfile,
+                    MessagesForModel(turnProfile, messages),
+                    routedTools,
+                    onTextDelta,
+                    cancellationToken,
+                    onToolCallStarted: () =>
+                    {
+                        modelProducedOutput = true;
+                        toolStartedThisRound = true;
+                    },
+                    historySpanLengths: historySpanLengths,
+                    currentTurnStartIndex: turnStartIndex).ConfigureAwait(false);
+            }
 
             // The round receipt: what the model actually did this round, from the stream
             // interface itself. "No hand moved" used to be one unexplainable silence; now
@@ -720,6 +795,7 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
                 data: new Dictionary<string, string?>
                 {
                     ["round"] = round.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    ["model_name"] = turnProfile.ModelName,
                     ["finish_reason"] = string.IsNullOrWhiteSpace(turn.FinishReason)
                         ? "unknown" : turn.FinishReason,
                     ["calls_made"] = turn.ToolCalls.Count.ToString(System.Globalization.CultureInfo.InvariantCulture),
@@ -776,26 +852,48 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
                 if (receiptsOwed && !honestyRetryUsed)
                 {
                     honestyRetryUsed = true;
+                    bool attemptRecovery = lastFailureRecoverable &&
+                                           loopGuard.TryBeginRecoveryAttempt();
                     IrisEvent.Log("Brain", "turn.receipt_check", LogLevel.Info,
-                        message: "Work was asked for but no hand succeeded; she is told the receipt truth once and acts or refuses plainly.",
+                        message: attemptRecovery
+                            ? "A tool failed; one bounded recovery attempt is allowed before reporting failure."
+                            : "Work was asked for but no hand succeeded; she is told the receipt truth once and acts or refuses plainly.",
                         data: new Dictionary<string, string?>
                         {
                             ["tools_run"] = toolLedger.Count.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                            ["tools_routed"] = routedTools.Count.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                            ["tools_routed"] = routedTools.Count.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                            ["recovery_attempt"] = attemptRecovery.ToString()
                         });
                     messages.Add(ChatMessage.Assistant(turn.Text));
                     // Same channel as the length nudge: <os> on the user role, because a
                     // mid-turn system message was demonstrably ignored twice (2026-10-27
                     // "resume" and "play me a song" autopsies).
-                    messages.Add(ChatMessage.User("<os>" + (toolLedger.Count == 0
-                        ? "RECEIPT CHECK: this request is an action, and no hand has run yet. Call the matching tool " +
-                          "now through the tool interface and act on its result — a clear order is an instruction, " +
-                          "not a question; do not ask permission, and never type a tool name into your words. A " +
-                          "claim without a succeeded hand is not allowed: if no hand can truly do it, answer in one " +
-                          "short sentence that it has not happened, and offer the nearest working next step."
-                        : "RECEIPT CHECK: the hands you moved did not complete: " + string.Join("; ", toolLedger) +
-                          ". That is the record. Answer in ONE short sentence: what did not happen, and the nearest " +
-                          "working step. Never describe a failed action as a success.") + "</os>"));
+                    string recoveryInstruction = attemptRecovery
+                        ? !string.IsNullOrWhiteSpace(lastInvalidArgumentTool)
+                            ? $"RECOVER FROM INVALID TOOL ARGUMENTS: {lastInvalidArgumentTool} rejected its arguments. " +
+                              $"{lastInvalidArgumentGuidance} " +
+                              (lastInvalidArgumentMissingFields.Count > 0
+                                  ? $"Missing required field(s): {string.Join(", ", lastInvalidArgumentMissingFields)}. "
+                                  : string.Empty) +
+                              "Review the original request and make ONE corrected call using only information the user " +
+                              "provided or that is directly implied. Do not invent missing values; ask one focused question " +
+                              "if a required value is genuinely unknown. Do not claim success without a successful tool result."
+                            : $"RECOVER FROM TOOL FAILURE: {lastFailedToolName} failed: {lastToolFailureDetail} " +
+                              "Use the returned error and the prior conversation to identify its cause. Make at most ONE " +
+                              "safe correction: change invalid arguments, choose a relevant alternative tool, or ask one " +
+                              "focused question if required information is missing. Do not repeat the same failed call, " +
+                              "invent facts, bypass permission, or retry an action whose outcome may be uncertain. " +
+                              "Never claim success without a successful tool result."
+                        : toolLedger.Count == 0
+                            ? "RECEIPT CHECK: this request is an action, and no hand has run yet. Call the matching tool " +
+                              "now through the tool interface and act on its result — a clear order is an instruction, " +
+                              "not a question; do not ask permission, and never type a tool name into your words. A " +
+                              "claim without a succeeded hand is not allowed: if no hand can truly do it, answer in one " +
+                              "short sentence that it has not happened, and offer the nearest working next step."
+                            : "RECEIPT CHECK: the hands you moved did not complete: " + string.Join("; ", toolLedger) +
+                              ". That is the record. Answer in ONE short sentence: what did not happen, and the nearest " +
+                              "working step. Never describe a failed action as a success.";
+                    messages.Add(ChatMessage.User("<os>" + recoveryInstruction + "</os>"));
                     // Anything already streamed may have carried a claim; the truth lands last.
                     answerSpokenDuringGeneration = false;
                     continue;
@@ -860,7 +958,7 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
                     candidate.Name.Equals(call.Name, StringComparison.OrdinalIgnoreCase));
                 bool sideEffecting = routedDefinition is not null &&
                                      ToolPresentationCatalog.AccessOf(routedDefinition) == ToolAccess.Acts;
-                if (sideEffecting)
+                if (sideEffecting || (continuityTaskId is null && SpeechPlanner.IsActionRequest(userText)))
                 {
                     continuityTaskId = _taskContinuity.EnsureTaskForAction(turnId, userText, continuityTaskId);
                 }
@@ -873,21 +971,32 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
                     string argumentHelp = routedDefinition is null
                         ? string.Empty
                         : " " + DescribeRequiredArguments(routedDefinition);
+                    lastInvalidArgumentTool = call.Name;
+                    lastInvalidArgumentMissingFields = TaskContinuityStore.FindMissingRequiredFields(
+                        routedDefinition?.ParametersJson, call.ArgumentsJson);
+                    lastInvalidArgumentGuidance = routedDefinition is null ? string.Empty : argumentHelp.Trim();
+                    lastToolFailureDetail = FirstSentenceOf($"Invalid arguments for {call.Name}.{argumentHelp}");
+                    lastFailedToolName = call.Name;
+                    lastFailureRecoverable = true;
                     ToolResult invalidArguments = ToolResult.Fail(
                         $"Invalid arguments for {call.Name}.{argumentHelp} Re-call the action with exactly those keys.",
                         ToolFailureKind.InvalidArguments);
                     _journal.RecordToolResult(turnId, operationId, JournalToolStatus.Failed);
                     messages.Add(ChatMessage.ToolResult(call.Id, call.Name, invalidArguments.ModelText));
                     toolLedger.Add($"{label}: not run (invalid arguments)");
-                    if (sideEffecting)
+                    if (sideEffecting || continuityTaskId is not null)
                     {
                         _taskContinuity.RecordReceipt(continuityTaskId, turnId, call.Name, call.ArgumentsJson,
-                            sideEffecting: true, PendingTaskReceiptState.InvalidArguments,
-                            TaskContinuityStore.FindMissingRequiredFields(routedDefinition?.ParametersJson, call.ArgumentsJson));
+                            sideEffecting, PendingTaskReceiptState.InvalidArguments,
+                            lastInvalidArgumentMissingFields);
                     }
                     loopGuard.RecordCall(call.Name, call.ArgumentsJson, succeeded: false);
                     continue;
                 }
+
+                lastInvalidArgumentTool = null;
+                lastInvalidArgumentMissingFields = Array.Empty<string>();
+                lastInvalidArgumentGuidance = null;
 
                 if (uncertainTools.Contains($"{call.Name}|{call.ArgumentsJson ?? string.Empty}", StringComparer.OrdinalIgnoreCase))
                 {
@@ -923,6 +1032,26 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
                             ["tool"] = call.Name,
                             ["granted"] = string.Join(",", grantedActions)
                         });
+                    continue;
+                }
+
+                bool readOnly = routedDefinition is not null &&
+                                ToolPresentationCatalog.AccessOf(routedDefinition) == ToolAccess.Reads;
+                if (readOnly && continuityTaskId is not null &&
+                    !IsExplicitReadRetryOrStateChange(userText) &&
+                    _taskContinuity.WasReadOnlyFailureAlreadyAttempted(
+                        continuityTaskId, call.Name, call.ArgumentsJson))
+                {
+                    ToolResult alreadyFailed = ToolResult.Fail(
+                        $"I did not repeat {label}: this exact read-only call already failed in this task. " +
+                        "Use materially different search details, another relevant tool, or ask the user for clarification. " +
+                        "Retry only when the user explicitly asks or says the relevant state has changed.",
+                        ToolFailureKind.DuplicatePrevented);
+                    _journal.RecordToolResult(turnId, operationId, JournalToolStatus.Failed);
+                    messages.Add(ChatMessage.ToolResult(call.Id, call.Name, alreadyFailed.ModelText));
+                    toolLedger.Add($"{label}: not repeated (same read already failed in this task)");
+                    lastToolFailureDetail = FirstSentenceOf(alreadyFailed.ModelText);
+                    loopGuard.RecordCall(call.Name, call.ArgumentsJson, succeeded: false);
                     continue;
                 }
 
@@ -986,7 +1115,27 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
                         : result.Succeeded ? JournalToolStatus.Succeeded : JournalToolStatus.Failed,
                     result.BackgroundTaskId);
 
-                if (sideEffecting)
+                if (result.FailureKind == ToolFailureKind.InvalidArguments)
+                {
+                    lastInvalidArgumentTool = call.Name;
+                    lastInvalidArgumentMissingFields = routedDefinition is null
+                        ? Array.Empty<string>()
+                        : TaskContinuityStore.FindMissingRequiredFields(
+                            routedDefinition.ParametersJson, call.ArgumentsJson);
+                    lastInvalidArgumentGuidance = routedDefinition is null
+                        ? string.Empty
+                        : DescribeRequiredArguments(routedDefinition);
+                }
+                if (!result.Succeeded && result.BackgroundTaskId is null && !result.IsOutcomeUncertain)
+                {
+                    lastFailedToolName = call.Name;
+                    lastFailureRecoverable = result.FailureKind is not (
+                        ToolFailureKind.PermissionDenied or ToolFailureKind.PermissionTimedOut or
+                        ToolFailureKind.Cancelled or ToolFailureKind.DuplicatePrevented or
+                        ToolFailureKind.NotRequested or ToolFailureKind.Uncertain);
+                }
+
+                if (sideEffecting || continuityTaskId is not null)
                 {
                     PendingTaskReceiptState receiptState = result.BackgroundTaskId is not null
                         ? PendingTaskReceiptState.BackgroundStarted
@@ -1007,7 +1156,7 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
                         ? TaskContinuityStore.FindMissingRequiredFields(routedDefinition.ParametersJson, call.ArgumentsJson)
                         : Array.Empty<string>();
                     _taskContinuity.RecordReceipt(continuityTaskId, turnId, call.Name, call.ArgumentsJson,
-                        true, receiptState, missingFields, result.BackgroundTaskId);
+                        sideEffecting, receiptState, missingFields, result.BackgroundTaskId);
                 }
 
                 if (result.IsOutcomeUncertain)
@@ -1047,7 +1196,49 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
                     lastToolFailureDetail = FirstSentenceOf(result.ModelText);
                 }
 
-                messages.Add(ChatMessage.ToolResult(call.Id, call.Name, result.ModelText));
+                string toolResultText = result.ModelText;
+                bool expandedCapabilities = false;
+                if (result.Succeeded && call.Name.Equals("search_capabilities", StringComparison.OrdinalIgnoreCase) &&
+                    arguments.TryGetProperty("query", out JsonElement discoveryQueryElement) &&
+                    discoveryQueryElement.ValueKind == JsonValueKind.String)
+                {
+                    string discoveryQuery = discoveryQueryElement.GetString() ?? string.Empty;
+                    int remainingToolCapacity = ModuleHost.MaximumToolsPerTurn - routedTools.Count;
+                    if (remainingToolCapacity > 0)
+                    {
+                        IReadOnlyList<ModuleTool> discoveredTools = _modules.DiscoverTools(
+                            discoveryQuery,
+                            routedTools.Select(tool => tool.Name),
+                            Math.Min(ModuleHost.MaximumDiscoveredToolsPerRequest, remainingToolCapacity));
+                        foreach (ModuleTool discoveredTool in discoveredTools)
+                        {
+                            routedTools.Add(discoveredTool);
+                        }
+
+                        if (discoveredTools.Count > 0)
+                        {
+                            expandedCapabilities = true;
+                            string discoveredNames = string.Join(", ", discoveredTools.Select(tool => tool.Name));
+                            toolResultText +=
+                                $"\nDetailed schemas are now available for this turn: {discoveredNames}. " +
+                                "Use them if they advance the user's request.";
+                            IrisEvent.Log("Brain", "turn.tools_discovered", LogLevel.Info,
+                                message: "Capability discovery added detailed schemas to the active turn.",
+                                data: new Dictionary<string, string?>
+                                {
+                                    ["query"] = discoveryQuery,
+                                    ["tools"] = discoveredNames,
+                                    ["offered"] = routedTools.Count.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                                });
+                        }
+                    }
+                }
+
+                messages.Add(ChatMessage.ToolResult(call.Id, call.Name, toolResultText));
+                if (expandedCapabilities)
+                {
+                    PublishContextTelemetry(messages, routedTools);
+                }
 
                 if (!string.IsNullOrWhiteSpace(result.ImageDataUri))
                 {
@@ -1093,6 +1284,14 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
             answerText = "I could not work that one out. Ask me again in a moment?";
         }
 
+        if (loopGuard.RecoveryAttemptUsed && !anyToolSucceeded && uncertainTools.Count == 0)
+        {
+            answerText = lastInvalidArgumentTool is not null
+                ? BuildInvalidArgumentRecoveryAnswer(lastInvalidArgumentTool, lastInvalidArgumentMissingFields)
+                : BuildFailedRecoveryAnswer(lastFailedToolName, lastToolFailureDetail);
+            answerSpokenDuringGeneration = false;
+        }
+
         // One strip, once, at the source: tags and bracketed tool mentions are protocol
         // we sanctioned, not words she chose. Chat, history and voice all take this text
         // from here, so every surface keeps the same clean words and the junk that used
@@ -1116,6 +1315,8 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
             data: new Dictionary<string, string?>
             {
                 ["origin"] = origin,
+                ["model_name"] = turnProfile.ModelName,
+                ["fallback_used"] = fallbackUsed.ToString(),
                 ["image_attached"] = hasAttachedImage.ToString(),
                 ["memories_activated"] = activation.Activated.Count().ToString(System.Globalization.CultureInfo.InvariantCulture),
                 ["tools"] = string.Join(" | ", toolLedger),

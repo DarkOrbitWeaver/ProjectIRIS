@@ -93,6 +93,7 @@ public sealed class SystemControlModule : IAssistantModule, IModuleSurfaceProvid
             ToolTier.Scoped,
             """{"type":"object","properties":{"query":{"type":"string","description":"Part of the file name"},"folder":{"type":"string","description":"One of: desktop, documents, downloads, music, pictures, videos. Empty searches all of them."}},"required":["query"]}""",
             "find file", "where is", "locate", "my file", "did i save", "show me the file")
+        { Access = ToolAccess.Reads }
     };
 
     public Task InitializeAsync(ModuleContext context, CancellationToken cancellationToken)

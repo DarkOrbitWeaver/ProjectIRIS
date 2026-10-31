@@ -39,8 +39,9 @@ Files: `Core/Brain/LlamaServerHost.cs`, `Core/Brain/ModelClient.cs`,
    up when the user asks.
 2. **Memory** — `SynapticMemoryEngine.ActivateAsync` finds seeds by similarity, walks
    outward/inward/across danger links, and renders a ~200 token plain-English block.
-3. **Routing** — `ModuleHost.RouteTools` picks at most two modules plus the always-on core
-   tools, so the model never sees more than eight tools.
+3. **Routing** — `ModuleHost.RouteTools` selects at most twelve relevant schemas initially
+   and always includes capability discovery when enabled. The compact capability map lists
+   every enabled tool; successful searches can add schemas during the active turn.
 4. **Prompt** — persona template + situation + intuition + capability map + recent history.
 5. **Stream** — tokens are published as `ConversationEvent`s; speech can begin before the
    answer ends.
@@ -48,6 +49,12 @@ Files: `Core/Brain/LlamaServerHost.cs`, `Core/Brain/ModelClient.cs`,
 7. **Speak and journal** — say it, then record that it happened.
 
 Everything the interface shows comes from steps 2–7 as events.
+
+An external brain profile may name one fallback profile. The brain uses it only when the
+primary endpoint is unavailable before producing output, and only for the current turn;
+it never changes the saved active profile. Each request and round records the model name,
+and `model.fallback` records the switch. If the fallback is text-only, image payloads are
+removed and the user is told that image understanding is unavailable for that reply.
 
 ---
 
@@ -126,7 +133,7 @@ current contract and remaining platform work.
 battery), reads media sessions through Windows SMTC, and gates screen capture with a 64-bit
 difference hash so an unchanged screen costs nothing.
 
-`VoicePipeline` owns the audio path: microphone input is segmented by adaptive VAD, transcribed by Whisper or HTTP, checked by the wake matcher, and passed to the brain. Replies are split into sentences and rendered by the managed Pocket TTS worker by default (or a configured HTTP speech endpoint), then played through NAudio; output amplitude drives the orb.
+`VoicePipeline` owns the audio path: microphone input is segmented by adaptive VAD, then the optional CPU-only Smart Turn v3.2 model can defer an apparent silence endpoint when the utterance sounds incomplete. Completed segments are transcribed by Whisper or HTTP, checked by the wake matcher, and passed to the brain. Smart Turn is an endpoint detector, not a replacement for Parakeet transcription; if it is unavailable, the configured silence endpoint remains in effect. Replies are split into sentences and rendered by the managed Pocket TTS worker by default (or a configured HTTP speech endpoint), then played through NAudio; output amplitude drives the orb.
 
 Voice identity is `VoiceProfile` (engine, speaker, rate, and pitch), stored in settings. The chosen profile drives normal replies and cached reflexes. Pocket TTS is the managed local CPU default; a configured HTTP voice is an alternative. There is no Windows voice fallback: if the configured engine cannot render, Iris reports that she cannot speak.
 

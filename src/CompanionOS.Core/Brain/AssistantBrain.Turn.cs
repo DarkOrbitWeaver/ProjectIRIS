@@ -125,25 +125,15 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
     }
 
     /// <summary>Loads the cortex if needed, and reports honestly when it cannot.</summary>
-    private async Task<bool> EnsureCortexReadyAsync(CancellationToken cancellationToken)
+    private async Task<bool> EnsureCortexReadyAsync(
+        CancellationToken cancellationToken, BrainProfile? selectedProfile = null)
     {
-        BrainProfile profile = _settings.Current.ActiveBrainProfile;
+        BrainProfile profile = selectedProfile ?? _settings.Current.ActiveBrainProfile;
 
         if (profile.Kind == BrainHostKind.External)
         {
-            bool reachable = await _modelClient.IsEndpointReachableAsync(profile.Endpoint, cancellationToken)
+            return await _modelClient.IsEndpointReachableAsync(profile, cancellationToken)
                 .ConfigureAwait(false);
-            if (!reachable)
-            {
-                _events.Publish(new ModelStatusEvent
-                {
-                    Status = ModelStatus.Failed,
-                    ProfileName = profile.DisplayName,
-                    Detail = $"Nothing is answering at {profile.Endpoint}."
-                });
-            }
-
-            return reachable;
         }
 
         if (_serverHost.IsRunning)
@@ -182,6 +172,104 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
         return _serverHost.IsRunning;
     }
 
+    private BrainProfile? FindFallbackProfile(BrainProfile primary)
+    {
+        string fallbackId = primary.FallbackProfileId?.Trim() ?? string.Empty;
+        if (fallbackId.Length == 0 ||
+            fallbackId.Equals(primary.Id, StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        return _settings.Current.Brain.Profiles.FirstOrDefault(profile =>
+            profile.Id.Equals(fallbackId, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static string BuildModelFallbackNotice(
+        BrainProfile primary, BrainProfile fallback, bool hasImage)
+    {
+        string notice = $"{primary.DisplayName} is unavailable — replying with {fallback.DisplayName}.";
+        return hasImage && !fallback.SupportsVision
+            ? notice + " Image understanding is unavailable for this reply."
+            : notice;
+    }
+
+    private void PublishModelFallbackNotice(string turnId, string notice) =>
+        _events.Publish(new ConversationEvent
+        {
+            Phase = ConversationPhase.AssistantModelFallback,
+            TurnId = turnId,
+            Detail = notice
+        });
+
+    private static bool IsFallbackEligible(Exception exception, CancellationToken cancellationToken) =>
+        exception switch
+        {
+            ModelClientException modelException => modelException.IsTransientOrAvailabilityFailure,
+            System.Net.Http.HttpRequestException => true,
+            System.IO.IOException => true,
+            TimeoutException => true,
+            TaskCanceledException => !cancellationToken.IsCancellationRequested,
+            _ => false
+        };
+
+    internal static IReadOnlyList<ChatMessage> MessagesForModel(
+        BrainProfile profile, IReadOnlyList<ChatMessage> messages)
+    {
+        if (profile.SupportsVision)
+        {
+            return messages;
+        }
+
+        return messages.Select(message =>
+        {
+            if (string.IsNullOrWhiteSpace(message.ImageDataUri))
+            {
+                return message;
+            }
+
+            return new ChatMessage
+            {
+                Role = message.Role,
+                Content = message.Content +
+                          "\n[An image was attached, but this model cannot inspect images. Do not infer its contents.]",
+                ToolCalls = message.ToolCalls,
+                ToolCallId = message.ToolCallId,
+                ToolName = message.ToolName
+            };
+        }).ToArray();
+    }
+
+    private static void LogFallbackRequest(string turnId, int round, BrainProfile fallback) =>
+        IrisEvent.Log("Brain", "turn.request", LogLevel.Info,
+            message: "Sending this model round to the configured fallback model.",
+            data: new Dictionary<string, string?>
+            {
+                ["turn_id"] = turnId,
+                ["round"] = round.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                ["model_name"] = fallback.ModelName,
+                ["fallback_used"] = true.ToString()
+            });
+
+    private static void LogModelFallback(
+        string turnId, BrainProfile primary, BrainProfile fallback, Exception exception) =>
+        LogModelFallback(turnId, primary, fallback,
+            exception is ModelClientException modelException && modelException.StatusCode.HasValue
+                ? $"http_{modelException.StatusCode.Value}"
+                : exception.GetType().Name);
+
+    private static void LogModelFallback(
+        string turnId, BrainProfile primary, BrainProfile fallback, string reason) =>
+        IrisEvent.Log("Brain", "model.fallback", LogLevel.Warning,
+            message: "Switched to the configured fallback model for this turn.",
+            data: new Dictionary<string, string?>
+            {
+                ["turn_id"] = turnId,
+                ["primary_model"] = primary.ModelName,
+                ["fallback_model"] = fallback.ModelName,
+                ["reason"] = reason
+            });
+
     /// <summary>Starts the model and moves her out of sleep or gaming mode.</summary>
     private async Task WakeCortexAsync(CancellationToken cancellationToken)
     {
@@ -192,7 +280,7 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
 
         if (profile.Kind == BrainHostKind.External)
         {
-            bool reachable = await _modelClient.IsEndpointReachableAsync(profile.Endpoint, cancellationToken)
+            bool reachable = await _modelClient.IsEndpointReachableAsync(profile, cancellationToken)
                 .ConfigureAwait(false);
             _events.Publish(new ModelStatusEvent
             {
@@ -400,7 +488,21 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
             {
                 foreach (JsonProperty property in properties.EnumerateObject())
                 {
-                    accepted.Add(property.Name);
+                    string acceptedProperty = property.Name;
+                    if (property.Value.TryGetProperty("enum", out JsonElement values) &&
+                        values.ValueKind == JsonValueKind.Array)
+                    {
+                        string[] enumValues = values.EnumerateArray()
+                            .Where(value => value.ValueKind == JsonValueKind.String)
+                            .Select(value => value.GetString() ?? string.Empty)
+                            .Where(value => value.Length > 0)
+                            .ToArray();
+                        if (enumValues.Length > 0)
+                        {
+                            acceptedProperty += $" ({string.Join("/", enumValues)})";
+                        }
+                    }
+                    accepted.Add(acceptedProperty);
                 }
             }
 
@@ -415,6 +517,53 @@ public sealed partial class AssistantBrain : IAssistantHostServices, IAsyncDispo
         {
             return string.Empty;
         }
+    }
+
+    private static bool IsExplicitReadRetryOrStateChange(string userText)
+    {
+        string[] declines =
+        [
+            "don't retry", "do not retry", "don't try again", "do not try again",
+            "don't search again", "do not search again"
+        ];
+        if (declines.Any(phrase => userText.Contains(phrase, StringComparison.OrdinalIgnoreCase)))
+        {
+            return false;
+        }
+
+        string[] phrases =
+        [
+            "try again", "retry", "search again", "check again", "look again", "run it again",
+            "repeat the search", "just downloaded", "downloaded it", "moved it",
+            "put it in downloads", "saved it to downloads", "placed it in downloads",
+            "new file is there", "file is there now", "state has changed"
+        ];
+        return phrases.Any(phrase => userText.Contains(phrase, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static string BuildInvalidArgumentRecoveryAnswer(
+        string toolName, IReadOnlyList<string> missingFields)
+    {
+        string toolLabel = toolName.Replace('_', ' ').Replace('.', ' ');
+        if (missingFields.Count > 0)
+        {
+            return $"I couldn't complete that because the required value(s) for the {toolLabel} tool call are missing: " +
+                   $"{string.Join(", ", missingFields)}. Please provide them.";
+        }
+
+        return $"I couldn't complete that because the {toolLabel} tool rejected the corrected arguments. " +
+               "I have not performed the action.";
+    }
+
+    private static string BuildFailedRecoveryAnswer(string? toolName, string? failureDetail)
+    {
+        string label = string.IsNullOrWhiteSpace(toolName)
+            ? "the requested action"
+            : toolName.Replace('_', ' ').Replace('.', ' ');
+        string detail = string.IsNullOrWhiteSpace(failureDetail)
+            ? string.Empty
+            : $" The latest result was: {failureDetail.Trim().TrimEnd('.', ' ')}.";
+        return $"I tried one safe recovery, but {label} still did not complete.{detail} I have not completed the request.";
     }
 
     /// <summary>

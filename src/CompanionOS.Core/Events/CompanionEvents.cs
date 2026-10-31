@@ -48,6 +48,7 @@ public enum ConversationPhase
 {
     UserMessage,
     AssistantStarted,
+    AssistantModelFallback,
     AssistantDelta,
     AssistantCompleted,
     ToolPlanned,

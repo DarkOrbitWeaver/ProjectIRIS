@@ -10,9 +10,8 @@ namespace CompanionOS.Core.Modules.BuiltIn;
 /// Her permanent body parts: the four things she can always do, no matter which
 /// plugins are installed.
 ///
-/// These tools are the ones routed into every single turn. They are written to be
-/// almost impossible for a 4B model to misuse: flat arguments, obvious names, and
-/// descriptions that say exactly when to call them.
+/// These tools are the permanent reflexes. They are written to be almost impossible
+/// for a small model to misuse: flat arguments, obvious names, and clear descriptions.
 /// </summary>
 public sealed class CoreToolsModule : IAssistantModule
 {
@@ -145,7 +144,7 @@ public sealed class CoreToolsModule : IAssistantModule
 
         new(
             "search_capabilities",
-            "List the modules and tools she currently has, or check whether she can do something.",
+            "Find matching abilities and load their detailed tools for the current task; without a query, list all abilities.",
             ToolTier.Reflex,
             """{"type":"object","properties":{"query":{"type":"string"}},"required":[]}""",
             "can you", "abilities", "tools", "modules", "plugins"),
@@ -410,9 +409,13 @@ public sealed class CoreToolsModule : IAssistantModule
             return capabilities;
         }
 
+        string[] queryTerms = query
+            .Split([' ', '\t', '\r', '\n', ',', '.', '-', '_'], StringSplitOptions.RemoveEmptyEntries)
+            .Where(term => term.Length > 1)
+            .ToArray();
         string[] matchingLines = capabilities
             .Split('\n', StringSplitOptions.RemoveEmptyEntries)
-            .Where(line => line.Contains(query, StringComparison.OrdinalIgnoreCase))
+            .Where(line => queryTerms.Any(term => line.Contains(term, StringComparison.OrdinalIgnoreCase)))
             .ToArray();
 
         return matchingLines.Length > 0

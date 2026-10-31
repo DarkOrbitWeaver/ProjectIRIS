@@ -87,6 +87,12 @@ claim what no receipt succeeded (`LooksLikeUnbackedClaim` after anything ran):
 `turn.answer_rescued` replaces the answer, the mismatch stays only in the record. Tool
 chips narrate like agent cards — the module's own `DescribeAction` verb phrase, not a
 menu label — so intent, hands and result are all visible while the loop works.
+Correctable tool failures receive one directed recovery opportunity inside the normal
+turn loop; schema-invalid calls include schema-guided correction. Permission denials
+and uncertain outcomes are not retried, and the turn's hard round limit remains in force.
+If recovery still fails, the OS reports that honestly and never presents the action as
+complete. Failed read-only calls are tracked by one-way argument fingerprints within the active task, so
+an identical search is not repeated unless the user asks or says the relevant state changed.
 **Cost:** terse but honest fallback answers; the model's raw optionality over the final
 line is reduced — by design, receipt truth outranks model prose.
 
@@ -105,6 +111,8 @@ for exactly that reason.
 **Why:** a permission prompt on "play music" is noise; a silent `shutdown` is unacceptable.
 Tiers are declared with the tool, enforced centrally in `SandboxGuard`, and every decision
 lands in an audit file.
+The bounded read-only `music_find_download` search uses its own `music.downloads.read`
+scope and can be granted persistently; indexing/importing an external file still always asks.
 **Cost:** red tools interrupt flow — that is the point.
 
 ### 12. External modules are process-isolated and permission-gated
@@ -242,11 +250,13 @@ maintain this are a user, a future AI, and maybe a teenager learning C#.
 Pretending to be cross-platform would mean three half-implementations.
 **Cost:** no Linux build — the Core would port if the perception layer were swapped.
 
-### 27. No telemetry, no accounts, no cloud fallbacks
-**Why:** she knows what is on your screen. That fact only stays comfortable if there is
-nowhere for it to go.
-**Cost:** every diagnostic has to be visible locally, which is why the log is a text file and
-the audit trail is readable JSON lines.
+### 27. No telemetry; external models are explicitly configured
+**Why:** Iris can see private screen content, so external processing must use a model
+endpoint the owner chose and configured. A configured fallback is limited to one
+availability retry before the primary model has produced output; it is visible in chat
+and in local logs. Text-only fallbacks never receive image payloads.
+**Cost:** external-model use depends on the configured provider, and image understanding
+is unavailable when the selected fallback is text-only.
 
 ---
 

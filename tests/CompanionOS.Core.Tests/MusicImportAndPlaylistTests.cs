@@ -205,7 +205,8 @@ public sealed class MusicImportAndPlaylistTests : IDisposable
         Assert.Equal(ToolTier.SystemCritical, import.Tier);
         Assert.True(import.AlwaysConfirm);
         Assert.Equal(ToolTier.SystemCritical, find.Tier);
-        Assert.True(find.AlwaysConfirm);
+        Assert.False(find.AlwaysConfirm);
+        Assert.Equal("music.downloads.read", find.PermissionScope);
     }
 
     [Fact]

@@ -133,18 +133,21 @@ public sealed class ModelClient : IDisposable
                 if (!response.IsSuccessStatusCode)
                 {
                     errorBody = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                    int statusCode = (int)response.StatusCode;
                     response.Dispose();
                     string retryError = errorBody.Length > 500 ? errorBody[..500] : errorBody;
                     throw new ModelClientException(
-                        $"The model endpoint still rejected the context-fitted retry ({(int)response.StatusCode}). {retryError}");
+                        $"The model endpoint still rejected the context-fitted retry ({statusCode}). {retryError}",
+                        statusCode);
                 }
             }
             else
             {
+                int statusCode = (int)response.StatusCode;
                 response.Dispose();
                 string trimmedError = errorBody.Length > 500 ? errorBody[..500] : errorBody;
                 throw new ModelClientException(
-                    $"The model endpoint answered {(int)response.StatusCode}. {trimmedError}");
+                    $"The model endpoint answered {statusCode}. {trimmedError}", statusCode);
             }
         }
 
@@ -310,15 +313,24 @@ public sealed class ModelClient : IDisposable
     }
 
     /// <summary>Cheap availability probe used before a turn and by the diagnostics screen.</summary>
-    public async Task<bool> IsEndpointReachableAsync(string endpoint, CancellationToken cancellationToken)
+    public async Task<bool> IsEndpointReachableAsync(BrainProfile profile, CancellationToken cancellationToken)
     {
         try
         {
-            using HttpRequestMessage request = new(HttpMethod.Get, ComposeEndpoint(endpoint, "models"));
+            using HttpRequestMessage request = new(HttpMethod.Get, ComposeEndpoint(profile.Endpoint, "models"));
+            if (!string.IsNullOrWhiteSpace(profile.ApiKey))
+            {
+                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", profile.ApiKey);
+            }
+
             using HttpResponseMessage response = await _httpClient
                 .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
                 .ConfigureAwait(false);
             return response.IsSuccessStatusCode;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception exception)
         {
@@ -660,7 +672,12 @@ public sealed class ModelClient : IDisposable
 /// <summary>Raised when the model endpoint refuses or breaks a request.</summary>
 public sealed class ModelClientException : Exception
 {
-    public ModelClientException(string message) : base(message)
+    public ModelClientException(string message, int? statusCode = null) : base(message)
     {
+        StatusCode = statusCode;
     }
+
+    public int? StatusCode { get; }
+    public bool IsTransientOrAvailabilityFailure =>
+        StatusCode is 408 or 429 || (StatusCode.HasValue && StatusCode.Value >= 500);
 }

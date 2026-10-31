@@ -85,6 +85,7 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
     private MusicLibraryImportIndex? _importIndex;
     private readonly SemaphoreSlim _libraryScanGate = new(1, 1);
     private readonly CancellationTokenSource _moduleLifetime = new();
+    private Task _initialLibraryIndexTask = Task.CompletedTask;
     private readonly object _playerLock = new();
 
     private ModuleContext? _context;
@@ -167,11 +168,12 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
             "music_find_download",
             "Search only the known download/music locations for an existing audio file whose filename or nearby folder matches the query. " +
             "This is a bounded, read-only search of Iris cache downloads, workspace Music/Downloads, and the user's standard Downloads folder; " +
-            "it does not search the whole PC. If several files match, return all plausible paths and ask which one. Do not import or add anything.",
+            "it does not search the whole PC. If several files match, return all plausible paths and ask which one. If there is no match, " +
+            "do not immediately repeat the same query; use materially different details or ask for clarification. Do not import or add anything.",
             ToolTier.SystemCritical,
             """{"type":"object","properties":{"query":{"type":"string","description":"Song title, artist, or filename phrase."}},"required":["query"]}""",
             "find downloaded song", "search downloads", "where did the download go", "find downloaded music", "downloaded track")
-        { Access = ToolAccess.Reads, AlwaysConfirm = true, PermissionScope = "music.downloads.read", TimeoutSeconds = 45 },
+        { Access = ToolAccess.Reads, PermissionScope = "music.downloads.read", TimeoutSeconds = 45 },
 
         new(
             "music_import_file",
@@ -210,7 +212,7 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
         // The drop-in folder is one of her library roots; create it so there is
         // always somewhere obvious to hand her files.
         Directory.CreateDirectory(Path.Combine(context.WorkspaceDirectory, "Music"));
-        _ = InitializeLibraryIndexAsync(cancellationToken);
+        _initialLibraryIndexTask = InitializeLibraryIndexAsync(cancellationToken);
 
         _progressTimer = new Timer(_ => UpdateProgress(), null, 500, 500);
 
@@ -595,13 +597,13 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
         return safe.Length == 0 ? "the selected music folder" : new string(safe);
     }
 
-    public Task ShutdownAsync()
+    public async Task ShutdownAsync()
     {
         _moduleLifetime.Cancel();
         StopPlayback();
         _progressTimer?.Dispose();
         _progressTimer = null;
-        return Task.CompletedTask;
+        await _initialLibraryIndexTask.ConfigureAwait(false);
     }
 
     private async Task InitializeLibraryIndexAsync(CancellationToken cancellationToken)
@@ -631,6 +633,7 @@ public sealed class MusicPlayerModule : IAssistantModule, IModuleSurfaceProvider
         _moduleLifetime.Cancel();
         StopPlayback();
         _progressTimer?.Dispose();
+        _initialLibraryIndexTask.GetAwaiter().GetResult();
     }
 
     /// <summary>The real places music comes from: the user's own folders plus her

@@ -72,11 +72,22 @@ To go back to the old "rest instead of switch off" behaviour, turn off
 * If the log says *no speech recogniser is available*, the Whisper model is missing — run
   `scripts/setup.ps1 -Component ears`, or set `Ears.Recognizer` to `http` and give
   `Ears.HttpEndpoint` a local `/v1/audio/transcriptions` server.
+* If she only catches loud speech, confirm `Ears.InputDeviceNumber` selects the headset mic,
+  then lower `Ears.VoiceThreshold` (the default is now `0.01`). The capture keeps a short lead-in
+  and uses a lower threshold once speech starts, so soft word beginnings and syllable gaps are
+  less likely to be clipped.
 
 ## She hears me but ignores me
 
 She waits for her name. Try "hey Iris", "Iris", "yo Iris", "wsp iris". If background noise is
-loud, lower `Ears.VoiceThreshold` (more sensitive) or raise `Ears.SilenceMilliseconds`.
+loud, lower `Ears.VoiceThreshold` (more sensitive) or raise `Ears.SilenceMilliseconds`. Utterances
+now wait for at least 3.5 seconds of silence before transcription. Speech that resumes during
+that pause resets the timer, so fillers and thinking pauses stay with the same utterance. This
+is intentionally more patient than a streaming assistant: Iris's local Parakeet recognizer
+transcribes a completed audio segment rather than predicting turn endings live. The optional
+Smart Turn v3.2 CPU model can defer submission when a long pause sounds like a mid-sentence
+hesitation; install it independently with `scripts/setup.ps1 -Component smart-turn`. Without
+it, Iris keeps the 3.5-second silence endpoint and continues to work normally.
 
 If short remarks never register, check `Ears.WakeGateMinimumMilliseconds` (default 420): the
 gate throws away anything shorter than that before spending CPU on transcription. It is the

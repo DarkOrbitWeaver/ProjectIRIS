@@ -253,9 +253,13 @@ internal sealed class ActivityOverlayWindow : Window
             y = pillPosition.Y + pillHeight + gap;
         }
 
-        Position = new PixelPoint(
+        PixelPoint position = new(
             Math.Clamp(x - gutter, workArea.X, Math.Max(workArea.X, workArea.Right - windowWidth)),
             Math.Clamp(y, workArea.Y, Math.Max(workArea.Y, workArea.Bottom - windowHeight)));
+        if (Position != position)
+        {
+            Position = position;
+        }
     }
 
     private void RenderProgress(double? fraction = null)

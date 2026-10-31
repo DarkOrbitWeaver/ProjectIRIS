@@ -661,6 +661,10 @@ public sealed class ToolPresentationTests
     [Fact]
     public void AccessIsReadOnlyWhenTheScopeSaysReadOrTheToolIsReflex()
     {
+        ModuleTool fileSearch = new CompanionOS.Core.Modules.BuiltIn.SystemControlModule().Tools
+            .Single(tool => tool.Name == "find_files");
+        Assert.Equal(ToolAccess.Reads, ToolPresentationCatalog.AccessOf(fileSearch));
+
         Assert.Equal(ToolAccess.Reads, ToolPresentationCatalog.AccessOf(
             new ModuleTool("a", "d", ToolTier.SystemCritical, "{}") { PermissionScope = "browser.read" }));
         Assert.Equal(ToolAccess.Acts, ToolPresentationCatalog.AccessOf(

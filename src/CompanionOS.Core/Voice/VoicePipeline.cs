@@ -51,6 +51,7 @@ public sealed class VoicePipeline : IAsyncDisposable
     private readonly WakePhraseMatcher _wakeMatcher;
     private readonly PocketTtsServerHost _pocketHost;
     private readonly KokoroTtsServerHost _kokoroHost;
+    private readonly SmartTurnServerHost _smartTurnHost = new();
     private readonly IDisposable _settingsChangedSubscription;
     private readonly SpeechOutputArbiter _speechOutputArbiter = new();
     private readonly object _wakeSampleLock = new();
@@ -61,11 +62,17 @@ public sealed class VoicePipeline : IAsyncDisposable
     private readonly SemaphoreSlim _recognitionGate = new(1, 1);
 
     private List<float> _speechSegment = new();
+    private readonly Queue<float[]> _preRollFrames = new();
+    private int _preRollSampleCount;
     private bool _isSegmentOpen;
     private int _silenceMilliseconds;
+    private int _activeSpeechMilliseconds;
+    private long _turnRevision;
+    private bool _turnCheckPending;
     private double _noiseFloor = 0.004;
     private int _microphoneDiagnosticActive;
     private long _microphoneDiagnosticRmsBits;
+    private int _smartTurnFallbackNoticeLogged;
     private int _microphoneStopRequested;
     private string? _microphoneSessionId;
     private DateTimeOffset _nextVoiceReprobe = DateTimeOffset.MinValue;
@@ -83,11 +90,15 @@ public sealed class VoicePipeline : IAsyncDisposable
     private const int MaximumUtteranceMilliseconds = 20000;
 
     /// <summary>
-    /// A short mid-sentence pause is not a reliable turn boundary. Keep at least this
-    /// much trailing silence even when an older saved setting asks for less; unlike a
-    /// streaming recognizer, this pipeline only submits audio after the segment closes.
+    /// A short mid-sentence pause or spoken hesitation is not a reliable turn boundary.
+    /// This non-streaming recognizer has no live endpoint prediction, so wait patiently
+    /// and keep capturing; renewed speech resets the silence timer rather than splitting
+    /// the request.
     /// </summary>
-    private const int MinimumUtteranceSilenceMilliseconds = 1500;
+    private const int MinimumUtteranceSilenceMilliseconds = 3500;
+    private const int IncompleteTurnRecheckMilliseconds = 1200;
+    private const double SmartTurnCompletionThreshold = 0.5;
+    private const int PreRollMilliseconds = 700;
 
     /// <summary>The pipeline's fixed capture format: 16 kHz mono.</summary>
     private const int CaptureSampleRate = 16000;
@@ -472,8 +483,23 @@ public sealed class VoicePipeline : IAsyncDisposable
                     ["reason"] = "device_unavailable_or_rejected"
                 });
         }
+        else if (_smartTurnHost.IsAvailable)
+        {
+            _ = Task.Run(() => WarmSmartTurnAsync(_voiceLifetime.Token));
+        }
 
         return opened;
+    }
+
+    private async Task WarmSmartTurnAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _smartTurnHost.PrepareAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
     }
 
     /// <summary>
@@ -817,8 +843,13 @@ public sealed class VoicePipeline : IAsyncDisposable
         lock (_segmentLock)
         {
             _speechSegment.Clear();
+            _preRollFrames.Clear();
+            _preRollSampleCount = 0;
             _isSegmentOpen = false;
             _silenceMilliseconds = 0;
+            _activeSpeechMilliseconds = 0;
+            _turnRevision++;
+            _turnCheckPending = false;
         }
 
         // Dropping the recogniser is the point of the exercise: it is the only way to
@@ -1282,6 +1313,7 @@ public sealed class VoicePipeline : IAsyncDisposable
         _recognitionGate.Dispose();
         await _pocketHost.DisposeAsync().ConfigureAwait(false);
         await _kokoroHost.DisposeAsync().ConfigureAwait(false);
+        await _smartTurnHost.DisposeAsync().ConfigureAwait(false);
         await Task.CompletedTask.ConfigureAwait(false);
     }
 
@@ -1412,17 +1444,33 @@ public sealed class VoicePipeline : IAsyncDisposable
             return;
         }
 
-        // Track the room's noise floor slowly, so a fan or a hum never wakes her.
-        _noiseFloor = (_noiseFloor * 0.995) + (level * 0.005);
-        double threshold = CurrentThreshold();
-
+        float[]? turnCandidate = null;
+        long turnRevision = 0;
         lock (_segmentLock)
         {
-            if (level >= threshold)
+            double threshold = CurrentThreshold();
+            int frameMilliseconds = Math.Max(1, samples.Length * 1000 / CaptureSampleRate);
+            bool speechContinues = _isSegmentOpen &&
+                                   level >= ResolveSpeechReleaseThreshold(threshold, _noiseFloor);
+
+            if (level >= threshold || speechContinues)
             {
-                _isSegmentOpen = true;
+                if (!_isSegmentOpen)
+                {
+                    _isSegmentOpen = true;
+                    _turnRevision++;
+                    while (_preRollFrames.TryDequeue(out float[]? frame))
+                    {
+                        _speechSegment.AddRange(frame);
+                    }
+                    _preRollSampleCount = 0;
+                }
+
+                _turnRevision++;
+                _turnCheckPending = false;
                 _silenceMilliseconds = 0;
                 _speechSegment.AddRange(samples);
+                _activeSpeechMilliseconds += frameMilliseconds;
 
                 // A loud room (music, applause, her own TTS leaking in) held the level
                 // above threshold forever and grew this segment unbounded — a 20-minute
@@ -1438,7 +1486,12 @@ public sealed class VoicePipeline : IAsyncDisposable
 
             if (!_isSegmentOpen)
             {
-                _speechSegment.Clear();
+                // Learn only from quiet frames, never from the user's active speech.
+                if (level < threshold * 0.8)
+                {
+                    _noiseFloor = (_noiseFloor * 0.995) + (level * 0.005);
+                }
+                StorePreRollFrameLocked(samples);
                 return;
             }
 
@@ -1447,10 +1500,93 @@ public sealed class VoicePipeline : IAsyncDisposable
 
             int silenceThreshold = ResolveUtteranceSilenceThreshold(_settings.Current.Ears.SilenceMilliseconds);
 
-            if (_silenceMilliseconds >= silenceThreshold)
+            if (_silenceMilliseconds >= silenceThreshold && !_turnCheckPending)
             {
-                CloseSegmentLocked();
+                _turnCheckPending = true;
+                turnRevision = _turnRevision;
+                turnCandidate = _speechSegment.ToArray();
             }
+        }
+
+        if (turnCandidate is not null)
+        {
+            _ = Task.Run(() => EvaluateTurnCompletionAsync(turnCandidate, turnRevision));
+        }
+    }
+
+    private async Task EvaluateTurnCompletionAsync(float[] candidate, long revision)
+    {
+        double? completionProbability;
+        try
+        {
+            if (!_smartTurnHost.IsAvailable)
+            {
+                if (Interlocked.Exchange(ref _smartTurnFallbackNoticeLogged, 1) == 0)
+                {
+                    CompanionLog.Warning("Voice",
+                        "Smart Turn is not installed; using the configured silence endpoint. " +
+                        "Run scripts/setup.ps1 -Component smart-turn to install it.");
+                }
+                completionProbability = null;
+            }
+            else
+            {
+                completionProbability = await _smartTurnHost
+                    .PredictCompletionProbabilityAsync(candidate, _voiceLifetime.Token)
+                    .ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException) when (_voiceLifetime.IsCancellationRequested)
+        {
+            return;
+        }
+
+        lock (_segmentLock)
+        {
+            if (!_isSegmentOpen || revision != _turnRevision)
+            {
+                return;
+            }
+
+            _turnCheckPending = false;
+            if (completionProbability is null ||
+                completionProbability.Value >= SmartTurnCompletionThreshold)
+            {
+                if (completionProbability is null)
+                {
+                    if (Interlocked.Exchange(ref _smartTurnFallbackNoticeLogged, 1) == 0)
+                    {
+                        CompanionLog.Warning("Voice",
+                            "Smart Turn is unavailable; using the configured silence endpoint for this utterance.");
+                    }
+                }
+                else
+                {
+                    IrisEvent.Log("Voice", "voice.turn.endpoint", LogLevel.Debug,
+                        message: "Smart Turn judged the utterance complete.",
+                        data: new Dictionary<string, string?>
+                        {
+                            ["completion_probability"] = completionProbability.Value.ToString(
+                                "0.000", System.Globalization.CultureInfo.InvariantCulture)
+                        });
+                }
+
+                CloseSegmentLocked();
+                return;
+            }
+
+            _silenceMilliseconds = Math.Max(
+                0,
+                _silenceMilliseconds - IncompleteTurnRecheckMilliseconds);
+            IrisEvent.Log("Voice", "voice.turn.deferred", LogLevel.Debug,
+                message: "Smart Turn judged the utterance incomplete; continuing to listen.",
+                data: new Dictionary<string, string?>
+                {
+                    ["completion_probability"] = completionProbability.Value.ToString(
+                        "0.000", System.Globalization.CultureInfo.InvariantCulture),
+                    ["silence_ms"] = _silenceMilliseconds.ToString(
+                        System.Globalization.CultureInfo.InvariantCulture)
+                });
         }
     }
 
@@ -1465,9 +1601,13 @@ public sealed class VoicePipeline : IAsyncDisposable
         _speechSegment.Clear();
         _isSegmentOpen = false;
         _silenceMilliseconds = 0;
+        _turnRevision++;
+        _turnCheckPending = false;
 
-        int minimumSamples = CaptureSampleRate * _settings.Current.Ears.MinimumSpeechMilliseconds / 1000;
-        if (finishedSegment.Length >= minimumSamples)
+        int minimumSpeechMilliseconds = Math.Max(0, _settings.Current.Ears.MinimumSpeechMilliseconds);
+        bool containsEnoughSpeech = _activeSpeechMilliseconds >= minimumSpeechMilliseconds;
+        _activeSpeechMilliseconds = 0;
+        if (containsEnoughSpeech)
         {
             SubmitSegment(finishedSegment);
         }
@@ -1475,6 +1615,20 @@ public sealed class VoicePipeline : IAsyncDisposable
 
     internal static int ResolveUtteranceSilenceThreshold(int configuredMilliseconds) =>
         Math.Max(MinimumUtteranceSilenceMilliseconds, configuredMilliseconds);
+
+    internal static double ResolveSpeechReleaseThreshold(double startThreshold, double noiseFloor) =>
+        Math.Min(startThreshold * 0.9, Math.Max(startThreshold * 0.55, noiseFloor * 1.3));
+
+    private void StorePreRollFrameLocked(float[] samples)
+    {
+        _preRollFrames.Enqueue(samples);
+        _preRollSampleCount += samples.Length;
+        int maximumPreRollSamples = CaptureSampleRate * PreRollMilliseconds / 1000;
+        while (_preRollSampleCount > maximumPreRollSamples && _preRollFrames.TryDequeue(out float[]? removed))
+        {
+            _preRollSampleCount -= removed.Length;
+        }
+    }
 
     /// <summary>
     /// Queues one finished utterance for transcription instead of dropping it the
@@ -1765,7 +1919,7 @@ public sealed class VoicePipeline : IAsyncDisposable
         EarsSettings ears = _settings.Current.Ears;
         double configured = Math.Clamp(ears.VoiceThreshold, 0.005, 0.5);
         // Never let the adaptive floor push the threshold so high that quiet speech is lost.
-        return Math.Min(Math.Max(configured, _noiseFloor * 2.2), configured * 4);
+        return Math.Min(Math.Max(configured, _noiseFloor * 1.6), configured * 4);
     }
 
     private static double CalculateLevel(float[] samples)

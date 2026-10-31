@@ -140,6 +140,11 @@ public sealed class Persona
 
         WHAT YOU CAN DO RIGHT NOW
         {{capabilities}}
+        - This map names every installed ability. Only some detailed tool schemas may be
+          attached for this turn. If the task needs another listed ability, call
+          search_capabilities with a concrete description; its matching tools become
+          callable in the next round. Never assume a capability is unavailable just
+          because its detailed schema is not attached yet.
 
         TURNS ARRIVE IN TWO PARTS
         - Your message can begin with a <context> block written by the OS: the time,

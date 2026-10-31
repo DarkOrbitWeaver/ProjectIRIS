@@ -12,12 +12,9 @@ namespace CompanionOS.Core.Modules;
 /// The body: it holds every installed hand, decides which hands a request needs, and
 /// makes sure nothing dangerous happens without permission.
 ///
-/// Routing philosophy (2026-10-27 audit): the ROUTER does not stand between the model
-/// and its hands. Every enabled tool is offered every turn, in deterministic order —
-/// a scored keyword/cosine pre-gate once hid open_application from "Uh open up
-/// calculator" and the model narrated instead of acting. She cannot call a tool she is
-/// never shown, so she is shown everything. The cap only guards a plugin explosion,
-/// and truncation is a logged receipt, never silent.
+/// Tool schemas are offered progressively. The prompt carries a compact map of every
+/// enabled capability; this class offers relevant schemas plus the always-available
+/// discovery tool, which can load more schemas into the live turn as its task evolves.
 /// </summary>
 public sealed class ModuleHost : IAsyncDisposable
 {
@@ -27,9 +24,19 @@ public sealed class ModuleHost : IAsyncDisposable
     /// body. It exists to catch catastrophic accidental picks, not everyday turns.
     /// </summary>
     public const int MaximumToolsPerTurn = 64;
+    public const int MaximumInitialToolsPerTurn = 12;
+    public const int MaximumDiscoveredToolsPerRequest = 8;
 
     private const string DisabledModulesFile = "modules.disabled.json";
     private const int ToolTimeoutSeconds = 45;
+    private const string CapabilityDiscoveryTool = "search_capabilities";
+    private static readonly HashSet<string> DiscoveryStopWords = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "a", "an", "and", "are", "can", "could", "do", "for", "from", "get", "give", "help",
+        "how", "i", "in", "is", "it", "me", "my", "of", "on", "or", "please", "show", "some",
+        "that", "the", "this", "to", "use", "what", "when", "where", "which", "who", "would",
+        "you", "your"
+    };
 
     private readonly SettingsStore _settings;
     private readonly EventBus _events;
@@ -281,13 +288,7 @@ public sealed class ModuleHost : IAsyncDisposable
         }
     }
 
-    /// <summary>
-    /// <summary>
-    /// Offers the hands for one turn. Every enabled tool is offered, every turn: the
-    /// router is a manifest, not a gate. Deterministic order (always-available bodies
-    /// first, then registration order) keeps the offer stable across repeats, which
-    /// makes her choices comparable from the receipts.
-    /// </summary>
+    /// <summary>Offers relevant schemas and the always-available discovery tool.</summary>
     public IReadOnlyList<ModuleTool> RouteTools(string userMessage, out IReadOnlyList<IAssistantModule> selectedModules)
     {
         List<IAssistantModule> enabled;
@@ -298,42 +299,195 @@ public sealed class ModuleHost : IAsyncDisposable
                 .ToList();
         }
 
-        // Always-available bodies go first so a truncation (third-party explosion)
-        // can never cut her permanent reflexes before an optional module's tools.
-        List<IAssistantModule> ordered = enabled
-            .OrderByDescending(module => module.AlwaysAvailable)
-            .ThenByDescending(module => module.Tools.Any(tool =>
-                tool.RoutingKeywords.Any(keyword =>
-                    userMessage.Contains(keyword, StringComparison.OrdinalIgnoreCase))))
-            .ToList();
-
-        List<ModuleTool> routedTools = new();
-        HashSet<string> addedToolNames = new(StringComparer.OrdinalIgnoreCase);
-        foreach (IAssistantModule module in ordered)
+        List<(IAssistantModule Module, ModuleTool Tool, int Score, int ModuleOrder)> candidates = new();
+        for (int moduleIndex = 0; moduleIndex < enabled.Count; moduleIndex++)
         {
-            if (routedTools.Count >= MaximumToolsPerTurn)
-            {
-                IrisEvent.Log("Modules", "router.truncated", LogLevel.Warning,
-                    message: "The tool offer hit the per-turn cap; later modules are not on the table this turn. This is a body-size receipt, not a judgment.",
-                    data: new Dictionary<string, string?>
-                    {
-                        ["offered"] = routedTools.Count.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                        ["cap"] = MaximumToolsPerTurn.ToString(System.Globalization.CultureInfo.InvariantCulture)
-                    });
-                break;
-            }
-
+            IAssistantModule module = enabled[moduleIndex];
             foreach (ModuleTool tool in module.Tools)
             {
-                if (addedToolNames.Add(tool.Name) && routedTools.Count < MaximumToolsPerTurn)
+                int score = ScoreToolMatch(userMessage, module, tool);
+                if (score > 0)
                 {
-                    routedTools.Add(tool);
+                    candidates.Add((module, tool, score, moduleIndex));
                 }
             }
         }
 
-        selectedModules = ordered;
+        List<ModuleTool> routedTools = new();
+        HashSet<string> addedToolNames = new(StringComparer.OrdinalIgnoreCase);
+        ModuleTool? discoveryTool = enabled
+            .SelectMany(module => module.Tools)
+            .FirstOrDefault(tool => tool.Name.Equals(CapabilityDiscoveryTool, StringComparison.OrdinalIgnoreCase));
+        if (discoveryTool is not null)
+        {
+            routedTools.Add(discoveryTool);
+            addedToolNames.Add(discoveryTool.Name);
+        }
+
+        foreach (var candidate in candidates
+                     .OrderByDescending(candidate => candidate.Score)
+                     .ThenByDescending(candidate => candidate.Module.AlwaysAvailable)
+                     .ThenBy(candidate => candidate.ModuleOrder)
+                     .ThenBy(candidate => candidate.Tool.Name, StringComparer.OrdinalIgnoreCase)
+                     .Take(Math.Max(0, MaximumInitialToolsPerTurn - routedTools.Count)))
+        {
+            if (addedToolNames.Add(candidate.Tool.Name))
+            {
+                routedTools.Add(candidate.Tool);
+            }
+        }
+
+        selectedModules = enabled
+            .Where(module => module.Tools.Any(tool => addedToolNames.Contains(tool.Name)))
+            .ToArray();
+
+        IrisEvent.Log("Modules", "router.progressive", LogLevel.Debug,
+            message: "Offered relevant schemas and kept the full enabled catalog discoverable.",
+            data: new Dictionary<string, string?>
+            {
+                ["offered"] = routedTools.Count.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                ["catalog"] = enabled.Sum(module => module.Tools.Count)
+                    .ToString(System.Globalization.CultureInfo.InvariantCulture),
+                ["discovery_tool"] = discoveryTool is null ? "missing" : discoveryTool.Name
+            });
+
         return routedTools;
+    }
+
+    /// <summary>
+    /// Searches every enabled module for detailed schemas to add after the model
+    /// requests a capability. Existing offers are omitted and prior offers are kept.
+    /// </summary>
+    public IReadOnlyList<ModuleTool> DiscoverTools(string query, IEnumerable<string>? alreadyOfferedNames = null,
+        int maximumResults = MaximumDiscoveredToolsPerRequest)
+    {
+        string cleanedQuery = (query ?? string.Empty).Trim();
+        if (cleanedQuery.Length == 0)
+        {
+            return Array.Empty<ModuleTool>();
+        }
+
+        HashSet<string> alreadyOffered = new(alreadyOfferedNames ?? Array.Empty<string>(),
+            StringComparer.OrdinalIgnoreCase);
+        if (maximumResults <= 0)
+        {
+            return Array.Empty<ModuleTool>();
+        }
+
+        List<IAssistantModule> enabled;
+        lock (_registryLock)
+        {
+            enabled = _registrationOrder
+                .Where(module => !_disabledModuleIds.Contains(module.Id))
+                .ToList();
+        }
+
+        return enabled
+            .SelectMany((module, moduleIndex) => module.Tools.Select(tool =>
+                (Tool: tool, Score: ScoreToolMatch(cleanedQuery, module, tool), ModuleOrder: moduleIndex)))
+            .Where(candidate => candidate.Score > 0 && !alreadyOffered.Contains(candidate.Tool.Name) &&
+                                !candidate.Tool.Name.Equals(CapabilityDiscoveryTool, StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(candidate => candidate.Score)
+            .ThenBy(candidate => candidate.ModuleOrder)
+            .ThenBy(candidate => candidate.Tool.Name, StringComparer.OrdinalIgnoreCase)
+            .Take(Math.Clamp(maximumResults, 1, MaximumToolsPerTurn))
+            .Select(candidate => candidate.Tool)
+            .ToArray();
+    }
+
+    private static int ScoreToolMatch(string query, IAssistantModule module, ModuleTool tool)
+    {
+        HashSet<string> queryTerms = TokenizeForDiscovery(query)
+            .Where(term => !DiscoveryStopWords.Contains(term))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (queryTerms.Count == 0)
+        {
+            return 0;
+        }
+
+        int toolScore = 0;
+        foreach (string keyword in tool.RoutingKeywords)
+        {
+            if (keyword.Length > 1 && query.Contains(keyword, StringComparison.OrdinalIgnoreCase))
+            {
+                toolScore += 12;
+            }
+
+            toolScore += TokenizeForDiscovery(keyword).Distinct(StringComparer.OrdinalIgnoreCase)
+                .Count(queryTerms.Contains) * 5;
+        }
+
+        toolScore += TokenizeForDiscovery(tool.Name).Distinct(StringComparer.OrdinalIgnoreCase)
+            .Count(queryTerms.Contains) * 7;
+        toolScore += TokenizeForDiscovery(tool.Description).Distinct(StringComparer.OrdinalIgnoreCase)
+            .Count(queryTerms.Contains);
+        int moduleNameScore = TokenizeForDiscovery(module.DisplayName)
+            .Distinct(StringComparer.OrdinalIgnoreCase).Count(queryTerms.Contains) * 3;
+        if (toolScore == 0 && moduleNameScore == 0)
+        {
+            return 0;
+        }
+
+        int moduleContextScore = TokenizeForDiscovery(module.DisplayName + " " + module.Purpose + " " +
+                                                     module.CapabilityDescription)
+            .Distinct(StringComparer.OrdinalIgnoreCase).Count(queryTerms.Contains) * 2;
+        return (toolScore == 0 ? moduleNameScore : toolScore + moduleContextScore) +
+               (module.AlwaysAvailable ? 20 : 0);
+    }
+
+    private static IEnumerable<string> TokenizeForDiscovery(string text)
+    {
+        StringBuilder token = new();
+        foreach (char character in text)
+        {
+            if (char.IsLetterOrDigit(character))
+            {
+                token.Append(char.ToLowerInvariant(character));
+                continue;
+            }
+
+            if (token.Length > 0)
+            {
+                yield return NormalizeDiscoveryToken(token.ToString());
+                token.Clear();
+            }
+        }
+
+        if (token.Length > 0)
+        {
+            yield return NormalizeDiscoveryToken(token.ToString());
+        }
+    }
+
+    private static string NormalizeDiscoveryToken(string token)
+    {
+        if (token.Length > 5 && token.EndsWith("ing", StringComparison.Ordinal))
+        {
+            return token[..^3];
+        }
+        if (token.Length > 4 && token.EndsWith("ed", StringComparison.Ordinal))
+        {
+            return token[..^2];
+        }
+        if (token.Length > 4 && token.EndsWith("er", StringComparison.Ordinal))
+        {
+            return token[..^2];
+        }
+        if (token.Length > 4 &&
+            (token.EndsWith("ches", StringComparison.Ordinal) ||
+             token.EndsWith("shes", StringComparison.Ordinal) ||
+             token.EndsWith("sses", StringComparison.Ordinal) ||
+             token.EndsWith("xes", StringComparison.Ordinal) ||
+             token.EndsWith("zes", StringComparison.Ordinal)))
+        {
+            return token[..^2];
+        }
+        if (token.Length > 3 && token.EndsWith('s'))
+        {
+            return token[..^1];
+        }
+
+        return token;
     }
 
     /// <summary>Shows validated tool calls as waiting rows before any action or permission prompt begins.</summary>
@@ -398,13 +552,8 @@ public sealed class ModuleHost : IAsyncDisposable
     }
 
     /// <summary>
-    /// The prompt-side overview: one line per module saying what part of her body it is.
-    /// The native tools array that rides every turn already carries the full catalog with
-    /// schemas; printing every tool name a second time in prose duplicated the whole menu
-    /// in the system prompt, slowed prefill, and taught a small model that tool words
-    /// belong inside her sentences (2026-10-27: "[ list_music ]" surfaced in her chat as
-    /// a faked call). The complete name catalog stays on <see cref="DescribeCapabilities"/>
-    /// for the search_capabilities tool's own answers.
+    /// The prompt-side capability map: module purpose and tool names, but no argument
+    /// schemas. This keeps capability awareness while schemas load progressively.
     /// </summary>
     public string DescribeCapabilitiesOverview()
     {
@@ -427,7 +576,8 @@ public sealed class ModuleHost : IAsyncDisposable
             string purpose = string.IsNullOrWhiteSpace(module.Purpose)
                 ? "provides hands and senses for this body"
                 : module.Purpose.Trim();
-            builder.AppendLine($"{module.DisplayName}: {purpose}");
+            builder.Append($"{module.DisplayName}: {purpose} Tools: ");
+            builder.AppendLine(string.Join(", ", module.Tools.Select(tool => tool.Name)));
         }
 
         return builder.ToString().TrimEnd();

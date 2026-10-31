@@ -15,7 +15,7 @@
                       binaries (brand tags) are skipped automatically
 
 .PARAMETER Component
-    all, brain, runtime, ears or voice. Defaults to all.
+    all, brain, runtime, ears, smart-turn or voice. Defaults to all.
 
 .PARAMETER Force
     Re-download even when the file already exists.
@@ -31,7 +31,7 @@
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('all', 'brain', 'runtime', 'ears', 'voice')]
+    [ValidateSet('all', 'brain', 'runtime', 'ears', 'smart-turn', 'voice')]
     [string]$Component = 'all',
     [switch]$Force,
     [switch]$VerifyOnly,
@@ -202,9 +202,10 @@ foreach ($artifact in $manifest.artifacts) {
     # Component filter: each component owns a short list of artifact ids.
     $componentArtifacts = @{
         brain   = @('brain', 'brain-vision')
-        ears    = @('ears-parakeet', 'ears-transcribe-runtime')
-        runtime = @('runtime', 'runtime-cuda')
-        voice   = @('pocket-uv')
+        ears       = @('ears-parakeet', 'ears-transcribe-runtime', 'ears-smart-turn')
+        'smart-turn' = @('ears-smart-turn')
+        runtime    = @('runtime', 'runtime-cuda')
+        voice      = @('pocket-uv')
     }
 
     if ($Component -ne 'all' -and $componentArtifacts[$Component] -notcontains $artifact.id) {
@@ -294,6 +295,50 @@ foreach ($artifact in $manifest.artifacts) {
     catch {
         Write-Host "  failed: $($artifact.id) — $($_.Exception.Message)" -ForegroundColor Red
         $results += [pscustomobject]@{ Artifact = $artifact.id; Status = 'failed' }
+    }
+}
+
+$smartTurnRequested = $Component -in @('all', 'ears', 'smart-turn')
+if ($smartTurnRequested) {
+    $smartTurnDirectory = Join-Path $runtimeDir 'smart-turn'
+    $smartTurnPython = Join-Path $smartTurnDirectory 'venv\Scripts\python.exe'
+    $smartTurnScript = Join-Path $smartTurnDirectory 'smart-turn-server.py'
+    $smartTurnModel = Join-Path $modelsDir 'smart-turn-v3.2-cpu.onnx'
+
+    if ($VerifyOnly) {
+        $runtimePresent = (Test-Path $smartTurnPython) -and (Test-Path $smartTurnScript)
+        $modelPresent = Test-Path $smartTurnModel
+        $results += [pscustomobject]@{ Artifact = 'smart-turn-runtime'; Status = if ($runtimePresent) { 'present' } else { 'missing' } }
+        $results += [pscustomobject]@{ Artifact = 'smart-turn-model'; Status = if ($modelPresent) { 'present' } else { 'missing' } }
+    } else {
+        try {
+            $version = & python --version 2>&1
+            if ($LASTEXITCODE -ne 0 -or $version -notmatch '3\.(1[0-3])') {
+                throw "Smart Turn needs Python 3.10-3.13 on the system PATH; found: $version"
+            }
+
+            New-Item -ItemType Directory -Force -Path $smartTurnDirectory | Out-Null
+            if (-not (Test-Path $smartTurnPython)) {
+                python -m venv (Join-Path $smartTurnDirectory 'venv')
+                if ($LASTEXITCODE -ne 0) { throw 'Could not create the Smart Turn Python environment.' }
+            }
+
+            $requirements = Join-Path $PSScriptRoot 'smart-turn-requirements.txt'
+            & $smartTurnPython -m pip install --quiet -r $requirements
+            if ($LASTEXITCODE -ne 0) { throw 'Smart Turn CPU runtime dependencies could not be installed.' }
+            Copy-Item (Join-Path $PSScriptRoot 'smart-turn-server.py') $smartTurnScript -Force
+
+            $imports = & $smartTurnPython -c "import numpy, onnxruntime, transformers; print('ready')"
+            if ($LASTEXITCODE -ne 0 -or $imports -ne 'ready') {
+                throw 'Smart Turn runtime verification failed.'
+            }
+
+            $results += [pscustomobject]@{ Artifact = 'smart-turn-runtime'; Status = 'installed and verified' }
+        }
+        catch {
+            Write-Host "  failed: Smart Turn runtime — $($_.Exception.Message)" -ForegroundColor Red
+            $results += [pscustomobject]@{ Artifact = 'smart-turn-runtime'; Status = 'failed' }
+        }
     }
 }
 

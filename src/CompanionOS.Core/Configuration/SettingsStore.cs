@@ -157,6 +157,14 @@ public sealed class SettingsStore
             {
                 MigrateConversationWindow();
             }
+            if (previousVersion < 6)
+            {
+                MigrateVoiceSensitivity();
+            }
+            if (previousVersion < 7)
+            {
+                MigrateVoiceEndpointing();
+            }
 
             Current.SchemaVersion = CompanionSettings.CurrentSchemaVersion;
             CompanionLog.Info("Settings",
@@ -188,17 +196,26 @@ public sealed class SettingsStore
             Current.Ears.MaxRecognitionThreads = Math.Clamp(Current.Ears.MaxRecognitionThreads, 1, 4);
         }
 
-        // The old default missed quiet speech on many headset mics. Preserve custom
-        // thresholds, but migrate that exact historical default to a more forgiving one.
-        if (Math.Abs(Current.Ears.VoiceThreshold - 0.055) < 0.000001)
-        {
-            Current.Ears.VoiceThreshold = 0.025;
-        }
-
         if (string.IsNullOrWhiteSpace(voice.PocketLanguage))
         {
             voice.PocketLanguage = "english_18m_2026-10";
         }
+    }
+
+    private void MigrateVoiceSensitivity()
+    {
+        // These were the historical defaults, including the 0.025 value written by
+        // the earlier threshold migration. Keep user-tuned values untouched.
+        if (Math.Abs(Current.Ears.VoiceThreshold - 0.055) < 0.000001 ||
+            Math.Abs(Current.Ears.VoiceThreshold - 0.025) < 0.000001)
+        {
+            Current.Ears.VoiceThreshold = 0.01;
+        }
+    }
+
+    private void MigrateVoiceEndpointing()
+    {
+        Current.Ears.SilenceMilliseconds = Math.Max(3500, Current.Ears.SilenceMilliseconds);
     }
 
     /// <summary>

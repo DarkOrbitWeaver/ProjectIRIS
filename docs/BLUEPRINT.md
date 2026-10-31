@@ -100,9 +100,9 @@ III
 
 CompanionOS is a local-first AI companion framework for Windows, designed to run a persistent, voice-capable, screen-aware assistant named Iris on a single consumer-grade machine: an NVIDIA RTX 3050 with 8 GB of VRAM, 16 GB of system RAM, and a midrange CPU. The system is not a chatbot with a skin. It is a framework whose interface acts as the visible surface of a complete, always-on nervous system: a cortical language model that reasons, sees, and speaks, paired with a brainstem of lightweight CPU services that keep her senses alive even while the model is unloaded from the GPU. 
 
-The architecture solves the central conflict of small-hardware AI: a 4-billion-parameter model cannot natively provide realtime vision, hearing, speech, memory, and tool use at once without exhausting VRAM or adding seconds of latency. CompanionOS resolves this by splitting the system into two speeds. Fast reflexes (wake word detection, speech recognition, voice playback, pre-cached spoken phrases, ambient PC awareness) run entirely on the CPU at negligible cost. Deliberate thought (reasoning, screen understanding, tool orchestration, roleplay) runs on the GPU through an OpenAI-compatible local server. The user experiences a single continuous personality with effectively zero perceived latency, because the reflex layer speaks while the thinking layer works. 
+The architecture solves the central conflict of small-hardware AI: a 4-billion-parameter model cannot natively provide realtime vision, hearing, speech, memory, and tool use at once without exhausting VRAM or adding seconds of latency. CompanionOS resolves this by splitting the system into two speeds. Fast reflexes (wake word detection, speech recognition, voice playback, pre-cached spoken phrases, ambient PC awareness) run entirely on the CPU at negligible cost. Deliberate thought (reasoning, screen understanding, tool orchestration, roleplay) runs on the GPU through an OpenAI-compatible local server. The user experiences a single continuous personality with effectively zero perceived latency, because the reflex layer speaks while the thinking layer works.
 
-Three properties define the project's non-negotiables. First, consistency: Iris has one persistent voice identity, one persona, and one memory, and none of them drift between sessions, model swaps, or engine upgrades. Second, immortality: all state lives in a writeahead-logged SQLite database and an append-only journal, so crashes, restarts, and power loss never corrupt or lose her memory. Third, infinite growth: a slot-based module system with dynamic skill routing allows hundreds of plugins (music, browser control, PC control, custom players, MCP servers) to be installed over time without the language model ever seeing more than roughly eight tools in a single turn. 
+Three properties define the project's non-negotiables. First, consistency: Iris has one persistent voice identity, one persona, and one memory, and none of them drift between sessions, model swaps, or engine upgrades. Second, immortality: all state lives in a writeahead-logged SQLite database and an append-only journal, so crashes, restarts, and power loss never corrupt or lose her memory. Third, infinite growth: a slot-based module system with progressive tool discovery allows hundreds of plugins (music, browser control, PC control, custom players, MCP servers) without attaching every JSON schema to every model request.
 
 This document is the locked specification. It records every verified technology decision, every resource budget, every screen, every state, and every interaction so that future development, whether by humans or AI coding assistants, cannot deviate from the agreed design. 
 
@@ -538,7 +538,7 @@ Overlay
 
 ### **10.2 Dynamic Skill Routing** 
 
-The tool-overload problem is fatal for small models: present eighty tools and a 4B model slows down and confuses parameters. The router solves it in two milliseconds, before the model is ever called. The user's message is embedded and matched against each module's capability description, and only the winning module's tools, plus the four permanent core tools, are attached to the turn. The model therefore never sees more than roughly eight tools at once, regardless of how many modules are installed, which is what makes unlimited plugin growth safe. The routing decision is shown in the interface as the memory chip on each turn, so the user can always see which hands she reached for. 
+Sending every tool schema on every turn wastes context and can confuse tool selection. Iris instead receives a compact capability map listing all enabled tools, while the initial model request includes at most twelve relevant schemas and the always-available `search_capabilities` tool. When a task needs another ability, a successful search adds up to eight matching schemas to the active turn; later rounds can discover more, up to the per-turn limit. This is a context optimization, not an authorization boundary: discovered tools still pass through the same schema validation, intent, permission, and execution checks. The routing decision is shown in the interface as the memory chip on each turn, so the user can see which hands she reached for.
 
 ### **10.3 The Three-Tier Sandbox** 
 
@@ -818,7 +818,7 @@ Gaming Mode lands with milestone 5, when the perception engine exists to detect 
 |**Risk**|**Likelihoo**<br>**d**|**Impact**|**Mitigation**|
 |---|---|---|---|
 |**VRAM pressure from**<br>**larger contexts or vision**<br>**sessions**|Medium|Medium|Hard budgets with live estimates in settings;<br>q8_0 KV cache; 16K default with opt-in 32K;<br>software-rendering fallback for UI|
-|**Small-model tool confusion**<br>**despite routing**|Medium|Medium|Eight-tool cap, one module per turn, schema<br>validation with friendly retry, permanent core<br>tools only four|
+|**Small-model tool confusion**<br>**despite routing**|Medium|Medium|Progressive relevant schemas with on-demand<br>discovery, schema validation with friendly<br>retry, permission checks at execution|
 |**STT accuracy in noisy**<br>**rooms or accents**|Medium|Medium|SenseVoice chosen for robustness; push-to-talk<br>and text always available as alternates; wake<br>word is a separate lightweight detector|
 |**yt-dlp breakage from site**<br>**changes**|High|Low|Module isolates the dependency; graceful<br>failure message; browser-control module is a<br>fallback path|
 |**Uncensored roleplay model**<br>**misuse or persona drift**|Medium|Medium|Roleplay confined to a swap-in profile; Layer 0<br>core memory is read-only to profiles; tier<br>sandbox unaffected by persona|
@@ -885,4 +885,3 @@ The following log records the researched alternatives and the verdict for each m
 This blueprint is the single source of truth for Project Iris. Any change to a locked decision requires a new dated entry in this log with its evidence, keeping the framework's history as traceable as her memory. 
 
 27 
-

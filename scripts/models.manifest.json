@@ -46,6 +46,15 @@
       "note": "The transcribe.cpp C-API runtime the Parakeet ears live in. MIT licensed; ships GPU helper DLLs, but the adapter pins the backend registry to CPU so they are never loaded."
     },
     {
+      "id": "ears-smart-turn",
+      "kind": "url",
+      "url": "https://huggingface.co/pipecat-ai/smart-turn-v3/resolve/main/smart-turn-v3.2-cpu.onnx",
+      "sha256": "2bb026316b14a660486a75b1733cd3fbab8c2fd0314dc9af7be49f8cca967e4f",
+      "targetName": "smart-turn-v3.2-cpu.onnx",
+      "required": false,
+      "note": "Optional CPU-only semantic endpoint detector; BSD-2-Clause, used with Parakeet to avoid sending unfinished phrases."
+    },
+    {
       "id": "runtime",
       "kind": "github-release",
       "repo": "ggml-org/llama.cpp",

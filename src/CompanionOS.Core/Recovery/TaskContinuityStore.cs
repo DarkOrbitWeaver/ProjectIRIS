@@ -183,7 +183,7 @@ public sealed class TaskContinuityStore
         }
     }
 
-    /// <summary>Creates a task record on the first mutating tool call when the
+    /// <summary>Creates a task record on the first action tool call when the
     /// linguistic action detector did not recognize the user's wording.</summary>
     public string EnsureTaskForAction(string turnId, string userText, string? currentTaskId)
     {
@@ -232,6 +232,19 @@ public sealed class TaskContinuityStore
         }
     }
 
+    /// <summary>Checks whether this task already received a failed result for this exact read-only call.</summary>
+    public bool WasReadOnlyFailureAlreadyAttempted(string taskId, string toolName, string? argumentsJson)
+    {
+        string fingerprint = Fingerprint(toolName, argumentsJson);
+        lock (_gate)
+        {
+            PendingTaskRecord? task = FindLocked(taskId);
+            return task?.Receipts.Any(receipt =>
+                       receipt.ArgumentFingerprint == fingerprint &&
+                       receipt.State == PendingTaskReceiptState.Failed) == true;
+        }
+    }
+
     /// <summary>Appends one compact receipt. Arguments and model/tool output are not persisted.</summary>
     public void RecordReceipt(string? taskId, string turnId, string toolName, string? argumentsJson,
         bool sideEffecting, PendingTaskReceiptState state, IEnumerable<string>? missingFields = null,
@@ -250,7 +263,9 @@ public sealed class TaskContinuityStore
                 return;
             }
 
-            string fingerprint = sideEffecting ? Fingerprint(toolName, argumentsJson) : string.Empty;
+            string fingerprint = sideEffecting || state == PendingTaskReceiptState.Failed
+                ? Fingerprint(toolName, argumentsJson)
+                : string.Empty;
             task.Receipts.Add(new PendingTaskReceipt
             {
                 TurnId = turnId,
@@ -510,7 +525,7 @@ public sealed class TaskContinuityStore
         }
         if (!string.IsNullOrWhiteSpace(task.Blocker)) result.AppendLine("blocker: " + EscapeQuotedText(task.Blocker));
         if (!string.IsNullOrWhiteSpace(task.Uncertainty)) result.AppendLine("uncertainty: " + EscapeQuotedText(task.Uncertainty));
-        result.AppendLine("continuation_rules: bind a short reply to this task when it answers the last question; retain every supplied field; do not claim a step happened without a new or prior verified receipt; before retrying a side effect, inspect current state; never bypass permission or confirmation.");
+        result.AppendLine("continuation_rules: bind a short reply to this task when it answers the last question; retain every supplied field; do not claim a step happened without a new or prior verified receipt; do not repeat an identical failed read-only call unless the user explicitly asks for another attempt or says relevant state changed; use materially different arguments, another relevant tool, or ask one focused question; before retrying a side effect, inspect current state; never bypass permission or confirmation.");
         result.Append("</active_task_context>");
         return result.ToString();
     }

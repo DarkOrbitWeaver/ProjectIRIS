@@ -127,6 +127,26 @@ public sealed class TaskContinuityStoreTests : IDisposable
     }
 
     [Fact]
+    public void AnIdenticalFailedReadOnlyCallIsRememberedWithoutPersistingItsArguments()
+    {
+        TaskContinuityStore store = new(_workspace);
+        PendingTaskRecord task = store.BeginTurn("t1", "find the downloaded song", true)!;
+        const string arguments = "{\"query\":\"private song title\"}";
+
+        Assert.False(store.WasReadOnlyFailureAlreadyAttempted(task.Id, "music_find_download", arguments));
+        store.RecordReceipt(task.Id, "t1", "music_find_download", arguments, sideEffecting: false,
+            PendingTaskReceiptState.Failed);
+
+        Assert.True(store.WasReadOnlyFailureAlreadyAttempted(task.Id, "music_find_download", arguments));
+        Assert.True(store.WasReadOnlyFailureAlreadyAttempted(task.Id, "music_find_download",
+            "{ \"query\" : \"private song title\" }"));
+        Assert.False(store.WasReadOnlyFailureAlreadyAttempted(task.Id, "music_find_download",
+            "{\"query\":\"different title\"}"));
+        Assert.False(store.WasReadOnlyFailureAlreadyAttempted(task.Id, "music_library", arguments));
+        Assert.DoesNotContain("private song title", File.ReadAllText(store.FilePath), StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void AnUncertainOutcomeBlocksTheBlindRetryAndIsCarriedAsUncertain()
     {
         TaskContinuityStore store = new(_workspace);

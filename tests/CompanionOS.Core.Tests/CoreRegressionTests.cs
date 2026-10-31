@@ -24,6 +24,51 @@ namespace CompanionOS.Core.Tests;
 public sealed class CoreRegressionTests
 {
     [Fact]
+    public void RemoteBrainProfilesCanDeclareVisionWithoutAFakeProjectorFile()
+    {
+        BrainProfile profile = new()
+        {
+            Kind = BrainHostKind.External,
+            ProjectorFile = string.Empty,
+            SupportsVisionOverride = true,
+            FallbackProfileId = "external"
+        };
+
+        Assert.True(profile.SupportsVision);
+        BrainProfile clone = profile.CloneWithNewId("copy");
+        Assert.True(clone.SupportsVision);
+        Assert.Equal("external", clone.FallbackProfileId);
+
+        profile.SupportsVisionOverride = false;
+        Assert.False(profile.SupportsVision);
+    }
+
+    [Fact]
+    public void TextOnlyFallbackReceivesImageNoticeInsteadOfImagePayload()
+    {
+        ChatMessage imageMessage = ChatMessage.User("What is in this picture?", "data:image/png;base64,private");
+        BrainProfile fallback = new() { SupportsVisionOverride = false };
+
+        IReadOnlyList<ChatMessage> messages = AssistantBrain.MessagesForModel(fallback, [imageMessage]);
+
+        Assert.Null(messages[0].ImageDataUri);
+        Assert.Contains("cannot inspect images", messages[0].Content);
+        Assert.StartsWith(imageMessage.Content, messages[0].Content);
+    }
+
+    [Theory]
+    [InlineData(408, true)]
+    [InlineData(429, true)]
+    [InlineData(500, true)]
+    [InlineData(400, false)]
+    public void ModelClientFallbackEligibilityIsLimitedToTransientHttpFailures(int statusCode, bool eligible)
+    {
+        ModelClientException exception = new("endpoint failure", statusCode);
+
+        Assert.Equal(eligible, exception.IsTransientOrAvailabilityFailure);
+    }
+
+    [Fact]
     public async Task SpeechOutputArbiterSerializesConcurrentCallers()
     {
         SpeechOutputArbiter arbiter = new();
@@ -55,6 +100,37 @@ public sealed class CoreRegressionTests
         await Task.WhenAll(first, second);
 
         Assert.Equal(1, maximumActive);
+    }
+
+    [Fact]
+    public void VoiceEndpointingMigrationAddsThinkingTimeAndPreservesLongerCustomPause()
+    {
+        string previousRoot = CompanionPaths.Root;
+        string testRoot = Path.Combine(Path.GetTempPath(), $"iris-settings-{Guid.NewGuid():N}");
+        try
+        {
+            CompanionPaths.OverrideRoot(testRoot);
+            Directory.CreateDirectory(CompanionPaths.ConfigDirectory);
+            File.WriteAllText(CompanionPaths.SettingsFile,
+                "{\"SchemaVersion\":6,\"Ears\":{\"SilenceMilliseconds\":900}}");
+
+            CompanionSettings loaded = new SettingsStore().Load();
+            Assert.Equal(7, loaded.SchemaVersion);
+            Assert.Equal(3500, loaded.Ears.SilenceMilliseconds);
+
+            File.WriteAllText(CompanionPaths.SettingsFile,
+                "{\"SchemaVersion\":6,\"Ears\":{\"SilenceMilliseconds\":4200}}");
+            loaded = new SettingsStore().Load();
+            Assert.Equal(4200, loaded.Ears.SilenceMilliseconds);
+        }
+        finally
+        {
+            CompanionPaths.OverrideRoot(previousRoot);
+            if (Directory.Exists(testRoot))
+            {
+                Directory.Delete(testRoot, recursive: true);
+            }
+        }
     }
 
     [Fact]
@@ -1313,12 +1389,8 @@ public sealed class CoreRegressionTests
     }
 
     [Fact]
-    public async Task TheRouterOffersTheWholeManifestSoSheDecides()
+    public async Task RouterOffersRelevantSchemasAndCanDiscoverTheRest()
     {
-        // 2026-10-27 audit: the scored pre-gate once hid open_application from "Uh open
-        // up calculator". Her hands are no longer decided by keyword lottery — every
-        // declared tool is on the table every turn, and the capability text she is
-        // shown actually names her abilities, so search_capabilities can answer.
         EventBus events = new();
         string temp = Path.Combine(Path.GetTempPath(), $"iris-router-{Guid.NewGuid():N}");
         Directory.CreateDirectory(temp);
@@ -1326,31 +1398,53 @@ public sealed class CoreRegressionTests
             new FileAuditTrail(Path.Combine(temp, "audit.jsonl")),
             new PermissionGrantStore(Path.Combine(temp, "permissions.json")));
         await using ModuleHost host = new(new SettingsStore(), events, sandbox, memory: null!);
-        List<ModuleTool> tools = Enumerable.Range(0, 24)
+        List<ModuleTool> calendarTools = Enumerable.Range(0, 24)
             .Select(index => new ModuleTool($"calendar_{index}", $"Read calendar event metadata {index}.",
                 ToolTier.Reflex, "{}", "calendar", "event"))
-            .Append(new ModuleTool("send_telegram_message", "Send a message to a Telegram contact.",
-                ToolTier.SystemCritical, "{}", "telegram", "send", "message", "contact"))
             .ToList();
+        List<ModuleTool> tools =
+        [
+            new ModuleTool("send_telegram_message", "Send a message to a Telegram contact.",
+                ToolTier.SystemCritical, "{}", "telegram", "send", "message", "contact"),
+            new ModuleTool("search_capabilities", "Find and load detailed tool schemas.",
+                ToolTier.Reflex, "{}")
+        ];
         TestAssistantModule module = new("telegram", "Telegram", "Send messages to contacts.", tools);
+        TestAssistantModule calendar = new("calendar", "Calendar", "Read calendar event metadata.", calendarTools);
+        TestAssistantModule music = new("music", "Music", "Find saved songs and downloaded tracks.",
+        [
+            new ModuleTool("music_find_download", "Find a song that was downloaded or saved.",
+                ToolTier.Reflex, "{}", "downloaded song", "saved track")
+        ]);
 
         try
         {
             await host.RegisterAsync(module);
+            await host.RegisterAsync(calendar);
+            await host.RegisterAsync(music);
 
             IReadOnlyList<ModuleTool> routed = host.RouteTools(
                 "Send a Telegram message to Alex", out IReadOnlyList<IAssistantModule> selected);
 
             Assert.Contains(module, selected);
-            // The whole declared toolset is offered — the requested hand, the fillers,
-            // all of it. What she calls is her judgment, not the router's.
-            Assert.Equal(tools.Count, routed.Count);
+            Assert.True(routed.Count < calendarTools.Count + tools.Count + music.Tools.Count);
+            Assert.True(routed.Count <= ModuleHost.MaximumInitialToolsPerTurn);
             Assert.Contains(routed, tool => tool.Name == "send_telegram_message");
+            Assert.Contains(routed, tool => tool.Name == "search_capabilities");
+            Assert.DoesNotContain(routed, tool => tool.Name == "calendar_0");
             Assert.Contains("send_telegram_message", host.DescribeCapabilities());
             Assert.Contains("Telegram", host.DescribeCapabilities());
-            // The manifest text exists to be grep-able by search_capabilities: tool
-            // names, module names, no prose-only filler.
             Assert.Contains("calendar_0", host.DescribeCapabilities());
+            Assert.Contains("calendar_0", host.DescribeCapabilitiesOverview());
+
+            IReadOnlyList<ModuleTool> discovered = host.DiscoverTools(
+                "read calendar event metadata", routed.Select(tool => tool.Name));
+            Assert.Contains(discovered, tool => tool.Name == "calendar_0");
+            Assert.All(discovered, tool => Assert.DoesNotContain(routed, offered => offered.Name == tool.Name));
+
+            IReadOnlyList<ModuleTool> lexicallyDifferentDiscovery = host.DiscoverTools(
+                "could you find the song we downloaded recently", routed.Select(tool => tool.Name));
+            Assert.Contains(lexicallyDifferentDiscovery, tool => tool.Name == "music_find_download");
         }
         finally
         {
@@ -1359,11 +1453,8 @@ public sealed class CoreRegressionTests
     }
 
     [Fact]
-    public async Task RouterTruncationIsLoggedReceiptNotSilenceAndCoreBodiesLead()
+    public async Task RouterBoundsInitialSchemasAndKeepsRelevantAlwaysAvailableTools()
     {
-        // The cap only guards a plugin explosion, and when it binds the receipt must
-        // say so — never silently chewing a hand away. Also: always-available bodies
-        // are ordered first so capacity cuts can never orphan her reflexes.
         EventBus events = new();
         string temp = Path.Combine(Path.GetTempPath(), $"iris-router-cap-{Guid.NewGuid():N}");
         Directory.CreateDirectory(temp);
@@ -1385,9 +1476,9 @@ public sealed class CoreRegressionTests
             await host.RegisterAsync(optional);
             await host.RegisterAsync(core);
 
-            IReadOnlyList<ModuleTool> routed = host.RouteTools("toy", out _);
+            IReadOnlyList<ModuleTool> routed = host.RouteTools("toy and remember", out _);
 
-            Assert.True(routed.Count <= ModuleHost.MaximumToolsPerTurn);
+            Assert.True(routed.Count <= ModuleHost.MaximumInitialToolsPerTurn);
             Assert.Contains("remember", routed.Select(tool => tool.Name));
         }
         finally
@@ -2108,7 +2199,7 @@ public sealed class CoreRegressionTests
         EarsSettings ears = new() { WhisperModelFile = "missing-whisper-model.bin" };
         using WhisperNetRecognizer recognizer = new(() => ears);
 
-        Assert.Equal(0.025, ears.VoiceThreshold);
+        Assert.Equal(0.01, ears.VoiceThreshold);
         Assert.Equal(2, recognizer.ThreadCount);
         Assert.False(recognizer.IsAvailable);
     }
@@ -2150,8 +2241,38 @@ public sealed class CoreRegressionTests
             Assert.Equal("vera", loaded.Voice.VoiceId);
             Assert.False(loaded.Voice.ChosenByUser);
             Assert.Equal(new[] { "anna", "mary", "vera" }, loaded.Voice.CandidateVoices);
-            Assert.Equal(0.025, loaded.Ears.VoiceThreshold);
+            Assert.Equal(0.01, loaded.Ears.VoiceThreshold);
             Assert.Equal(2, loaded.Ears.MaxRecognitionThreads);
+        }
+        finally
+        {
+            CompanionPaths.OverrideRoot(previousRoot);
+            if (Directory.Exists(testRoot))
+            {
+                Directory.Delete(testRoot, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public void VoiceSensitivityMigrationUpdatesOnlyTheFormerDefault()
+    {
+        string previousRoot = CompanionPaths.Root;
+        string testRoot = Path.Combine(Path.GetTempPath(), $"iris-settings-{Guid.NewGuid():N}");
+        try
+        {
+            CompanionPaths.OverrideRoot(testRoot);
+            Directory.CreateDirectory(CompanionPaths.ConfigDirectory);
+            File.WriteAllText(CompanionPaths.SettingsFile,
+                "{\"SchemaVersion\":5,\"Ears\":{\"VoiceThreshold\":0.025}}");
+
+            CompanionSettings loaded = new SettingsStore().Load();
+            Assert.Equal(0.01, loaded.Ears.VoiceThreshold);
+
+            File.WriteAllText(CompanionPaths.SettingsFile,
+                "{\"SchemaVersion\":5,\"Ears\":{\"VoiceThreshold\":0.04}}");
+            loaded = new SettingsStore().Load();
+            Assert.Equal(0.04, loaded.Ears.VoiceThreshold);
         }
         finally
         {
@@ -2607,15 +2728,26 @@ public sealed class CoreRegressionTests
     }
 
     [Theory]
-    [InlineData(350, 1500)]
-    [InlineData(900, 1500)]
-    [InlineData(1500, 1500)]
-    [InlineData(2200, 2200)]
+    [InlineData(350, 3500)]
+    [InlineData(900, 3500)]
+    [InlineData(1500, 3500)]
+    [InlineData(3500, 3500)]
+    [InlineData(4200, 4200)]
     public void VoiceSegmentationKeepsAFullPauseBeforeSubmittingAnUtterance(
         int configuredMilliseconds, int expectedMilliseconds)
     {
         Assert.Equal(expectedMilliseconds,
             VoicePipeline.ResolveUtteranceSilenceThreshold(configuredMilliseconds));
+    }
+
+    [Theory]
+    [InlineData(0.02, 0.004, 0.011)]
+    [InlineData(0.02, 0.02, 0.018)]
+    public void VoiceSegmentationUsesLowerReleaseThresholdDuringSpeech(double start, double noise, double expected)
+    {
+        double release = VoicePipeline.ResolveSpeechReleaseThreshold(start, noise);
+        Assert.Equal(expected, release, 6);
+        Assert.True(release < start);
     }
 
     [Fact]
@@ -2632,7 +2764,7 @@ public sealed class CoreRegressionTests
 
             CompanionSettings loaded = new SettingsStore().Load();
 
-            Assert.Equal(5, loaded.SchemaVersion);
+            Assert.Equal(7, loaded.SchemaVersion);
             Assert.Equal(32, loaded.Memory.ConversationWindowMessages);
 
             File.WriteAllText(CompanionPaths.SettingsFile,

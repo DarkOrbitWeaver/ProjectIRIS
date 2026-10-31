@@ -57,12 +57,27 @@ public sealed class ToolLoopGuard
     private int _grantedRounds = BaseRounds;
     private ToolLoopStopReason? _forcedStop;
     private string _forcedStopDetail = string.Empty;
+    private bool _recoveryAttemptUsed;
 
     /// <summary>Rounds currently granted; grows with progress, never past the hard cap.</summary>
     public int GrantedRounds => _grantedRounds;
 
     /// <summary>Set when a rule decided the loop must stop before its budget ran out.</summary>
     public ToolLoopStopReason? ForcedStop => _forcedStop;
+
+    public bool RecoveryAttemptUsed => _recoveryAttemptUsed;
+
+    /// <summary>Allows one directed recovery round after a correctable tool failure.</summary>
+    public bool TryBeginRecoveryAttempt()
+    {
+        if (_recoveryAttemptUsed)
+        {
+            return false;
+        }
+
+        _recoveryAttemptUsed = true;
+        return true;
+    }
 
     /// <summary>True when the loop may begin the given zero-based round.</summary>
     public bool MayStartRound(int roundIndex) => _forcedStop is null && roundIndex < _grantedRounds;

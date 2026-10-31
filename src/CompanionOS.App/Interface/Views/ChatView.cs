@@ -744,6 +744,12 @@ public sealed class ChatView : UserControl
         stack.Children.Add(AvatarDot());
 
         StackPanel bubbleContent = new();
+        TextBlock modelNotice = Ui.Text(entry.Detail, Palette.FontCaption, Palette.TextFaintBrush);
+        modelNotice.TextWrapping = TextWrapping.Wrap;
+        modelNotice.IsVisible = !string.IsNullOrWhiteSpace(entry.Detail);
+        modelNotice.Margin = new Thickness(0, 0, 0, 4);
+        bubbleContent.Children.Add(modelNotice);
+
         TextBlock text = Ui.Text(
             entry.IsStreaming && string.IsNullOrEmpty(entry.Text) ? "…" : entry.Text,
             Palette.FontEmphasis,
@@ -768,6 +774,11 @@ public sealed class ChatView : UserControl
             if (eventArgs.PropertyName is nameof(ChatEntry.RecalledMemories) or null)
             {
                 RebuildRecallChips(chips, entry, bubbleContent);
+            }
+            if (eventArgs.PropertyName is nameof(ChatEntry.Detail) or null)
+            {
+                modelNotice.Text = entry.Detail;
+                modelNotice.IsVisible = !string.IsNullOrWhiteSpace(entry.Detail);
             }
         });
 

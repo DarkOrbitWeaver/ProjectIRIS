@@ -47,10 +47,12 @@ permission, activity, and shell contracts so each integration feels like part of
   fields shared by its buttons and must match each target tool's JSON schema. Icons can use Iris's
   semantic glyph keys or a module-local PNG (maximum 128×128 and 128 KiB, with path traversal and
   links rejected); module branding appears in its surfaces and activity cards.
-- The request router keeps the model-facing list to at most eight tools, chooses no more than two
-  relevant external modules, and ranks a large module's tools against the current request rather
-  than taking the first entries. It caches a compact module fingerprint when registering the
-  module and keeps the full installed tool catalog out of the repeated system prompt.
+- The request router includes at most twelve relevant schemas initially, including
+  `search_capabilities`; a successful capability search can add up to eight matching schemas
+  per query during the same turn, up to the per-turn cap. A compact system-prompt map still
+  lists every enabled tool name, so omitted schemas remain discoverable. This limits repeated
+  context without making routing an authorization boundary; the usual validation and permission
+  checks still apply. The router caches a compact module fingerprint when registering the module.
 - External tools use Iris's existing system-critical permission gate. A first call asks for
   approval; a saved "always allow" grant can authorize later calls to that tool without another
   prompt. A manifest tool policy can set `"alwaysConfirm": true` to require fresh approval for

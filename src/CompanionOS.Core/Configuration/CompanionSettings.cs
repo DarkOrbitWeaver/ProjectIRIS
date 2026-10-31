@@ -18,9 +18,11 @@ public sealed class CompanionSettings
     /// saved voices meant (audit: this property existed but nothing ever consumed it).
     /// Version 4 (2026-10-27): the floating pill and overlay stack now start at the
     /// top-right. Version 5 doubles the default recent-conversation window so
-    /// tool-heavy exchanges remain available for follow-up requests.
+    /// tool-heavy exchanges remain available for follow-up requests. Version 6 lowers
+    /// the default microphone threshold for quiet speech. Version 7 makes speech
+    /// endpointing more patient for mid-sentence thinking pauses.
     /// </summary>
-    public const int CurrentSchemaVersion = 5;
+    public const int CurrentSchemaVersion = 7;
 
     /// <summary>
     /// The schema generation of files that predate version stamping. A file whose
@@ -82,6 +84,12 @@ public sealed class BrainProfile
     /// <summary>Vision projector produced by the same model family. Empty disables vision.</summary>
     public string ProjectorFile { get; set; } = "brain-mmproj.gguf";
 
+    /// <summary>Explicit vision capability for remote providers that have no local projector file.</summary>
+    public bool? SupportsVisionOverride { get; set; }
+
+    /// <summary>Optional profile ID used once for a turn if this profile fails before responding.</summary>
+    public string FallbackProfileId { get; set; } = string.Empty;
+
     public int ContextTokens { get; set; } = 16384;
     public int GpuLayers { get; set; } = 99;
     public int Threads { get; set; } = 6;
@@ -103,7 +111,7 @@ public sealed class BrainProfile
         "--flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --image-min-tokens 1024";
 
     /// <summary>True when this profile can understand images at all.</summary>
-    public bool SupportsVision => !string.IsNullOrWhiteSpace(ProjectorFile);
+    public bool SupportsVision => SupportsVisionOverride ?? !string.IsNullOrWhiteSpace(ProjectorFile);
 
     public bool HasFullUrl => !string.IsNullOrWhiteSpace(Endpoint);
 
@@ -121,6 +129,8 @@ public sealed class BrainProfile
         ApiKey = ApiKey,
         ModelFile = ModelFile,
         ProjectorFile = ProjectorFile,
+        SupportsVisionOverride = SupportsVisionOverride,
+        FallbackProfileId = FallbackProfileId,
         ContextTokens = ContextTokens,
         GpuLayers = GpuLayers,
         Threads = Threads,
@@ -337,13 +347,13 @@ public sealed class EarsSettings
     public int InputDeviceNumber { get; set; } = -1;
 
     /// <summary>Silence needed before a sentence is considered finished.</summary>
-    public int SilenceMilliseconds { get; set; } = 1500;
+    public int SilenceMilliseconds { get; set; } = 3500;
 
     /// <summary>Ignore blips shorter than this.</summary>
     public int MinimumSpeechMilliseconds { get; set; } = 250;
 
     /// <summary>Higher values need louder speech before recording starts.</summary>
-    public double VoiceThreshold { get; set; } = 0.025;
+    public double VoiceThreshold { get; set; } = 0.01;
 
     /// <summary>Require her name in each utterance before she answers.</summary>
     public bool RequireWakePhrase { get; set; } = true;

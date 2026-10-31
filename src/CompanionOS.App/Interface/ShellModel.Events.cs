@@ -144,6 +144,13 @@ public sealed partial class ShellModel : ObservableObject
                 LastUtterance = Trim(_streamBuffer.ToString(), 120);
                 break;
 
+            case ConversationPhase.AssistantModelFallback:
+                if (_streamingEntry is not null)
+                {
+                    _streamingEntry.Detail = payload.Detail ?? string.Empty;
+                }
+                break;
+
             case ConversationPhase.AssistantCompleted:
                 IsTurnInProgress = false;
                 ClearActivity();

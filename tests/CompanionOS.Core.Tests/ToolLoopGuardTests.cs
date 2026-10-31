@@ -20,6 +20,15 @@ public sealed class ToolLoopGuardTests
     }
 
     [Fact]
+    public void CorrectableFailuresAllowExactlyOneRecoveryAttempt()
+    {
+        ToolLoopGuard guard = new();
+
+        Assert.True(guard.TryBeginRecoveryAttempt());
+        Assert.False(guard.TryBeginRecoveryAttempt());
+    }
+
+    [Fact]
     public void ProgressEarnsExtraRoundsUpToTheHardCap()
     {
         ToolLoopGuard guard = new();
